@@ -1,0 +1,10 @@
+{
+  "creator": "sample-creator",
+  "protected_spans": [
+    {
+      "word_start": 37,
+      "word_end": 40,
+      "label": "closing call to action"
+    }
+  ]
+}

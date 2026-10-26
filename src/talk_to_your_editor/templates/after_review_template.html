@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>After review: {{VIDEO_NAME}}</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0b0f;
+    --panel: #17171d;
+    --panel-2: #1f1f27;
+    --text: #f5f5f7;
+    --muted: #a1a1aa;
+    --line: #2c2c35;
+    --accent: #0a84ff;
+    --green: #30d158;
+    --amber: #ffd60a;
+    --red: #ff453a;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin: 8px 0 4px; }
+  .subtitle { color: var(--muted); font-size: 15px; margin: 0 0 20px; }
+  video {
+    width: 100%;
+    border-radius: var(--radius);
+    background: #000;
+    margin: 0 0 20px;
+    display: block;
+  }
+  .comment {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin: 0 0 14px;
+  }
+  .comment header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .ts {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--accent);
+  }
+  .badge {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+  }
+  .badge.applied { color: var(--green); border-color: var(--green); }
+  .badge.flagged { color: var(--amber); border-color: var(--amber); }
+  .badge.rejected { color: var(--red); border-color: var(--red); }
+  .comment-text { font-size: 16px; line-height: 1.45; margin: 4px 0 10px; }
+  .action { font-size: 14px; line-height: 1.45; color: var(--muted); margin: 0 0 14px; }
+  .action-label { color: var(--text); font-weight: 600; }
+  fieldset.verdicts { border: 0; padding: 0; margin: 0 0 12px; }
+  fieldset.verdicts legend { font-size: 13px; color: var(--muted); margin-bottom: 8px; padding: 0; }
+  .verdict-options { display: flex; flex-wrap: wrap; gap: 8px; }
+  .verdict-options label {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-size: 14px;
+    cursor: pointer;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .verdict-options input { accent-color: var(--accent); }
+  .notes-label { display: block; font-size: 13px; color: var(--muted); }
+  textarea.notes {
+    width: 100%;
+    margin-top: 6px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px;
+    font: inherit;
+    font-size: 15px;
+    resize: vertical;
+  }
+  .toolbar {
+    position: sticky;
+    bottom: 12px;
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+  }
+  button {
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    padding: 13px 20px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    min-height: 48px;
+  }
+  #export-btn { background: var(--accent); color: #fff; flex: 1; }
+  #done-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+  .saved-note { color: var(--muted); font-size: 13px; text-align: center; margin-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>After review</h1>
+  <p class="subtitle">{{VIDEO_NAME}} &middot; One row for every note you left. Grade each change, add notes if you want, then export.</p>
+
+  {{VIDEO_BLOCK}}
+
+  <section id="comments">
+{{ROWS}}
+  </section>
+
+  <div class="toolbar">
+    <button id="export-btn" type="button">Export grading file</button>
+    <button id="done-btn" type="button">Mark all graded</button>
+  </div>
+  <p class="saved-note">Your grades save on this device as you go. Nothing is sent anywhere.</p>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var PAGE_VIDEO = {{VIDEO_JSON}};
+  var STORAGE_KEY = {{STORAGE_KEY_JSON}};
+
+  function rows() {
+    return Array.prototype.slice.call(document.querySelectorAll(".comment"));
+  }
+
+  function collect() {
+    var entries = rows().map(function (row) {
+      var checked = row.querySelector("input[type=radio]:checked");
+      var notesEl = row.querySelector(".notes");
+      return {
+        "comment_id": row.getAttribute("data-comment-id"),
+        "ts": parseFloat(row.getAttribute("data-ts")),
+        "original_text": row.querySelector(".comment-text").textContent,
+        "status": row.getAttribute("data-status"),
+        "action_taken": row.querySelector(".action-text").textContent,
+        "operation_type": row.getAttribute("data-operation-type") || null,
+        "verdict": checked ? checked.value : null,
+        "notes": notesEl ? notesEl.value : ""
+      };
+    });
+    return {
+      "record_type": "graded_corrections",
+      "grading_version": 1,
+      "video": PAGE_VIDEO,
+      "exported_at": new Date().toISOString(),
+      "grading_done": entries.every(function (e) { return e.verdict !== null; }),
+      "entries": entries
+    };
+  }
+
+  function save() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(collect()));
+    } catch (err) { /* storage unavailable; the page still works */ }
+  }
+
+  function restore() {
+    var raw = null;
+    try { raw = localStorage.getItem(STORAGE_KEY); } catch (err) { raw = null; }
+    if (!raw) { return; }
+    var saved = null;
+    try { saved = JSON.parse(raw); } catch (err) { return; }
+    if (!saved || !saved.entries) { return; }
+    var byId = {};
+    saved.entries.forEach(function (e) { byId[e.comment_id] = e; });
+    rows().forEach(function (row) {
+      var entry = byId[row.getAttribute("data-comment-id")];
+      if (!entry) { return; }
+      if (entry.verdict) {
+        var radio = row.querySelector("input[type=radio][value='" + entry.verdict + "']");
+        if (radio) { radio.checked = true; }
+      }
+      if (entry.notes) {
+        var notesEl = row.querySelector(".notes");
+        if (notesEl) { notesEl.value = entry.notes; }
+      }
+    });
+  }
+
+  function download() {
+    var data = collect();
+    var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    var slug = (PAGE_VIDEO || "video").replace(/\.[^.]*$/, "").replace(/[^A-Za-z0-9_-]+/g, "-");
+    a.href = url;
+    a.download = slug + "-graded.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 500);
+  }
+
+  rows().forEach(function (row) {
+    row.addEventListener("change", save);
+    row.addEventListener("input", save);
+  });
+  document.getElementById("export-btn").addEventListener("click", download);
+  document.getElementById("done-btn").addEventListener("click", function () {
+    save();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+  restore();
+})();
+</script>
+</body>
+</html>
