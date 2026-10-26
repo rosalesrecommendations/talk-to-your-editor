@@ -209,6 +209,19 @@ def cmd_after_review(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    from .webapp import serve
+
+    return serve(
+        args.job_dir,
+        host=args.host,
+        port=args.port,
+        render_py=args.render_py,
+        source_video=args.source,
+        cleaned_wav=args.cleaned_wav,
+    )
+
+
 def cmd_learn(args) -> int:
     from .learning import (
         build_template_draft,
@@ -291,6 +304,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True)
     p.add_argument("--video")
     p.set_defaults(func=cmd_after_review)
+
+    p = sub.add_parser("serve")
+    p.add_argument("--job-dir", required=True)
+    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--render-py")
+    p.add_argument("--source")
+    p.add_argument("--cleaned-wav")
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("learn")
     p.add_argument("--graded")

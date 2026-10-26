@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talk to Your Editor: {{JOB_NAME}}</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0b0f;
+    --panel: #17171d;
+    --panel-2: #1f1f27;
+    --text: #f5f5f7;
+    --muted: #a1a1aa;
+    --line: #2c2c35;
+    --accent: #0a84ff;
+    --green: #30d158;
+    --amber: #ffd60a;
+    --red: #ff453a;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin: 8px 0 4px; }
+  h2 { font-size: 18px; font-weight: 700; margin: 0 0 6px; }
+  .subtitle { color: var(--muted); font-size: 15px; margin: 0 0 20px; line-height: 1.45; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin: 0 0 14px;
+  }
+  .note { color: var(--muted); font-size: 14px; line-height: 1.45; margin: 6px 0 0; }
+  video {
+    width: 100%;
+    border-radius: var(--radius);
+    background: #000;
+    margin: 0 0 12px;
+    display: block;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  button {
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    padding: 12px 18px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    min-height: 48px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+  }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .clock { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+  textarea {
+    width: 100%;
+    margin-top: 8px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px;
+    font: inherit;
+    font-size: 15px;
+    resize: vertical;
+  }
+  input[type="number"] {
+    width: 90px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px;
+    font: inherit;
+    font-size: 15px;
+  }
+  select {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 12px 16px;
+    font: inherit;
+    font-size: 15px;
+    min-height: 48px;
+  }
+  .comment {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    margin: 0 0 10px;
+  }
+  .comment header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .ts {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--accent);
+    background: none;
+    border: 0;
+    padding: 0;
+    min-height: 0;
+    cursor: pointer;
+  }
+  .badge {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+  }
+  .badge.applied { color: var(--green); border-color: var(--green); }
+  .badge.flagged { color: var(--amber); border-color: var(--amber); }
+  .badge.rejected { color: var(--red); border-color: var(--red); }
+  .comment-text { font-size: 16px; line-height: 1.45; margin: 4px 0 6px; }
+  .action { font-size: 14px; line-height: 1.45; color: var(--muted); margin: 0; }
+  .del { margin-left: auto; min-height: 36px; padding: 6px 12px; font-size: 13px; }
+  .downloads a { color: var(--accent); font-size: 14px; margin-right: 14px; line-height: 2; }
+  .status-line { font-size: 14px; color: var(--muted); min-height: 20px; margin: 8px 0 0; }
+  .counts { font-size: 15px; line-height: 1.5; margin: 8px 0; }
+  .empty { color: var(--muted); font-size: 14px; padding: 8px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Talk to Your Editor</h1>
+  <p class="subtitle">Test session for {{JOB_NAME}}. Watch the edit, pin a comment where something needs to change, then run direction and see exactly what the program did about each note.</p>
+
+  <div class="card" id="novid" hidden>
+    <h2>No video in this job folder</h2>
+    <p class="note">There is no review.mp4, final.mp4, or final-long.mp4 here, so there is nothing to play. You can still pin comments by typing a time in seconds.</p>
+  </div>
+
+  <video id="vid" controls playsinline preload="metadata"></video>
+  <div class="row">
+    <button id="btnV" class="on" type="button">Vertical (9:16)</button>
+    <button id="btnL" type="button">Landscape (16:9)</button>
+    <span class="clock">Now at <b id="clock">0:00.0</b></span>
+  </div>
+
+  <div class="card">
+    <h2>Pin a comment</h2>
+    <div class="row">
+      <button id="pin" class="primary" type="button">Comment at current time</button>
+      <label class="note">or at <input id="manualTs" type="number" step="0.1" min="0" placeholder="sec"> seconds</label>
+    </div>
+    <textarea id="draft" rows="3" placeholder="What did you notice here? On your phone, tap the microphone on the keyboard to dictate instead of typing."></textarea>
+    <div class="row">
+      <button id="save" class="primary" type="button">Save comment</button>
+    </div>
+    <p class="status-line" id="saveStatus"></p>
+  </div>
+
+  <section id="list"></section>
+
+  <div class="card">
+    <h2>Run direction</h2>
+    <p class="note">Muse Spark proposes the edits, Muse Wonder reviews the risky ones, and the safety verifier decides what may change. Mock is a deterministic stand-in for trying the loop offline.</p>
+    <div class="row">
+      <select id="provider">
+        <option value="mock">Mock (offline)</option>
+        <option value="meta" id="metaOption">Meta (Muse Spark / Wonder)</option>
+      </select>
+      <button id="runDirect" class="primary" type="button">Run direction</button>
+    </div>
+    <p class="status-line" id="directStatus"></p>
+    <div id="results"></div>
+  </div>
+
+  <div class="card">
+    <h2>Revised edit</h2>
+    <div class="row">
+      <button id="runRender" type="button">Render revised review</button>
+      <a href="/after-review"><button type="button">Open after-review</button></a>
+    </div>
+    <p class="status-line" id="renderStatus"></p>
+    <p class="note downloads">Session files:
+      <a href="/api/download/feedback.json">feedback.json</a>
+      <a href="/api/download/operations.json">operations.json</a>
+      <a href="/api/download/operations_audit.json">operations_audit.json</a>
+      <a href="/api/download/revised_cuts.json">revised_cuts.json</a>
+    </p>
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var JOB_NAME = {{JOB_NAME_JSON}};
+  var PRIMARY_VIDEO = {{VIDEO_JSON}};
+  var META_AVAILABLE = {{META_AVAILABLE_JSON}};
+
+  var vid = document.getElementById("vid");
+  var clockEl = document.getElementById("clock");
+  var draft = document.getElementById("draft");
+  var listEl = document.getElementById("list");
+  var state = { comments: [] };
+  var pendingTs = null;
+  var pendingFmt = "vertical";
+  var curFmt = "vertical";
+  var videos = [];
+
+  function fmtTime(t) {
+    t = Math.max(0, t || 0);
+    var m = Math.floor(t / 60);
+    var s = t - m * 60;
+    return m + ":" + (s < 10 ? "0" : "") + s.toFixed(1);
+  }
+
+  function videoFor(fmt) {
+    if (fmt === "landscape") {
+      return videos.indexOf("final-long.mp4") >= 0 ? "final-long.mp4" : null;
+    }
+    if (videos.indexOf("review.mp4") >= 0) { return "review.mp4"; }
+    if (videos.indexOf("final.mp4") >= 0) { return "final.mp4"; }
+    return null;
+  }
+
+  function setFmt(f) {
+    curFmt = f;
+    document.getElementById("btnV").classList.toggle("on", f === "vertical");
+    document.getElementById("btnL").classList.toggle("on", f === "landscape");
+    var name = videoFor(f);
+    if (!name) { return; }
+    var t = vid.currentTime || 0;
+    var wasPlaying = !vid.paused;
+    vid.src = "/video/" + name;
+    vid.addEventListener("loadedmetadata", function h() {
+      vid.removeEventListener("loadedmetadata", h);
+      try { vid.currentTime = Math.min(t, vid.duration || t); } catch (e) {}
+      if (wasPlaying) { vid.play(); }
+    });
+  }
+
+  function postJson(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    }).then(function (r) {
+      return r.json().then(function (data) { return { status: r.status, data: data }; });
+    });
+  }
+
+  function persist() {
+    return postJson("/api/comments", { video: JOB_NAME, comments: state.comments });
+  }
+
+  function renderList() {
+    listEl.innerHTML = "";
+    if (!state.comments.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No comments yet. Pause the video where something needs to change and pin one.";
+      listEl.appendChild(empty);
+      return;
+    }
+    state.comments.forEach(function (c) {
+      var card = document.createElement("div");
+      card.className = "comment";
+      var header = document.createElement("header");
+      var ts = document.createElement("button");
+      ts.className = "ts";
+      ts.type = "button";
+      ts.textContent = fmtTime(c.ts);
+      ts.addEventListener("click", function () {
+        if (c.fmt && c.fmt !== curFmt) { setFmt(c.fmt); }
+        var go = function () { vid.currentTime = c.ts; vid.play(); };
+        if (vid.readyState >= 1) { go(); } else {
+          vid.addEventListener("loadedmetadata", function h() {
+            vid.removeEventListener("loadedmetadata", h); go();
+          });
+        }
+      });
+      var tag = document.createElement("span");
+      tag.className = "badge";
+      tag.textContent = c.fmt || "vertical";
+      var del = document.createElement("button");
+      del.className = "del";
+      del.type = "button";
+      del.textContent = "Delete";
+      del.addEventListener("click", function () {
+        state.comments = state.comments.filter(function (x) { return x.id !== c.id; });
+        persist();
+        renderList();
+      });
+      header.appendChild(ts);
+      header.appendChild(tag);
+      header.appendChild(del);
+      var p = document.createElement("p");
+      p.className = "comment-text";
+      p.textContent = c.text;
+      card.appendChild(header);
+      card.appendChild(p);
+      listEl.appendChild(card);
+    });
+  }
+
+  document.getElementById("btnV").addEventListener("click", function () { setFmt("vertical"); });
+  document.getElementById("btnL").addEventListener("click", function () { setFmt("landscape"); });
+  vid.addEventListener("timeupdate", function () { clockEl.textContent = fmtTime(vid.currentTime); });
+
+  document.getElementById("pin").addEventListener("click", function () {
+    var manual = document.getElementById("manualTs").value;
+    if (manual !== "") {
+      pendingTs = parseFloat(manual);
+    } else {
+      pendingTs = vid.currentTime || 0;
+    }
+    pendingFmt = curFmt;
+    draft.focus();
+    draft.placeholder = "Comment pinned at " + fmtTime(pendingTs) + " (" + pendingFmt + "). Type or dictate, then Save comment.";
+  });
+
+  document.getElementById("save").addEventListener("click", function () {
+    var text = draft.value.trim();
+    var status = document.getElementById("saveStatus");
+    if (!text) { draft.focus(); return; }
+    var manual = document.getElementById("manualTs").value;
+    var ts = pendingTs !== null ? pendingTs : (manual !== "" ? parseFloat(manual) : (vid.currentTime || 0));
+    var f = pendingTs !== null ? pendingFmt : curFmt;
+    state.comments.push({ id: Date.now(), ts: Math.round(ts * 10) / 10, fmt: f, text: text, done: false });
+    state.comments.sort(function (a, b) { return a.ts - b.ts; });
+    draft.value = "";
+    pendingTs = null;
+    draft.placeholder = "What did you notice here?";
+    renderList();
+    persist().then(function (res) {
+      status.textContent = res.data && res.data.ok
+        ? "Saved. " + state.comments.length + " comment(s) in this session."
+        : "Could not save: " + ((res.data && res.data.error) || res.status);
+    });
+  });
+
+  var ACTION_BY_TYPE = {
+    cut_words: "Removed the words this note pointed at from the finished edit.",
+    restore_words: "Restored words that had been cut, as this note asked.",
+    replace_take: "Swapped the take used here for the other take, as this note asked.",
+    set_join_pause: "Changed the pause at this join to the length this note asked for.",
+    flag_for_review: "No change was made. A person needs to decide this one."
+  };
+
+  document.getElementById("runDirect").addEventListener("click", function () {
+    var status = document.getElementById("directStatus");
+    var results = document.getElementById("results");
+    var provider = document.getElementById("provider").value;
+    status.textContent = "Running direction with the " + provider + " provider...";
+    results.innerHTML = "";
+    persist().then(function () {
+      return postJson("/api/direct", { provider: provider });
+    }).then(function (res) {
+      var data = res.data || {};
+      if (!data.ok) {
+        status.textContent = "Direction did not run: " + (data.error || res.status);
+        return;
+      }
+      status.textContent = "Direction finished.";
+      var counts = document.createElement("p");
+      counts.className = "counts";
+      counts.textContent =
+        "Words kept: " + data.before.kept_words + " to " + data.after.kept_words +
+        ". Length: " + data.before.output_duration_s.toFixed(1) + "s to " +
+        data.after.output_duration_s.toFixed(1) + "s.";
+      results.appendChild(counts);
+      var byId = {};
+      state.comments.forEach(function (c) { byId[String(c.id)] = c; });
+      (data.operations || []).forEach(function (op) {
+        var card = document.createElement("div");
+        card.className = "comment";
+        var header = document.createElement("header");
+        var badge = document.createElement("span");
+        badge.className = "badge " + op.status;
+        badge.textContent = op.status;
+        var label = document.createElement("span");
+        label.className = "ts";
+        var c = byId[String(op.comment_id)];
+        label.textContent = c ? fmtTime(c.ts) : op.comment_id;
+        header.appendChild(label);
+        header.appendChild(badge);
+        var text = document.createElement("p");
+        text.className = "comment-text";
+        text.textContent = c ? c.text : "";
+        var action = document.createElement("p");
+        action.className = "action";
+        action.textContent = op.plain_action || ACTION_BY_TYPE[op.type] || "";
+        card.appendChild(header);
+        card.appendChild(text);
+        card.appendChild(action);
+        results.appendChild(card);
+      });
+      if (data.after_review) {
+        var link = document.createElement("p");
+        link.className = "note";
+        link.innerHTML = "The after-review page is ready: <a href=\"/after-review\" style=\"color: var(--accent);\">open it to grade each change</a>.";
+        results.appendChild(link);
+      }
+    }).catch(function (err) {
+      status.textContent = "Direction did not run: " + err;
+    });
+  });
+
+  document.getElementById("runRender").addEventListener("click", function () {
+    var status = document.getElementById("renderStatus");
+    status.textContent = "Rendering the revised review...";
+    postJson("/api/render", {}).then(function (res) {
+      var data = res.data || {};
+      if (data.ok) {
+        status.textContent = "Rendered. Open the after-review to watch the revised edit and grade the changes.";
+      } else if (data.missing && data.missing.length) {
+        status.textContent = "Render is not set up on this server yet. Missing: " +
+          data.missing.join(", ") +
+          ". Restart the server with --render-py, --source, and --cleaned-wav to turn rendering on. Direction still works without it.";
+      } else {
+        status.textContent = "Render did not finish: " + (data.error || res.status);
+      }
+    }).catch(function (err) {
+      status.textContent = "Render did not finish: " + err;
+    });
+  });
+
+  fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
+    videos = job.videos || [];
+    state.comments = (job.comments || []).map(function (c) {
+      return { id: c.id, ts: c.ts, fmt: c.fmt || "vertical", text: c.text, done: !!c.done };
+    });
+    if (!META_AVAILABLE) {
+      var opt = document.getElementById("metaOption");
+      opt.disabled = true;
+      opt.textContent = "Meta (needs MODEL_API_KEY on the server)";
+    }
+    if (videos.length) {
+      vid.src = "/video/" + (videoFor("vertical") || videos[0]);
+    } else {
+      document.getElementById("novid").hidden = false;
+      vid.hidden = true;
+    }
+    renderList();
+  });
+})();
+</script>
+</body>
+</html>

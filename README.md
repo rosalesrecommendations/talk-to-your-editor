@@ -91,6 +91,18 @@ python3 -m unittest discover -s tests
 
 Rendering the revised plan is done by the editing runner's own render stage, which consumes `revised_cuts.json` directly; stream sync is verified to within 50 ms by that stage, as with any plan it renders.
 
+## Personal testing: v0.2, the test app
+
+Version 0.2 adds a local web test app so a creator can run the whole loop in a browser, no terminal after launch:
+
+```bash
+tye serve --job-dir /path/to/runner-job
+```
+
+The job folder is a runner export (transcript.json and cuts.json, plus the finished video when there is one). The server prints a localhost address for the computer and a LAN address for a phone on the same Wi-Fi. In the page you watch the finished edit, pin comments at the current time, run direction (offline mock, or live Muse Spark and Wonder when MODEL_API_KEY is set in the server environment), read the applied and flagged results with before and after counts, download the revised plan and audit, and open the after-review page to grade the changes. Session files land in a `tye-session/` folder inside the job folder; the original transcript and plan are never modified. An optional render step (`--render-py`, `--source`, `--cleaned-wav`) renders the revised review through the runner's own render stage; when a piece is missing, the app says which piece, in plain words.
+
+The `mac-test-kit/` folder carries a double-click launcher for macOS and a step-by-step personal testing script (Mac first, then phone).
+
 ## Rehearsal results (October 26, 2026)
 
 The full loop was rehearsed end to end before this README was finalized:
