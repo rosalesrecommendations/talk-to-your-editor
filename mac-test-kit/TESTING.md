@@ -36,7 +36,7 @@ Paste the runner job folder path, or press Enter for the built-in sample:
 
 Press **Enter**.
 
-When it asks for a Meta Model API key, press **Enter** again. That uses the offline mock, so you can learn the flow without spending anything or depending on the network.
+When it asks for a Meta Model API key, press **Enter** again. That uses the offline mock, so you can learn the flow without spending anything or depending on the network. (If you saved a key on this Mac earlier, the launcher skips that question and uses the saved key; see "Remembering your key on this Mac" below.)
 
 Your browser should open Talk to Your Editor. If it does not, open the Mac address printed in Terminal. It will look like this:
 
@@ -65,9 +65,33 @@ If the sample already has feedback loaded, you can use that too. Adding one comm
 Run the direction step.
 
 - **Mock first:** this is the safe rehearsal mode. It proves the page, the mapping, the checks, and the revised edit flow.
-- **Live Muse later:** quit the app, launch it again, and paste your Meta Model API key at the hidden prompt. The typing will not show on screen. The key is used only for that Terminal session and is not saved by the launcher.
+- **Live Muse later:** quit the app, launch it again, and paste your Meta Model API key at the hidden prompt. The typing will not show on screen. After you paste it once, the launcher asks one extra question:
+
+```text
+Remember this key on this Mac only? It is saved in a private file in your home folder, never in the app or the repo. [y/N]
+```
+
+Answer **y** and you will not be asked again. Answer **n** (or just press Enter) and the key is used only for that Terminal session.
 
 Do not paste the key into chat or into the web page. The launcher prompt is the only place it belongs.
+
+### Remembering your key on this Mac
+
+If you answer **y**, the key is saved on this Mac only, in a private file in your home folder:
+
+```text
+~/.talk-to-your-editor/meta_key
+```
+
+The folder is readable only by your account, and the file is readable only by you. The key is never written into the app folder, the test kit, the zip, or the project files. On later launches, the launcher reads that file, prints a line saying the saved key from this Mac is being used, and turns live Muse direction on without asking.
+
+To remove the saved key, delete that one file:
+
+```text
+rm ~/.talk-to-your-editor/meta_key
+```
+
+After that, the launcher goes back to asking each time, and pressing Enter at the prompt uses the offline mock.
 
 ### 5. Read the result for each comment
 
@@ -99,6 +123,8 @@ After the sample feels clear, quit the app and launch it again.
 ### Which folder to paste
 
 Paste the **runner job or export folder itself**, not a single file inside it.
+
+**Finder drag trick:** you do not have to type or copy the path. Open the folder's parent in Finder, then drag the job folder straight into the Terminal window at the prompt. Its full path is pasted for you; just press **Enter**.
 
 The right folder contains:
 

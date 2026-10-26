@@ -66,15 +66,41 @@ if [ ! -f "$JOB_DIR/transcript.json" ] || [ ! -f "$JOB_DIR/cuts.json" ]; then
   fail "That folder is not a complete runner job folder. It must contain transcript.json and cuts.json."
 fi
 
-printf 'Optional: paste your Meta Model API key to use live Muse direction, or press Enter for the offline mock: '
-IFS= read -r -s MODEL_API_KEY_INPUT || true
-printf '\n'
-if [ -n "$MODEL_API_KEY_INPUT" ]; then
-  export MODEL_API_KEY="$MODEL_API_KEY_INPUT"
-  printf 'Live Muse direction is on for this session only. The key was not saved.\n'
-else
-  unset MODEL_API_KEY || true
-  printf 'Offline mock direction is on.\n'
+KEY_DIR="$HOME/.talk-to-your-editor"
+KEY_FILE="$KEY_DIR/meta_key"
+MODEL_API_KEY_INPUT=""
+if [ -s "$KEY_FILE" ]; then
+  IFS= read -r MODEL_API_KEY_INPUT < "$KEY_FILE" || true
+  if [ -n "$MODEL_API_KEY_INPUT" ]; then
+    export MODEL_API_KEY="$MODEL_API_KEY_INPUT"
+    printf 'Using the saved Meta Model API key from this Mac. Live Muse direction is on.\n'
+  fi
+fi
+if [ -z "$MODEL_API_KEY_INPUT" ]; then
+  printf 'Optional: paste your Meta Model API key to use live Muse direction, or press Enter for the offline mock: '
+  IFS= read -r -s MODEL_API_KEY_INPUT || true
+  printf '\n'
+  if [ -n "$MODEL_API_KEY_INPUT" ]; then
+    export MODEL_API_KEY="$MODEL_API_KEY_INPUT"
+    printf 'Remember this key on this Mac only? It is saved in a private file in your home folder, never in the app or the repo. [y/N] '
+    IFS= read -r REMEMBER_KEY || true
+    case "$REMEMBER_KEY" in
+      y|Y|yes|Yes|YES)
+        if mkdir -p "$KEY_DIR" && chmod 700 "$KEY_DIR" && printf '%s\n' "$MODEL_API_KEY_INPUT" > "$KEY_FILE" && chmod 600 "$KEY_FILE"; then
+          printf 'Saved on this Mac only. Future launches will use it without asking.\n'
+        else
+          printf 'The key could not be saved, so it is on for this session only.\n'
+        fi
+        ;;
+      *)
+        printf 'Live Muse direction is on for this session only. The key was not saved.\n'
+        ;;
+    esac
+    unset REMEMBER_KEY
+  else
+    unset MODEL_API_KEY || true
+    printf 'Offline mock direction is on.\n'
+  fi
 fi
 unset MODEL_API_KEY_INPUT
 
