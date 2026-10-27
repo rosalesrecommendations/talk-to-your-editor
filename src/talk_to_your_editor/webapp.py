@@ -17,12 +17,19 @@ in the session folder; the job's own files are never modified. Every
 output of a test session lands in ``<job-dir>/tye-session/``; the
 job's own ``transcript.json`` and ``cuts.json`` are never modified.
 
+The server can also start with no job at all. The home page is then
+the front door: the drop zone, one button for the built-in sample,
+and the Meta sign-in check, with a neutral launch home (a folder
+beside the app, or wherever ``--launch-home`` points) holding the
+session and the staged drops until a job arrives.
+
 Standard library only. Run it with::
 
-    tye serve --job-dir /path/to/job
+    tye serve
 
 then open the printed URL on this computer, or on a phone on the same
-Wi-Fi.
+Wi-Fi, and drop a job folder on the page. ``tye serve --job-dir
+/path/to/job`` still starts on a job directly.
 """
 
 from __future__ import annotations
@@ -286,21 +293,48 @@ DOWNLOAD_NAMES = (
 )
 SESSION_DIR_NAME = "tye-session"
 INTAKE_DIR_NAME = "intake"
+SAMPLE_JOB_DIR_NAME = "sample-job"
+SAMPLE_JOB_FILES = (
+    "transcript.json",
+    "cuts.json",
+    "profile.json",
+    "feedback.json",
+)
+NO_JOB_MESSAGE = (
+    "No job is loaded yet. Drop a runner job folder on the page, "
+    "or try the built-in sample."
+)
 _CHUNK = 256 * 1024
 
 
 class WebAppConfig:
     """Everything the handler needs, fixed at server start, except the
-    session sign-in (see ``session_api_key``)."""
+    session sign-in (see ``session_api_key``).
+
+    A config either runs on a job folder (``job_dir`` set) or starts
+    empty (``job_dir`` None): the no-job front door. Either way it
+    carries a ``launch_home``, the neutral folder the launch owns:
+    in no-job mode the session and the staged drops live there, and
+    the built-in sample is staged there when it is loaded. When a
+    dropped or sampled job becomes the current job, the new config
+    inherits the same launch home, so the intake anchor never moves.
+    """
 
     def __init__(
         self,
-        job_dir: Path,
+        job_dir: Optional[Path] = None,
         render_py: Optional[str] = None,
         source_video: Optional[str] = None,
         cleaned_wav: Optional[str] = None,
+        launch_home: Optional[Path] = None,
     ):
-        self.job_dir = Path(job_dir)
+        self.job_dir = Path(job_dir) if job_dir is not None else None
+        if launch_home is not None:
+            self.launch_home = Path(launch_home)
+        elif self.job_dir is not None:
+            self.launch_home = self.job_dir
+        else:
+            self.launch_home = Path.home() / ".talk-to-your-editor"
         self.render_py = render_py
         self.source_video = source_video
         self.cleaned_wav = cleaned_wav
@@ -311,17 +345,17 @@ class WebAppConfig:
         # the pieces found this way are named in ``render_autowired``
         # so the status sentence can say where setup came from.
         self.render_autowired: list[str] = []
-        if not self.render_py:
+        if self.job_dir is not None and not self.render_py:
             candidate = self.job_dir / RENDER_SCRIPT_NAME
             if candidate.is_file():
                 self.render_py = str(candidate)
                 self.render_autowired.append("render_py")
-        if not self.cleaned_wav:
+        if self.job_dir is not None and not self.cleaned_wav:
             candidate = self.job_dir / CLEANED_WAV_NAME
             if candidate.is_file():
                 self.cleaned_wav = str(candidate)
                 self.render_autowired.append("cleaned_wav")
-        if not self.source_video:
+        if self.job_dir is not None and not self.source_video:
             found = _autodetect_source_video(self.job_dir)
             if found:
                 self.source_video = found
@@ -339,8 +373,28 @@ class WebAppConfig:
         self.playback_lock = threading.Lock()
 
     @property
+    def has_job(self) -> bool:
+        """Whether a job folder is loaded. False is the front door:
+        the server is up, and no job has arrived yet."""
+        return self.job_dir is not None
+
+    @property
     def session_dir(self) -> Path:
-        return self.job_dir / SESSION_DIR_NAME
+        """Where this session's state lives.
+
+        With a job, inside the job folder, as always. With no job,
+        inside the launch home, so the sign-in, the history, and the
+        staged drops have one known place before any job exists.
+        """
+        if self.job_dir is not None:
+            return self.job_dir / SESSION_DIR_NAME
+        return self.launch_home / SESSION_DIR_NAME
+
+    def job_label(self) -> str:
+        """The job's name for the page, or plain words when none."""
+        if self.job_dir is not None:
+            return self.job_dir.name
+        return "no job yet"
 
     def signin_key(self) -> Optional[str]:
         """The Meta sign-in checks and direction runs use, if any.
@@ -1015,7 +1069,52 @@ def _transcript_entries(config: WebAppConfig) -> tuple[list, list]:
     )
 
 
+def _no_job_summary(config: WebAppConfig) -> dict:
+    """The summary when no job is loaded: every field the page
+    reads, at its empty value, so the front door renders cleanly
+    (drop zone, sample offer, sign-in check) with no counts to
+    break and no error to show. ``has_job`` is how the page knows.
+    """
+    return {
+        "has_job": False,
+        "job_name": None,
+        "source_duration_s": 0,
+        "output_duration_s": 0,
+        "fps": 0,
+        "kept_ranges": 0,
+        "special_ranges": 0,
+        "joins": 0,
+        "words_total": 0,
+        "words_kept": 0,
+        "words_cut": 0,
+        "transcript_words": [],
+        "word_corrections": [],
+        "videos": [],
+        "video_shapes": {},
+        "feedback_exists": False,
+        "comments": [],
+        "overall_feedback": [],
+        "edit_spans": [],
+        "front_door": dict(FRONT_DOOR_DEFAULTS),
+        "beta": {
+            "flips": 0,
+            "settled": 0,
+            "matched": 0,
+            "recent_calls": 0,
+            "line": None,
+        },
+        "saved_rules": [],
+        "rule_suggestions": [],
+        "meta_available": bool(config.signin_key()),
+        "render_missing": ["render_py", "source_video", "cleaned_wav"],
+        "render_ready": False,
+        "render_message": NO_JOB_MESSAGE,
+    }
+
+
 def _job_summary(config: WebAppConfig) -> dict:
+    if not config.has_job:
+        return _no_job_summary(config)
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     # The headline counts describe the edit as the session currently
     # has it, not as the job originally shipped: once anything has
@@ -1047,6 +1146,7 @@ def _job_summary(config: WebAppConfig) -> dict:
                 ]
             overall_feedback = _overall_notes(payload)
     return {
+        "has_job": True,
         "job_name": config.job_dir.name,
         "source_duration_s": timeline.source_duration,
         "output_duration_s": round(timeline.output_duration, 4),
@@ -2461,6 +2561,29 @@ def _detect_intake(base: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# POST routes that work on the loaded job. With no job loaded they
+# are refused with NO_JOB_MESSAGE before any handler runs. Intake,
+# the sample load, and the sign-in routes stay open at the front
+# door: they are how a job (or a sign-in) arrives in the first place.
+_JOB_REQUIRED_POSTS = frozenset({
+    "/api/comments",
+    "/api/direct",
+    "/api/front-door",
+    "/api/edit-note",
+    "/api/grades",
+    "/api/rule-save",
+    "/api/rule-dismiss",
+    "/api/rule-remove",
+    "/api/word-toggle",
+    "/api/edit-action",
+    "/api/word-correct",
+    "/api/word-correct-remove",
+    "/api/render",
+    "/api/history/undo",
+    "/api/history/redo",
+})
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "TalkToYourEditor/0.2"
     protocol_version = "HTTP/1.1"
@@ -2594,6 +2717,9 @@ class _Handler(BaseHTTPRequestHandler):
                     200, {"ok": True, **checkpoints.state(self.config)}
                 )
             elif path.startswith("/video/"):
+                if not self.config.has_job:
+                    self._error(404, "no job is loaded yet")
+                    return
                 self._serve_video(path[len("/video/"):])
             elif path == "/after-review":
                 self._serve_after_review()
@@ -2601,7 +2727,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._serve_intake_video(path[len("/api/intake/video/"):])
             elif path.startswith("/api/download/"):
                 self._serve_download(path[len("/api/download/"):])
-            elif (
+            elif self.config.has_job and (
                 path[1:] in _job_videos(self.config.job_dir)
                 or path[1:] == SESSION_VIDEO_NAME
             ):
@@ -2617,7 +2743,18 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802 - stdlib name
         path = unquote(urlsplit(self.path).path)
-        if path == "/api/intake/begin":
+        if (
+            path in _JOB_REQUIRED_POSTS
+            and not self.config.has_job
+        ):
+            # The front door is open but nothing is loaded: anything
+            # that works on a job gets one plain sentence, never a
+            # crash or a machine error.
+            self._error(400, NO_JOB_MESSAGE)
+            return
+        if path == "/api/load-sample":
+            self._post_load_sample()
+        elif path == "/api/intake/begin":
             self._post_intake_begin()
         elif path == "/api/intake/file":
             self._post_intake_file()
@@ -2669,7 +2806,7 @@ class _Handler(BaseHTTPRequestHandler):
             / "test_app.html"
         )
         page = template_path.read_text(encoding="utf-8")
-        job_name = self.config.job_dir.name
+        job_name = self.config.job_label()
         summary = None
         try:
             summary = _job_summary(self.config)
@@ -2681,8 +2818,25 @@ class _Handler(BaseHTTPRequestHandler):
             videos = summary["videos"]
             primary_video = videos[0] if videos else None
             meta_available = summary["meta_available"]
+        if self.config.has_job:
+            subtitle = (
+                f"Test session for {job_name}. Watch the edit, pin a "
+                "comment where something needs to change, then run "
+                "direction and see exactly what the program did "
+                "about each note."
+            )
+        else:
+            subtitle = (
+                "No job is loaded yet. Drop a runner job folder "
+                "below, or try the built-in sample, and the app "
+                "runs on it."
+            )
+        page = page.replace("{{SUBTITLE}}", html.escape(subtitle))
         page = page.replace("{{JOB_NAME}}", html.escape(job_name))
         page = page.replace("{{JOB_NAME_JSON}}", json.dumps(job_name))
+        page = page.replace(
+            "{{HAS_JOB_JSON}}", json.dumps(self.config.has_job)
+        )
         page = page.replace("{{VIDEO_JSON}}", json.dumps(primary_video))
         page = page.replace(
             "{{META_AVAILABLE_JSON}}", json.dumps(meta_available)
@@ -2808,6 +2962,54 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- POST handlers ----------------------------------------------------
 
+    def _become_job(self, job_root: Path) -> None:
+        """Swap the server onto a job folder that just arrived.
+
+        The session sign-in carries over, and so does the launch
+        home, so the intake anchor and the sample staging stay in
+        the one place the launch put them.
+        """
+        new_config = WebAppConfig(
+            job_root, launch_home=self.config.launch_home
+        )
+        new_config.session_api_key = self.config.session_api_key
+        self.server.config = new_config  # type: ignore[attr-defined]
+
+    def _post_load_sample(self) -> None:
+        """Load the built-in sample job with one click.
+
+        The sample ships inside the app; it is staged as a folder
+        in the launch home and becomes the current job, exactly as
+        if its folder had been dropped. The page reloads onto it.
+        """
+        source = Path(__file__).resolve().parent / "sample_job"
+        target = self.config.launch_home / SAMPLE_JOB_DIR_NAME
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            for name in SAMPLE_JOB_FILES:
+                shutil.copyfile(source / name, target / name)
+        except OSError as exc:
+            _log_raw_error("load sample", exc)
+            self._error(
+                500,
+                "The built-in sample could not be loaded. Drop a "
+                "job folder instead, or try again in a moment.",
+            )
+            return
+        self._become_job(target)
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "kind": "job",
+                "job_name": target.name,
+                "message": (
+                    "The built-in sample is loaded. The page will "
+                    "reload on it."
+                ),
+            },
+        )
+
     def _post_intake_begin(self) -> None:
         """Open a staging folder for one drop and hand back its id.
 
@@ -2925,9 +3127,7 @@ class _Handler(BaseHTTPRequestHandler):
         kind = detected["kind"]
         if kind == "job":
             job_root = detected["job_root"]
-            new_config = WebAppConfig(job_root)
-            new_config.session_api_key = self.config.session_api_key
-            self.server.config = new_config  # type: ignore[attr-defined]
+            self._become_job(job_root)
             self._send_json(
                 200,
                 {
@@ -3773,41 +3973,91 @@ def _lan_ip() -> Optional[str]:
         sock.close()
 
 
+def _default_launch_home() -> Path:
+    """The launch home when nobody names one: the folder the app
+    already keeps beside the user's sign-in key file."""
+    return Path.home() / ".talk-to-your-editor" / "launch-home"
+
+
 def serve(
-    job_dir: str,
+    job_dir: Optional[str] = None,
     host: str = "0.0.0.0",
     port: int = 8765,
     render_py: Optional[str] = None,
     source_video: Optional[str] = None,
     cleaned_wav: Optional[str] = None,
+    launch_home: Optional[str] = None,
 ) -> int:
-    job = Path(job_dir)
-    if job.is_file():
-        # A video file is the mistake everyone makes first; say what
-        # was handed over and what the app actually runs on, plainly.
+    """Run the test app, with a job loaded or with none.
+
+    With no job the server still opens: the home page is the front
+    door (drop zone, built-in sample, sign-in check), and the
+    launch home holds the session and the staged drops until a job
+    arrives. With a job, everything behaves as it always has.
+    """
+    home = Path(launch_home) if launch_home else _default_launch_home()
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+    except OSError:
         print(
-            f"error: {job} is a file, not a folder. Talk to Your "
-            "Editor runs on a runner job folder (the folder holding "
-            "transcript.json and cuts.json), not on a video file.",
+            f"error: the launch folder could not be made: {home}",
             file=sys.stderr,
         )
         return 2
-    if not job.is_dir():
-        print(f"error: job folder not found: {job}", file=sys.stderr)
-        return 2
-    for required in ("transcript.json", "cuts.json"):
-        if not (job / required).is_file():
-            print(f"error: {job / required} not found", file=sys.stderr)
+    config: WebAppConfig
+    if job_dir is None:
+        config = WebAppConfig(None, launch_home=home)
+    else:
+        job = Path(job_dir)
+        if job.is_file():
+            # A video file is the mistake everyone makes first; say
+            # what was handed over and what the app actually runs
+            # on, plainly.
+            print(
+                f"error: {job} is a file, not a folder. Talk to Your "
+                "Editor runs on a runner job folder (the folder "
+                "holding transcript.json and cuts.json), not on a "
+                "video file. Or start with no job and drop the "
+                "folder on the page.",
+                file=sys.stderr,
+            )
             return 2
-    config = WebAppConfig(
-        job,
-        render_py=render_py,
-        source_video=source_video,
-        cleaned_wav=cleaned_wav,
-    )
+        if not job.is_dir():
+            print(
+                f"error: job folder not found: {job}", file=sys.stderr
+            )
+            return 2
+        for required in ("transcript.json", "cuts.json"):
+            if not (job / required).is_file():
+                print(
+                    f"error: {job / required} not found",
+                    file=sys.stderr,
+                )
+                return 2
+        config = WebAppConfig(
+            job,
+            render_py=render_py,
+            source_video=source_video,
+            cleaned_wav=cleaned_wav,
+            launch_home=home,
+        )
     httpd = create_server(config, host=host, port=port)
     actual_port = httpd.server_address[1]
-    print(f"Talk to Your Editor test app, job: {job}", flush=True)
+    if config.has_job:
+        print(
+            f"Talk to Your Editor test app, job: {config.job_dir}",
+            flush=True,
+        )
+    else:
+        print(
+            "Talk to Your Editor test app, no job loaded yet.",
+            flush=True,
+        )
+        print(
+            "Drop a runner job folder on the page, or try the "
+            "built-in sample.",
+            flush=True,
+        )
     print(f"On this computer: http://127.0.0.1:{actual_port}/", flush=True)
     lan = _lan_ip()
     if lan:
@@ -3816,13 +4066,13 @@ def serve(
         "Your phone must be on the same Wi-Fi as this computer.",
         flush=True,
     )
-    if config.render_missing():
+    if config.has_job and config.render_missing():
         print(
             config.render_message()
             + " Direction still works; rendering is off.",
             flush=True,
         )
-    elif config.render_autowired:
+    elif config.has_job and config.render_autowired:
         print(config.render_message(), flush=True)
     try:
         httpd.serve_forever()

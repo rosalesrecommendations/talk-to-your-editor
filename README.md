@@ -100,8 +100,10 @@ Rendering the revised plan is done by the editing runner's own render stage, whi
 Version 0.2 adds a local web test app so a creator can run the whole loop in a browser, no terminal after launch:
 
 ```bash
-tye serve --job-dir /path/to/runner-job
+tye serve
 ```
+
+The app opens with no job loaded: the home page is the front door (drop zone, a one-click built-in sample, and the Meta sign-in check), and a job folder dropped on the page becomes the current job on the spot. `tye serve --job-dir /path/to/runner-job` still starts on a job directly.
 
 The job folder is a runner export (transcript.json and cuts.json, plus the finished video when there is one). The server prints a localhost address for the computer and a LAN address for a phone on the same Wi-Fi. A job folder can also be dropped straight onto the page: the app stages a copy under the session's intake folder and switches to it on the spot, no path typing, and a lone dropped video stages and plays with a plain note about what a full edit still needs. In the page you watch the finished edit, pin comments at the current time, run direction (offline mock, or live Muse Spark and Wonder when MODEL_API_KEY is set in the server environment), read the applied and flagged results with before and after counts, download the revised plan and audit, and open the after-review page to grade the changes. Session files land in a `tye-session/` folder inside the job folder; the original transcript and plan are never modified. An optional render step (`--render-py`, `--source`, `--cleaned-wav`) renders the revised review through the runner's own render stage; when a piece is missing, the app says which piece, in plain words.
 

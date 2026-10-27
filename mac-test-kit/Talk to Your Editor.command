@@ -4,6 +4,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PORT="8765"
+LAUNCH_HOME="$REPO_ROOT/.launch-home"
 
 fail() {
   printf '\nTalk to Your Editor could not start.\n%s\n' "$1"
@@ -35,79 +36,55 @@ printf '\n'
 
 printf 'Quick map: the runner is part 1. It makes the first edit and gives you a job folder.\n'
 printf 'This app is part 2: you watch that edit here and direct the fixes.\n\n'
-printf 'Paste the runner job folder path, or press Enter for the built-in sample: '
-IFS= read -r JOB_DIR || true
 
-# Dragging a folder into Terminal can add edge spaces and escape inner spaces.
-while [ "$JOB_DIR" != "${JOB_DIR% }" ]; do JOB_DIR="${JOB_DIR% }"; done
-while [ "$JOB_DIR" != "${JOB_DIR# }" ]; do JOB_DIR="${JOB_DIR# }"; done
+# Optional: a job folder path as the launcher's first argument starts
+# the app on that job, the way it always has. With no argument the
+# app opens with no job loaded, and the page takes the job in.
+JOB_DIR="${1:-}"
+if [ -n "$JOB_DIR" ]; then
+  # Dragging a folder onto this launcher can add edge spaces and
+  # escape inner spaces; a Finder path may arrive wrapped in quotes.
+  while [ "$JOB_DIR" != "${JOB_DIR% }" ]; do JOB_DIR="${JOB_DIR% }"; done
+  while [ "$JOB_DIR" != "${JOB_DIR# }" ]; do JOB_DIR="${JOB_DIR# }"; done
+  case "$JOB_DIR" in
+    \"*\") JOB_DIR="${JOB_DIR#\"}"; JOB_DIR="${JOB_DIR%\"}" ;;
+    \'*\') JOB_DIR="${JOB_DIR#\'}"; JOB_DIR="${JOB_DIR%\'}" ;;
+  esac
+  JOB_DIR="${JOB_DIR//\\ / }"
 
-# A path pasted from Finder may arrive wrapped in quotes. Remove one pair.
-case "$JOB_DIR" in
-  \"*\") JOB_DIR="${JOB_DIR#\"}"; JOB_DIR="${JOB_DIR%\"}" ;;
-  \'*\') JOB_DIR="${JOB_DIR#\'}"; JOB_DIR="${JOB_DIR%\'}" ;;
-esac
-JOB_DIR="${JOB_DIR//\\ / }"
-
-if [ -z "$JOB_DIR" ]; then
-  JOB_DIR="$REPO_ROOT/.sample-job"
-  mkdir -p "$JOB_DIR"
-  cp "$REPO_ROOT/tests/fixtures/sample_transcript.json" "$JOB_DIR/transcript.json"
-  cp "$REPO_ROOT/tests/fixtures/sample_cuts.json" "$JOB_DIR/cuts.json"
-  cp "$REPO_ROOT/tests/fixtures/sample_profile.json" "$JOB_DIR/profile.json"
-  cp "$REPO_ROOT/tests/fixtures/sample_feedback.json" "$JOB_DIR/feedback.json"
-  printf 'Using the built-in sample job.\n'
+  if [ -f "$JOB_DIR" ]; then
+    fail "That is a file, not a folder: $JOB_DIR. This app (part 2) runs on the runner job folder itself, the folder that holds transcript.json and cuts.json, not on the video file. Or start the app with no argument and drop the folder on the page."
+  fi
+  if [ ! -d "$JOB_DIR" ]; then
+    fail "That job folder does not exist: $JOB_DIR"
+  fi
+  if [ ! -f "$JOB_DIR/transcript.json" ] || [ ! -f "$JOB_DIR/cuts.json" ]; then
+    fail "That folder is not a complete runner job folder. It must contain transcript.json and cuts.json."
+  fi
+  printf 'Starting on this job folder: %s\n\n' "$JOB_DIR"
 else
-  printf 'Using this job folder: %s\n' "$JOB_DIR"
+  printf 'The app opens with no job loaded. Drop a runner job folder on the page,\n'
+  printf 'or try the built-in sample. Nothing to paste here.\n\n'
 fi
 
-if [ -f "$JOB_DIR" ]; then
-  fail "That is a file, not a folder: $JOB_DIR. This app (part 2) runs on the runner job folder itself, the folder that holds transcript.json and cuts.json, not on the video file."
-fi
-if [ ! -d "$JOB_DIR" ]; then
-  fail "That job folder does not exist: $JOB_DIR"
-fi
-if [ ! -f "$JOB_DIR/transcript.json" ] || [ ! -f "$JOB_DIR/cuts.json" ]; then
-  fail "That folder is not a complete runner job folder. It must contain transcript.json and cuts.json."
-fi
-
+# A Meta key saved on this Mac is used without asking, as before.
+# There is no key prompt anymore: with no saved key the app runs the
+# offline mock, and a key can be pasted on the page for the session.
 KEY_DIR="$HOME/.talk-to-your-editor"
 KEY_FILE="$KEY_DIR/meta_key"
-MODEL_API_KEY_INPUT=""
 if [ -s "$KEY_FILE" ]; then
-  IFS= read -r MODEL_API_KEY_INPUT < "$KEY_FILE" || true
-  if [ -n "$MODEL_API_KEY_INPUT" ]; then
-    export MODEL_API_KEY="$MODEL_API_KEY_INPUT"
-    printf 'Using the saved Meta Model API key from this Mac. Live Muse direction is on.\n'
+  IFS= read -r SAVED_KEY < "$KEY_FILE" || true
+  if [ -n "$SAVED_KEY" ]; then
+    export MODEL_API_KEY="$SAVED_KEY"
+    printf 'Using the saved Meta Model API key from this Mac. Live Muse direction is on.\n\n'
   fi
+  unset SAVED_KEY
 fi
-if [ -z "$MODEL_API_KEY_INPUT" ]; then
-  printf 'Optional: paste your Meta Model API key to use live Muse direction, or press Enter for the offline mock: '
-  IFS= read -r -s MODEL_API_KEY_INPUT || true
-  printf '\n'
-  if [ -n "$MODEL_API_KEY_INPUT" ]; then
-    export MODEL_API_KEY="$MODEL_API_KEY_INPUT"
-    printf 'Remember this key on this Mac only? It is saved in a private file in your home folder, never in the app or the repo. [y/N] '
-    IFS= read -r REMEMBER_KEY || true
-    case "$REMEMBER_KEY" in
-      y|Y|yes|Yes|YES)
-        if mkdir -p "$KEY_DIR" && chmod 700 "$KEY_DIR" && printf '%s\n' "$MODEL_API_KEY_INPUT" > "$KEY_FILE" && chmod 600 "$KEY_FILE"; then
-          printf 'Saved on this Mac only. Future launches will use it without asking.\n'
-        else
-          printf 'The key could not be saved, so it is on for this session only.\n'
-        fi
-        ;;
-      *)
-        printf 'Live Muse direction is on for this session only. The key was not saved.\n'
-        ;;
-    esac
-    unset REMEMBER_KEY
-  else
-    unset MODEL_API_KEY || true
-    printf 'Offline mock direction is on.\n'
-  fi
+if [ -z "${MODEL_API_KEY:-}" ]; then
+  printf 'Offline mock direction is on. To use live Muse direction, paste your\n'
+  printf 'Meta Model API key in the sign-in box on the page; it is kept for the\n'
+  printf 'session only and never saved to a file.\n\n'
 fi
-unset MODEL_API_KEY_INPUT
 
 LOCAL_URL="http://127.0.0.1:$PORT"
 LAN_IP=""
@@ -118,7 +95,7 @@ if command -v ipconfig >/dev/null 2>&1; then
   fi
 fi
 
-printf '\nOpen Talk to Your Editor here on this Mac:\n  %s\n' "$LOCAL_URL"
+printf 'Open Talk to Your Editor here on this Mac:\n  %s\n' "$LOCAL_URL"
 if [ -n "$LAN_IP" ]; then
   printf '\nTo test on your phone, connect the phone to the same Wi-Fi as this Mac and open:\n  http://%s:%s\n' "$LAN_IP" "$PORT"
 else
@@ -131,4 +108,8 @@ if command -v open >/dev/null 2>&1; then
   open "$LOCAL_URL" >/dev/null 2>&1 || true
 fi
 
-exec tye serve --job-dir "$JOB_DIR" --host 0.0.0.0 --port "$PORT"
+if [ -n "$JOB_DIR" ]; then
+  exec tye serve --job-dir "$JOB_DIR" --launch-home "$LAUNCH_HOME" --host 0.0.0.0 --port "$PORT"
+else
+  exec tye serve --launch-home "$LAUNCH_HOME" --host 0.0.0.0 --port "$PORT"
+fi

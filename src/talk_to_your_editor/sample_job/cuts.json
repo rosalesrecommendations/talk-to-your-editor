@@ -1,0 +1,79 @@
+{
+  "gap_seconds_setting": 0.2,
+  "source_duration_s": 26.5,
+  "output_duration_s": 19.8,
+  "words_total": 40,
+  "words_cut": 8,
+  "frame_quantization": {
+    "fps": 30.0,
+    "ranges": 6,
+    "repairs": 0
+  },
+  "join_pauses_s": [
+    0.1,
+    0.3,
+    0.2,
+    0.0,
+    0.1
+  ],
+  "kept_ranges": [
+    {
+      "start": 0.8,
+      "end": 5.7
+    },
+    {
+      "start": 6.1667,
+      "end": 6.4667,
+      "audio_start": 6.1667,
+      "audio_end": 6.4667,
+      "insert_kind": "signature_breath_gasp",
+      "video_source": "source_window"
+    },
+    {
+      "start": 10.3,
+      "end": 15.3
+    },
+    {
+      "start": 15.7,
+      "end": 20.6
+    },
+    {
+      "start": 20.6,
+      "end": 23.6
+    },
+    {
+      "start": 23.7,
+      "end": 25.4
+    }
+  ],
+  "curation": {
+    "applied": 1,
+    "holds": [
+      {
+        "word_start": 24,
+        "word_end": 31,
+        "text": "Lord, we thank you for this day. Amen.",
+        "rule": "prayer protection: never cut the prayer"
+      }
+    ]
+  },
+  "signature": {
+    "breath": {
+      "kind": "insert",
+      "source": [
+        6.1667,
+        6.4667
+      ]
+    },
+    "beat": null
+  },
+  "post_edits": [
+    {
+      "kind": "signature_breath_insert",
+      "placed_between_words": [
+        31,
+        32
+      ]
+    }
+  ]
+}

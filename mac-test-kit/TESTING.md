@@ -28,41 +28,37 @@ If macOS blocks the first launch because it is from an unidentified developer:
 
 You should only need that right-click step once.
 
-### 2. Start with the built-in sample
+### 2. The app opens empty. Drop the folder.
 
-When Terminal asks:
+There are no Terminal questions anymore. Nothing asks for a path, and nothing asks for a key. The launcher opens your browser on the app, and the app opens with **no job loaded**: the page is the front door.
 
-```text
-Paste the runner job folder path, or press Enter for the built-in sample:
-```
-
-Press **Enter**.
-
-When it asks for a Meta Model API key, press **Enter** again. That uses the offline mock, so you can learn the flow without spending anything or depending on the network. (If you saved a key on this Mac earlier, the launcher skips that question and uses the saved key; see "Remembering your key on this Mac" below.)
-
-Your browser should open Talk to Your Editor. If it does not, open the Mac address printed in Terminal. It will look like this:
+If the browser does not open on its own, open the Mac address printed in Terminal. It will look like this:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-Keep the Terminal window open. Closing it stops the app.
+Keep the Terminal window open. Closing it stops the app. You never need to type into it.
 
-### Bring in a job by dropping it (new)
+The front door holds three things: the **Bring in a job** card, one quiet line offering the **built-in sample**, and the **Meta sign-in** card. Everything else on the page waits out of sight until a job arrives.
 
-You do not have to restart the app or paste a path to change jobs. The page itself takes a job in.
+**Start here: drop your job folder.**
 
 1. Open Finder to the runner job folder you want to test.
 2. Drag the folder onto the app page. Anywhere on the page works; the **Bring in a job** card at the top lights up while you drag. Let go.
-3. The card reports progress in plain words: how many files, and each file as it arrives. When the folder is in, the page reloads and the whole app, video, transcript, counts, is now running on that job. You are testing the dropped job, no restart needed.
-4. The app works on **the copy it took in**, staged under the first job's `tye-session/intake` folder. Your original folder is never changed. Notes, runs, and grades for the dropped job live in the dropped copy's own `tye-session`, just as they would if you had launched with its path.
+3. The card reports progress in plain words: how many files, and each file as it arrives. When the folder is in, the page reloads and the whole app, video, transcript, counts, is now running on that job.
+4. The app works on **the copy it took in**. When the app was opened with no job, drops are staged in a `.launch-home` folder beside the app; when it was started on a job, they are staged under that job's `tye-session/intake` folder. Either way your original folder is never changed. Notes, runs, and grades for the dropped job live in the dropped copy's own `tye-session`, just as they would anywhere.
+
+**Or start with the built-in sample.** Click **Try the built-in sample** on the Bring in a job card. The sample loads on the spot, no drop needed. It uses the offline mock, so you can learn the flow without spending anything or depending on the network. (If you saved a Meta key on this Mac with an earlier version, the launcher still uses it without asking; see "Your Meta key" below.)
 
 Two more drop shapes to try:
 
 - **Drop a single video file** (an .mp4 or .mov on its own). It stages and plays right in the Bring in a job card. The card says what a full edit still needs: the word-by-word transcript and the edit plan that part 1, the runner, makes. A video alone cannot be directed, and the app says so instead of failing.
-- **Drop a folder that is not a job** (a folder of photos, say). The card says plainly that it is not a finished-edit job, names the two files a job folder carries, and confirms nothing was loaded. Your current job keeps running untouched.
+- **Drop a folder that is not a job** (a folder of photos, say). The card says plainly that it is not a finished-edit job, names the two files a job folder carries, and confirms nothing was loaded. Your current job, if you have one, keeps running untouched.
 
 If dragging is awkward, the card's **choose a folder** and **choose files** buttons bring in the same things the picking way.
+
+You can change jobs at any time: drop a different folder and the app reloads on it. No restart, no path.
 
 Things worth noticing while you test this: whether the progress wording keeps up with a big folder, whether the reload lands you where you expect, and whether the staged copy behaving like a launched job feels seamless or surprising anywhere.
 
@@ -167,46 +163,36 @@ At the bottom of the page is a **History** card. Every change in this session is
 
 Try it once: make a small change you do not care about, undo it, then redo it. The page, the transcript, and the results should all follow.
 
-### Remembering your key on this Mac
+### Your Meta key
 
-Live Muse direction uses your Meta Model API key. There are two ways to give it:
+Live Muse direction uses your Meta Model API key. The launcher never asks for it anymore.
 
-- **In the launcher:** paste the key at the hidden prompt. After you paste it once, the launcher asks:
+- **A key saved by an earlier version still works.** If you once answered yes to remembering a key on this Mac, it sits in `~/.talk-to-your-editor/meta_key` (folder and file readable only by your account), and the launcher uses it without asking. It never enters the app folder, the kit, the zip, or the project files. Delete that one file and the app goes back to the offline mock at launch.
+- **On the page:** the Meta sign-in card (the Run direction card once a job is loaded) shows whether a sign-in is set. Paste a key there and it is kept for that session only, never written to disk, and never shown back. Press **Check the Meta sign-in** before a live run; it makes one harmless call and tells you in plain words whether the sign-in was accepted.
 
-```text
-Remember this key on this Mac only? It is saved in a private file in your home folder, never in the app or the repo. [y/N]
-```
-
-Answer **y** and it is saved on this Mac only, in `~/.talk-to-your-editor/meta_key` (folder and file readable only by your account). It never enters the app folder, the kit, the zip, or the project files. Later launches use it without asking. Delete that one file to go back to being asked each time.
-
-- **On the page:** the Run direction card shows whether a sign-in is set. You can paste a key there instead; it is kept for that session only, never written to disk, and never shown back. Press **Check the Meta sign-in** before a live run; it makes one harmless call and tells you in plain words whether the sign-in was accepted.
-
-Never paste the key into chat. The launcher prompt and the page's sign-in field are the places it belongs.
+Never paste the key into chat. The page's sign-in field is the place it belongs.
 
 ## Test with a real runner job
 
-The shortest route is now drag and drop: launch with the sample, then drop the real job folder onto the page (see "Bring in a job by dropping it" above). The app reloads on the dropped job and you are testing it.
+Open the app, then drop the real job folder onto the page (see "The app opens empty. Drop the folder." above). The app reloads on the dropped job and you are testing it. That is the whole route.
 
-The older route still works too: quit the app and launch it again, pasting the job's path at the prompt.
+The older route still works for anyone who wants it: drag the job folder onto the **launcher file itself** in Finder before it opens, and the app starts on that job directly. You never have to do this; dropping on the page lands in the same place.
 
-### Which folder to paste
+### Which folder to drop
 
-Paste the **runner job or export folder itself**, not a single file inside it.
+Drop the **runner job or export folder itself**, not a single file inside it.
 
-**Finder drag trick:** open the folder's parent in Finder, then drag the job folder straight into the Terminal window at the prompt. Its full path is pasted for you; just press **Enter**.
-
-The right folder contains `transcript.json` and `cuts.json` together. It may also contain `profile.json`, `feedback.json`, `review.mp4` or `final.mp4`, and other files from the runner export. If you only see the video, or a folder full of other job folders, you are one level too high or too low.
+The right folder contains `transcript.json` and `cuts.json` together. It may also contain `profile.json`, `feedback.json`, `review.mp4` or `final.mp4`, and other files from the runner export. If you only see the video, or a folder full of other job folders, you are one level too high or too low. Drop the wrong thing and the page says so, plainly, and loads nothing.
 
 ### Real-job pass
 
-1. Paste the full folder path at the launcher prompt.
-2. Press **Enter** at the API key prompt for the mock, unless this run is meant to test live Muse.
-3. Press **Make the edit** with the two choices on and watch what the front door does on its own.
-4. Pin a comment or two in your own words where the front door did not cover it. Do not aim for exact times.
-5. Run it again and check every status and reason.
-6. Open the transcript, click a dot, and leave a note on one edit.
-7. Build the fixed video, grade the changes, mark one "This is my style" if it earns it, and send the grades to the app.
-8. Check the **Your style** card for the rule it offers.
+1. Drop the job folder on the page.
+2. Press **Make the edit** with the two choices on and watch what the front door does on its own.
+3. Pin a comment or two in your own words where the front door did not cover it. Do not aim for exact times.
+4. Run it again and check every status and reason.
+5. Open the transcript, click a dot, and leave a note on one edit.
+6. Build the fixed video, grade the changes, mark one "This is my style" if it earns it, and send the grades to the app.
+7. Check the **Your style** card for the rule it offers.
 
 For a live run, repeat the same job later with the key. Comparing mock and live on the same comments makes differences easy to spot.
 
@@ -236,7 +222,7 @@ If the phone cannot load the page, first check that both devices are on the same
 
 Close the Terminal window, or click into it and press **Control-C**.
 
-To test again, double-click the launcher again. You will choose the sample or a job folder each time.
+To test again, double-click the launcher again. The app opens empty each time; drop the job folder, or click the built-in sample.
 
 ## What to report back
 

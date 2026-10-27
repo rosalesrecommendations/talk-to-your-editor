@@ -260,6 +260,7 @@ def cmd_serve(args) -> int:
         render_py=args.render_py,
         source_video=args.source,
         cleaned_wav=args.cleaned_wav,
+        launch_home=args.launch_home,
     )
 
 
@@ -347,7 +348,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_after_review)
 
     p = sub.add_parser("serve")
-    p.add_argument("--job-dir", required=True)
+    p.add_argument(
+        "--job-dir",
+        help="start on this runner job folder; without it the app "
+        "opens with no job loaded and takes one in on the page",
+    )
+    p.add_argument(
+        "--launch-home",
+        help="the folder the launch owns for its session, staged "
+        "drops, and the built-in sample (default: a folder in "
+        "~/.talk-to-your-editor)",
+    )
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--render-py")

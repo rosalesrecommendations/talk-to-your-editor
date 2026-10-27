@@ -1,0 +1,36 @@
+{
+  "video": "sample-video",
+  "runner_version": "1.3.3",
+  "exported_at": "2026-10-26T17:00:00Z",
+  "feedback_done": true,
+  "comments": [
+    {
+      "id": "c1",
+      "ts": 6.0,
+      "fmt": "vertical",
+      "done": false,
+      "text": "Remove this repeated line, we already said it."
+    },
+    {
+      "id": "c2",
+      "ts": 12.2,
+      "fmt": "vertical",
+      "done": false,
+      "text": "Cut this part out please."
+    },
+    {
+      "id": "c3",
+      "ts": 16.4,
+      "fmt": "vertical",
+      "done": false,
+      "text": "Remove this bit here."
+    },
+    {
+      "id": "c4",
+      "ts": 10.0,
+      "fmt": "vertical",
+      "done": false,
+      "text": "Make the pause here longer, 0.4 seconds please."
+    }
+  ]
+}

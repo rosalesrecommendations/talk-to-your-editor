@@ -55,6 +55,9 @@
     margin: 0 0 20px;
   }
   .note { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 8px 0 0; }
+  /* With no job loaded the page is the front door: everything that
+     works on a job waits out of sight until one arrives. */
+  body.no-job .job-only { display: none !important; }
   video {
     width: 100%;
     border-radius: 20px;
@@ -501,7 +504,7 @@
 <body>
 <main>
   <h1>Talk to Your Editor</h1>
-  <p class="subtitle">Test session for {{JOB_NAME}}. Watch the edit, pin a comment where something needs to change, then run direction and see exactly what the program did about each note.</p>
+  <p class="subtitle">{{SUBTITLE}}</p>
 
   <div class="card" id="dropCard">
     <h2>Bring in a job</h2>
@@ -516,36 +519,37 @@
     <div id="dropVideoWrap" hidden>
       <video id="dropVideo" controls playsinline preload="metadata"></video>
     </div>
+    <p class="note" id="sampleRow">Just looking around? <button id="loadSample" type="button">Try the built-in sample</button> <span id="sampleStatus"></span></p>
   </div>
 
-  <div class="card" id="novid" hidden>
+  <div class="card job-only" id="novid" hidden>
     <h2>No video in this job folder</h2>
     <p class="note">There is no video file here (mp4, mov, or m4v), so there is nothing to play. You can still pin comments by typing a time in seconds.</p>
   </div>
 
-  <div class="vid-wrap" id="vidWrap">
+  <div class="vid-wrap job-only" id="vidWrap">
     <video id="vid" controls playsinline preload="metadata"></video>
     <div class="vid-loading" id="vidLoading" hidden>Loading the video…</div>
     <div class="vid-error" id="vidError" hidden>This video could not be played here; the file may be in a format this browser cannot show.</div>
   </div>
-  <div class="tl-wrap" id="tlbar">
+  <div class="tl-wrap job-only" id="tlbar">
     <div class="tl-track" id="tlTrack">
       <div id="tlDots"></div>
       <div class="tl-playhead" id="tlPlayhead" style="left: 0%"></div>
       <div class="tl-bubble" id="tlBubble" hidden></div>
     </div>
   </div>
-  <div class="row">
+  <div class="row job-only">
     <button id="btnV" class="on" type="button">Vertical (9:16)</button>
     <button id="btnL" type="button">Landscape (16:9)</button>
     <button id="back5" type="button">Back 5s</button>
     <button id="back1" type="button">Back 1s</button>
     <span class="clock">Now at <b id="clock">0:00.0</b></span>
   </div>
-  <p class="note" id="fmtNote" hidden></p>
-  <p class="note" id="shortcutLine"><span>Shortcuts: Space play or pause · K pause · J back 5 seconds · L forward 5 seconds · ←/→ step 1 second · Shift+←/→ step 5 seconds · M pin a note here.</span><label class="switch"><input type="checkbox" id="shortcutToggle" checked> Keyboard shortcuts</label></p>
+  <p class="note job-only" id="fmtNote" hidden></p>
+  <p class="note job-only" id="shortcutLine"><span>Shortcuts: Space play or pause · K pause · J back 5 seconds · L forward 5 seconds · ←/→ step 1 second · Shift+←/→ step 5 seconds · M pin a note here.</span><label class="switch"><input type="checkbox" id="shortcutToggle" checked> Keyboard shortcuts</label></p>
 
-  <div class="card">
+  <div class="card job-only">
     <h2>Make the edit</h2>
     <p class="note">Two choices, on unless you turn them off. Set them while you watch, then make the edit.</p>
     <div>
@@ -588,7 +592,7 @@
     </details>
   </div>
 
-  <div class="card">
+  <div class="card job-only">
     <h2>Pin a comment</h2>
     <div class="row">
       <button id="pin" class="primary" type="button">Comment at current time</button>
@@ -608,9 +612,9 @@
     <p class="status-line" id="saveStatus"></p>
   </div>
 
-  <section id="list"></section>
+  <section id="list" class="job-only"></section>
 
-  <div class="card">
+  <div class="card job-only">
     <h2>Overall feedback</h2>
     <p class="note">Notes about the whole video, not tied to a moment, like "too many retakes in this one." Overall notes go along with every direction run, for both formats.</p>
     <textarea id="overallDraft" rows="2" placeholder="What applies to the whole video?"></textarea>
@@ -621,7 +625,7 @@
     <section id="overallList"></section>
   </div>
 
-  <div class="card">
+  <div class="card job-only">
     <h2>Your style</h2>
     <p class="note">Rules you save here ride into every run as standing direction. Nothing is saved without your yes.</p>
     <div id="ruleSuggestions"></div>
@@ -629,7 +633,7 @@
     <p class="empty" id="rulesEmpty">No saved rules yet. When a kind of change keeps working, you will be offered it here as a rule.</p>
   </div>
 
-  <div class="card" id="transcriptCard">
+  <div class="card job-only" id="transcriptCard">
     <h2>Transcript</h2>
     <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Click a word to cut it, or click a struck word to bring it back. Every click passes the same safety check as a direction change.</p>
     <p class="transcript" id="transcriptWords"></p>
@@ -672,10 +676,10 @@
     </div>
   </div>
 
-  <div class="card">
-    <h2>Run direction</h2>
-    <p class="note">Muse Spark proposes the edits, Muse Wonder reviews the risky ones, and the safety verifier decides what may change. Mock is a deterministic stand-in for trying the loop offline.</p>
-    <div class="row">
+  <div class="card" id="directionCard">
+    <h2 id="directionTitle">Run direction</h2>
+    <p class="note job-only">Muse Spark proposes the edits, Muse Wonder reviews the risky ones, and the safety verifier decides what may change. Mock is a deterministic stand-in for trying the loop offline.</p>
+    <div class="row job-only">
       <select id="provider">
         <option value="mock">Mock (offline)</option>
         <option value="meta" id="metaOption">Meta (Muse Spark / Wonder)</option>
@@ -692,11 +696,11 @@
     </div>
     <p class="note">A pasted key is kept in memory only. It is never saved to a file, never shown back, and it is gone when the server stops.</p>
     <p class="status-line" id="signinStatus"></p>
-    <p class="status-line" id="directStatus"></p>
-    <div id="results"></div>
+    <p class="status-line job-only" id="directStatus"></p>
+    <div id="results" class="job-only"></div>
   </div>
 
-  <div class="card">
+  <div class="card job-only">
     <h2>Revised edit</h2>
     <div class="row">
       <button id="runRender" type="button">Build the fixed video</button>
@@ -716,7 +720,7 @@
     </details>
   </div>
 
-  <div class="card" id="historyCard">
+  <div class="card job-only" id="historyCard">
     <h2>History</h2>
     <p class="note">Every change in this session is recorded here. Step back or forward and nothing is lost.</p>
     <div id="historyList"></div>
@@ -732,8 +736,38 @@
 (function () {
   "use strict";
   var JOB_NAME = {{JOB_NAME_JSON}};
+  var HAS_JOB = {{HAS_JOB_JSON}};
   var PRIMARY_VIDEO = {{VIDEO_JSON}};
   var META_AVAILABLE = {{META_AVAILABLE_JSON}};
+
+  if (!HAS_JOB) {
+    // The front door: only bringing in a job (or the sample) and
+    // the sign-in are on the page until a job lands.
+    document.body.classList.add("no-job");
+    var directionTitle = document.getElementById("directionTitle");
+    if (directionTitle) { directionTitle.textContent = "Meta sign-in"; }
+  }
+
+  var loadSampleBtn = document.getElementById("loadSample");
+  var sampleStatus = document.getElementById("sampleStatus");
+  if (loadSampleBtn) {
+    loadSampleBtn.addEventListener("click", function () {
+      sampleStatus.textContent = "Loading the sample…";
+      postJson("/api/load-sample", {}).then(function (res) {
+        var data = (res && res.data) || {};
+        if (data.ok) {
+          sampleStatus.textContent = data.message || "The sample is loaded.";
+          setTimeout(function () { window.location.reload(); }, 700);
+        } else {
+          sampleStatus.textContent = (data && data.error) ||
+            "The sample could not be loaded. Drop a job folder instead.";
+        }
+      }).catch(function () {
+        sampleStatus.textContent =
+          "The sample could not be loaded. Drop a job folder instead.";
+      });
+    });
+  }
 
   var vid = document.getElementById("vid");
   var clockEl = document.getElementById("clock");

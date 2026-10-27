@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.2 - 2026-10-27
+
+The app opens. That is the whole change, and it was the missing one: until now the launcher stopped in Terminal to ask for a job folder path before the page existed, so the drop zone built in 0.4.1 sat behind the very door it was meant to remove.
+
+- **No job required to open.** Double-click the launcher and the app comes up with no job loaded. The home page is the front door: the **Bring in a job** drop zone front and center, the folder and file picker buttons, one quiet line offering the **built-in sample** as a single click, and the Meta sign-in check. Nothing asks for a path, and nothing waits in Terminal. The Terminal window only needs to stay open; it is never spoken to.
+- **The key prompt is gone too.** A Meta key saved on the Mac is still used without asking, exactly as before. With no saved key the app runs the offline mock and says so; paste a key in the sign-in box on the page whenever you want live Muse direction, kept for that session only.
+- **Drops land the same as ever.** Drop a runner job folder and the app takes it in and runs on the staged copy; drop a lone video and it plays in the card with the same plain sentence about what a full edit still needs. A no-job launch keeps its session, its staged drops, and the staged sample in one neutral place: a `.launch-home` folder beside the app, so nothing is scattered and deleting the kit folder takes it all with it.
+- **Starting on a job still works.** Pass a job folder path as the launcher's argument, or run `tye serve --job-dir`, and the app starts on that job exactly as before. Every route, session rule, and safety check is unchanged; the only new answers are for having no job yet, and they are one plain sentence: "No job is loaded yet. Drop a runner job folder on the page, or try the built-in sample."
+
 ## 0.5.1 - 2026-10-27
 
 - **You can now choose which take stays.** Behind More choices there is one new line: "When a line is said more than once, keep:" with three choices. **The last take** is the rule you already know, and it stays the default. **The first clean take** keeps the first complete delivery instead, through the same safety checks, and the result says which rule decided. Your pick is saved with your profile and remembered in the session, and whenever it is not the default the front door says so before you fire: "Remove retakes is on. Keeping: the first clean take."
