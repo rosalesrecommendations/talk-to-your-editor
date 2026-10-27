@@ -20,8 +20,11 @@ Two readers use them:
   correction can be removed.
 - A direction run, through :func:`transcript_with_corrections`: the
   transcript handed to the provider carries the corrected text, so
-  captions built from the transcript and the direction step both read
-  the fixed words.
+  the direction step reads the fixed words.
+
+Nothing else consumes corrections: in particular, a rendered video's
+captions are built by the render step from the original transcript,
+so they keep the original words.
 """
 
 from __future__ import annotations

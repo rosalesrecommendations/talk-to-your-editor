@@ -6,6 +6,8 @@ There are no wrong reactions here. If something feels confusing, slow, fragile, 
 
 ## What you are testing
 
+Quick map: the runner is part 1. It makes the first edit and gives you a job folder. This app is part 2: you watch that edit here and direct the fixes.
+
 You watch a finished edit, pin comments to moments you want changed, and let the program work out the edit. It should show you what it changed, flag anything it should not touch automatically, render a revised version for review, and let you grade each change. You can also read the whole edit as a transcript, cut or restore words with a click, and fix words the transcript heard wrong.
 
 ## Mac test
@@ -69,6 +71,8 @@ If the sample already has feedback loaded, you can use that too. Adding one comm
 
 One more thing on this page: the **Vertical (9:16)** and **Landscape (16:9)** buttons only offer cuts the job actually has, so a job with one cut simply shows the one it has. While a video loads, the player says it is loading instead of sitting black.
 
+Playback is browser-safe. The app recognizes the common video files a job can hold (.mp4, .mov, .m4v). If a file is in a format your browser cannot play, the app quietly makes a converted playback copy inside the session folder and plays that instead; your original file is never changed. The first play of such a file can take a little longer while the copy is made. If a video truly cannot be played, the player says so in one plain sentence instead of loading forever.
+
 ### 4. Run direction
 
 Pick a direction mode and run it.
@@ -122,6 +126,8 @@ Read the reason in plain language. If a status surprises you, note the comment a
 
 ### 6. Build the fixed video, then grade the changes
 
+Rendering sets itself up when it can. If the job folder already carries the pieces rendering needs (the render script, the cleaned audio, and the original video), the app finds and uses them on its own. If a piece is missing, the page tells you in one plain sentence which piece it is, so you know what the job still needs.
+
 1. Press **Build the fixed video** to turn the revised plan into a watchable video of the fixed edit.
 2. Press **Grade the changes** to open the review page.
 3. Watch the changed moments.
@@ -139,7 +145,17 @@ Keep that graded export. Send it back with your notes so the exact comments, ope
 Open the **Transcript** section on the page. It shows the edit as words: kept words read normally, and cut words are struck through and dimmed, so you can see the whole edit at a glance.
 
 - **Cut or restore with a click:** click a struck word to bring it back, or a kept word to cut it. The click goes through the same safety checks as any other change. If a word cannot be moved (for example protected material), it stays put and the page says why in one plain sentence.
-- **Fix words the transcript heard wrong:** press **Fix words**, then click one word, or a run of neighboring words, and retype what belongs there. Split one word into the two or three it should be, merge pieces back into one word, or just fix a spelling. Fixing words changes the text, and the captions built from it, only; the sound and the timing never change. Fixed words carry a "Corrected from" note, your corrections are listed together, and any correction can be removed to put the original words back. Direction reads the corrected text, so a misheard word stops confusing it.
+- **Fix words the transcript heard wrong:** press **Fix words**, then click one word, or a run of neighboring words, and retype what belongs there. Split one word into the two or three it should be, merge pieces back into one word, or just fix a spelling. Fixing words changes the words in the transcript, and the text direction reads, only; the sound and the timing never change, and a video you build from the edit still shows the original words in its captions. Fixed words sit in the transcript underlined, with a "Corrected from" note, and any correction can be removed to put the original words back. Direction reads the corrected text, so a misheard word stops confusing it.
+
+### 8. Undo, redo, and History
+
+At the bottom of the page is a **History** card. Every change in this session is recorded there as a step: comments saved, direction runs, words cut or restored in the transcript, and word corrections.
+
+- Press **Undo** to step back one change, or **Redo** to step forward again.
+- The list shows where you are, so you can walk the session back to an earlier state and forward again without losing anything.
+- Stepping back never touches the runner job itself; it only moves your session.
+
+Try it once: make a small change you do not care about, undo it from History, then redo it. The page, the transcript, and the results should all follow.
 
 ## Test with a real runner job
 

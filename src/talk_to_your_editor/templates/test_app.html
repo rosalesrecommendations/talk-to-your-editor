@@ -26,7 +26,9 @@
     --red: #ff453a;
     --radius: 24px;
     --radius-sm: 16px;
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.18), 0 12px 32px rgba(0, 0, 0, 0.16);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.18), 0 12px 32px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+    --spring: cubic-bezier(0.34, 1.4, 0.4, 1);
   }
   * { box-sizing: border-box; }
   body {
@@ -39,17 +41,18 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 80px; }
-  h1 { font-size: 34px; line-height: 1.12; font-weight: 700; letter-spacing: -0.025em; margin: 8px 0 8px; }
-  h2 { font-size: 22px; line-height: 1.2; font-weight: 700; letter-spacing: -0.015em; margin: 0 0 8px; }
-  .subtitle { color: var(--muted); font-size: 16px; margin: 0 0 24px; line-height: 1.5; }
+  ::selection { background: rgba(10, 132, 255, 0.38); }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 20px 96px; }
+  h1 { font-size: 34px; line-height: 1.12; font-weight: 700; letter-spacing: -0.025em; margin: 8px 0 8px; text-wrap: balance; }
+  h2 { font-size: 22px; line-height: 1.2; font-weight: 700; letter-spacing: -0.015em; margin: 0 0 10px; }
+  .subtitle { color: var(--muted); font-size: 16px; margin: 0 0 28px; line-height: 1.55; max-width: 62ch; }
   .card {
     background: var(--panel);
     border: 0.5px solid var(--line);
     border-radius: var(--radius);
     box-shadow: var(--shadow-card);
-    padding: 20px;
-    margin: 0 0 16px;
+    padding: 22px;
+    margin: 0 0 20px;
   }
   .note { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 8px 0 0; }
   video {
@@ -59,9 +62,11 @@
     margin: 0 0 12px;
     display: block;
     object-fit: contain;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+    border: 0.5px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.48), 0 4px 18px rgba(0, 0, 0, 0.32);
   }
   .vid-wrap { position: relative; }
+  @keyframes vidPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
   .vid-loading {
     position: absolute;
     inset: 0;
@@ -70,12 +75,51 @@
     justify-content: center;
     color: var(--muted);
     font-size: 15px;
-    background: #000;
+    background: rgba(8, 8, 10, 0.82);
+    -webkit-backdrop-filter: blur(14px) saturate(160%);
+    backdrop-filter: blur(14px) saturate(160%);
+    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    margin: 0 0 12px;
+    pointer-events: none;
+    animation: vidPulse 1.8s ease-in-out infinite;
+  }
+  .vid-error {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    color: var(--text);
+    font-size: 15px;
+    background: rgba(8, 8, 10, 0.88);
+    border: 0.5px solid rgba(255, 255, 255, 0.08);
     border-radius: 20px;
     margin: 0 0 12px;
     pointer-events: none;
   }
-  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0; }
+  .hist-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 2px;
+    font-size: 15px;
+    color: var(--muted);
+    border-bottom: 0.5px solid rgba(255, 255, 255, 0.06);
+  }
+  .hist-row:last-child { border-bottom: none; }
+  .hist-row.current { color: var(--text); font-weight: 600; }
+  .hist-row.future { opacity: 0.55; }
+  .hist-here {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
   button {
     appearance: none;
     border-radius: 999px;
@@ -86,22 +130,22 @@
     min-height: 48px;
     background: var(--fill);
     color: var(--text);
-    border: 0.5px solid transparent;
-    transition: transform 140ms ease, filter 140ms ease, background 140ms ease;
+    border: 0.5px solid rgba(255, 255, 255, 0.07);
+    transition: transform 160ms var(--ease-out), filter 160ms var(--ease-out), background 160ms var(--ease-out), box-shadow 160ms var(--ease-out);
   }
   button:hover { filter: brightness(1.12); }
-  button:active { transform: scale(0.98); }
+  button:active { transform: scale(0.97); filter: brightness(1.08); }
   button.primary {
     background: var(--sent-gradient);
     color: #fff;
     border-color: transparent;
-    box-shadow: 0 6px 18px rgba(0, 122, 255, 0.22);
+    box-shadow: 0 6px 18px rgba(0, 122, 255, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.22);
   }
   button.on {
     background: var(--sent-gradient);
     color: #fff;
     border-color: transparent;
-    box-shadow: 0 6px 18px rgba(0, 122, 255, 0.2);
+    box-shadow: 0 6px 18px rgba(0, 122, 255, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.22);
   }
   button:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
   button:focus-visible, a:focus-visible, summary:focus-visible {
@@ -131,6 +175,18 @@
     box-shadow: 0 0 10px rgba(255, 255, 255, 0.28);
     pointer-events: none;
   }
+  .tl-playhead::before {
+    content: "";
+    position: absolute;
+    top: -7px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+  }
   .tl-dot {
     position: absolute;
     top: 50%;
@@ -145,7 +201,9 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     cursor: pointer;
     z-index: 2;
+    transition: transform 160ms var(--spring);
   }
+  .tl-dot:hover, .tl-dot:focus-visible { transform: scale(1.22); }
   .tl-tip {
     position: absolute;
     bottom: 26px;
@@ -172,17 +230,54 @@
     z-index: 5;
   }
   .tl-dot:hover .tl-tip, .tl-dot:focus .tl-tip { opacity: 1; }
-  .switch { display: inline-flex; align-items: center; gap: 9px; font-size: 14px; color: var(--muted); cursor: pointer; min-height: 44px; }
-  .switch input { width: 19px; height: 19px; accent-color: var(--accent); }
+  .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); cursor: pointer; min-height: 44px; }
+  .switch input {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: none;
+    width: 46px;
+    height: 28px;
+    margin: 0;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(120, 120, 128, 0.34);
+    position: relative;
+    cursor: pointer;
+    transition: background 220ms var(--ease-out);
+  }
+  .switch input::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.32), 0 0 1px rgba(0, 0, 0, 0.2);
+    transition: transform 220ms var(--spring);
+  }
+  .switch input:checked { background: var(--green); }
+  .switch input:checked::after { transform: translateX(18px); }
   #shortcutLine { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
   #shortcutLine .switch { min-height: 0; }
   .pin-note { font-size: 14px; color: var(--accent-soft); min-height: 21px; margin: 8px 2px 0; }
+  .pin-note:not(:empty) {
+    display: inline-block;
+    background: rgba(10, 132, 255, 0.15);
+    border: 0.5px solid rgba(10, 132, 255, 0.22);
+    border-radius: 999px;
+    padding: 5px 13px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
   .card:has(#draft) {
-    background: rgba(28, 28, 30, 0.78);
+    background: rgba(28, 28, 30, 0.72);
     -webkit-backdrop-filter: blur(20px) saturate(180%);
     backdrop-filter: blur(20px) saturate(180%);
     border-radius: 28px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16), 0 16px 40px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16), 0 16px 40px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.09);
   }
   textarea {
     width: 100%;
@@ -200,10 +295,10 @@
   }
   #draft {
     min-height: 88px;
-    border-radius: 24px;
-    background: rgba(44, 44, 46, 0.92);
-    padding: 16px 18px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    border-radius: 26px;
+    background: rgba(44, 44, 46, 0.88);
+    padding: 17px 19px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 0 0 0.5px rgba(255, 255, 255, 0.03);
   }
   textarea::placeholder, input::placeholder { color: var(--faint); }
   textarea:focus, input:focus, select:focus {
@@ -233,20 +328,26 @@
     font-size: 16px;
   }
   select {
-    background: var(--panel-2);
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: var(--panel-2);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='9' viewBox='0 0 12 9'%3E%3Cpath d='M1.5 2 6 6.5 10.5 2' fill='none' stroke='%23a7a7ad' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 16px center;
     color: var(--text);
     border: 0.5px solid rgba(255, 255, 255, 0.09);
     border-radius: 999px;
-    padding: 12px 18px;
+    padding: 12px 40px 12px 18px;
     font: inherit;
     font-size: 16px;
     min-height: 48px;
+    cursor: pointer;
   }
   .comment {
     background: rgba(38, 38, 40, 0.88);
     border: 0.5px solid rgba(255, 255, 255, 0.07);
-    border-radius: 22px 22px 22px 10px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    border-radius: 20px 20px 20px 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.05);
     padding: 16px 18px;
     margin: 0 0 12px;
   }
@@ -292,10 +393,10 @@
   .status-line { font-size: 14px; line-height: 1.45; color: var(--muted); min-height: 21px; margin: 9px 0 0; }
   .counts { font-size: 16px; line-height: 1.55; margin: 10px 0; }
   .empty { color: var(--muted); font-size: 14px; line-height: 1.5; padding: 10px 2px; }
-  .transcript { font-size: 17px; line-height: 1.85; margin: 12px 0 0; }
-  .tw { cursor: pointer; border-radius: 6px; padding: 1px 2px; transition: background 120ms ease, opacity 120ms ease; }
+  .transcript { font-size: 17px; line-height: 1.92; margin: 14px 0 0; }
+  .tw { cursor: pointer; border-radius: 7px; padding: 2px 3px; transition: background 120ms var(--ease-out), opacity 120ms var(--ease-out); }
   .tw:hover { background: var(--panel-3); }
-  .tw-cut { text-decoration: line-through; opacity: 0.42; }
+  .tw-cut { text-decoration: line-through; opacity: 0.38; }
   .tw-corrected { background: rgba(10, 132, 255, 0.16); box-shadow: inset 0 -2px 0 var(--accent); }
   .tw-selected { outline: 2px solid var(--accent); outline-offset: 1px; background: var(--panel-2); }
   #fixText {
@@ -309,22 +410,34 @@
     font-size: 16px;
     font-family: inherit;
   }
+  .switch input:focus { border-color: transparent; box-shadow: none; }
+  .switch input:focus-visible { outline: 3px solid rgba(10, 132, 255, 0.55); outline-offset: 3px; box-shadow: none; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
       scroll-behavior: auto !important;
       transition-duration: 0.01ms !important;
+      animation: none !important;
     }
     button:active { transform: none; }
+    .tl-dot:hover, .tl-dot:focus-visible { transform: none; }
   }
   @media (prefers-reduced-transparency: reduce) {
-    .card:has(#draft), .tl-tip { background: var(--panel-2); -webkit-backdrop-filter: none; backdrop-filter: none; }
+    .card:has(#draft), .tl-tip, .vid-loading, .vid-error { background: var(--panel-2); -webkit-backdrop-filter: none; backdrop-filter: none; }
   }
   @media (max-width: 560px) {
-    main { padding: 24px 14px 64px; }
-    h1 { font-size: 30px; }
-    .card { padding: 18px 16px; border-radius: 22px; }
+    main { padding: 26px 14px calc(60px + env(safe-area-inset-bottom)); }
+    h1 { font-size: 29px; }
+    h2 { font-size: 20px; }
+    .subtitle { font-size: 15px; margin-bottom: 22px; }
+    .card { padding: 18px 16px; border-radius: 22px; margin-bottom: 16px; }
     .card:has(#draft) { border-radius: 26px; }
+    #draft { border-radius: 22px; }
     button { padding-left: 17px; padding-right: 17px; }
+    .row > button, .row > select { flex: 1 1 auto; }
+    .row > .clock { flex: 1 1 100%; }
+    .comment { padding: 14px 16px; }
+    video { box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42); }
+    .tl-tip { max-width: 200px; }
   }
 </style>
 </head>
@@ -335,12 +448,13 @@
 
   <div class="card" id="novid" hidden>
     <h2>No video in this job folder</h2>
-    <p class="note">There is no review.mp4, final.mp4, or final-long.mp4 here, so there is nothing to play. You can still pin comments by typing a time in seconds.</p>
+    <p class="note">There is no video file here (mp4, mov, or m4v), so there is nothing to play. You can still pin comments by typing a time in seconds.</p>
   </div>
 
   <div class="vid-wrap" id="vidWrap">
     <video id="vid" controls playsinline preload="metadata"></video>
     <div class="vid-loading" id="vidLoading" hidden>Loading the video…</div>
+    <div class="vid-error" id="vidError" hidden>This video could not be played here; the file may be in a format this browser cannot show.</div>
   </div>
   <div class="tl-wrap" id="tlbar">
     <div class="tl-track" id="tlTrack">
@@ -398,7 +512,7 @@
       <button id="fixWordsBtn" type="button">Fix words</button>
     </div>
     <div id="fixPanel" hidden>
-      <p class="note">Click the first word of the part to fix, then the last word, and retype the words exactly as they should read. One word can become two or three, or a few fragments can become one. Fixing words changes the text, and the captions built from it, only. The sound and the timing never change.</p>
+      <p class="note">Click the first word of the part to fix, then the last word, and retype the words exactly as they should read. One word can become two or three, or a few fragments can become one. Fixing words changes the words in the transcript only. The sound and the timing never change, and a video you build from the edit still shows the original words in its captions.</p>
       <input id="fixText" type="text" placeholder="The corrected words">
       <div class="row">
         <button id="fixSave" class="primary" type="button">Save correction</button>
@@ -451,6 +565,17 @@
       <a href="/api/download/revised_cuts.json">revised_cuts.json</a>
     </details>
   </div>
+
+  <div class="card" id="historyCard">
+    <h2>History</h2>
+    <p class="note">Every change in this session is recorded here. Step back or forward and nothing is lost.</p>
+    <div id="historyList"></div>
+    <div class="row">
+      <button id="undoBtn" type="button">Undo</button>
+      <button id="redoBtn" type="button">Redo</button>
+    </div>
+    <p class="status-line" id="historyStatus"></p>
+  </div>
 </main>
 
 <script>
@@ -496,6 +621,15 @@
   function hideLoading() { vidLoading.hidden = true; }
   vid.addEventListener("loadstart", showLoading);
   vid.addEventListener("canplay", hideLoading);
+  // A file the browser cannot decode must never sit on the loading
+  // note forever: the error state replaces it with one plain
+  // sentence, and any new load or successful play clears it.
+  var vidError = document.getElementById("vidError");
+  function showVideoError() { hideLoading(); vidError.hidden = false; }
+  function clearVideoError() { vidError.hidden = true; }
+  vid.addEventListener("error", showVideoError);
+  vid.addEventListener("loadstart", clearVideoError);
+  vid.addEventListener("canplay", clearVideoError);
 
   function fmtTime(t) {
     t = Math.max(0, t || 0);
@@ -646,6 +780,10 @@
       video: JOB_NAME,
       comments: state.comments,
       overall_feedback: state.overall
+    }).then(function (res) {
+      // Saving notes records a checkpoint; keep the list current.
+      refreshHistory();
+      return res;
     });
   }
 
@@ -853,6 +991,7 @@
       corrections = data.corrections || corrections;
       renderTranscript(data.transcript_words);
       transcriptStatus.textContent = "Correction saved. The original sound and timing are unchanged.";
+      refreshHistory();
     }).catch(function () {
       transcriptStatus.textContent = "That correction could not be saved.";
     });
@@ -872,6 +1011,7 @@
       corrections = data.corrections || corrections;
       renderTranscript(data.transcript_words);
       transcriptStatus.textContent = "Correction removed. The original words are back.";
+      refreshHistory();
     }).catch(function () {
       transcriptStatus.textContent = "That correction could not be removed.";
     });
@@ -914,6 +1054,7 @@
       transcriptStatus.textContent = data.changed
         ? (data.status === "cut" ? "Word cut." : "Word restored.")
         : (data.message || "");
+      if (data.changed) { refreshHistory(); }
     }).catch(function () {
       transcriptStatus.textContent = "That word could not be changed.";
     });
@@ -1110,6 +1251,7 @@
         return;
       }
       status.textContent = "Direction finished.";
+      refreshHistory();
       // The run rewrote the session's revised cuts, so the
       // transcript's kept and cut words may have changed too.
       reloadTranscript();
@@ -1232,16 +1374,103 @@
 
   refreshSignin();
 
-  fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
-    videos = job.videos || [];
-    videoShapes = job.video_shapes || {};
-    state.outputDuration = job.output_duration_s || 0;
+  // -- history --------------------------------------------------------
+  // Every change the session makes is recorded on the server as a
+  // checkpoint. The list below shows them in order; Undo and Redo
+  // walk the session back and forward through them, and the
+  // comments, overall notes, and transcript are then re-read from
+  // the server, so what the page shows always matches the state
+  // the session is actually in.
+  var historyListEl = document.getElementById("historyList");
+  var historyStatusEl = document.getElementById("historyStatus");
+  var undoBtn = document.getElementById("undoBtn");
+  var redoBtn = document.getElementById("redoBtn");
+
+  function renderHistory(hist) {
+    historyListEl.innerHTML = "";
+    var cps = (hist && hist.checkpoints) || [];
+    if (!cps.length) {
+      var empty = document.createElement("p");
+      empty.className = "note";
+      empty.textContent = "No changes recorded yet.";
+      historyListEl.appendChild(empty);
+    }
+    cps.forEach(function (cp) {
+      var row = document.createElement("div");
+      row.className = "hist-row" +
+        (cp.index === hist.current ? " current" : "") +
+        (cp.index > hist.current ? " future" : "");
+      var label = document.createElement("span");
+      label.textContent = cp.label;
+      row.appendChild(label);
+      if (cp.index === hist.current) {
+        var here = document.createElement("span");
+        here.className = "hist-here";
+        here.textContent = "you are here";
+        row.appendChild(here);
+      }
+      historyListEl.appendChild(row);
+    });
+    undoBtn.disabled = !(hist && hist.can_undo);
+    redoBtn.disabled = !(hist && hist.can_redo);
+  }
+
+  function refreshHistory() {
+    return fetch("/api/history").then(function (r) { return r.json(); }).then(function (hist) {
+      renderHistory(hist);
+    }).catch(function () {});
+  }
+
+  function applyJobState(job) {
     state.comments = (job.comments || []).map(function (c) {
       return { id: c.id, ts: c.ts, fmt: c.fmt || "vertical", scope: c.scope || "both", text: c.text, done: !!c.done };
     });
     state.overall = (job.overall_feedback || []).map(function (n) {
       return { id: n.id, text: n.text };
     });
+    corrections = job.word_corrections || [];
+    renderList();
+    renderOverall();
+    renderDots();
+    renderTranscript(job.transcript_words);
+  }
+
+  function reloadJobState() {
+    return fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
+      applyJobState(job);
+    }).catch(function () {});
+  }
+
+  function moveHistory(which) {
+    postJson("/api/history/" + which, {}).then(function (res) {
+      var data = res.data || {};
+      renderHistory(data);
+      if (!data.ok) {
+        historyStatusEl.textContent = data.message || "";
+        return;
+      }
+      var current = (data.checkpoints || [])[data.current];
+      historyStatusEl.textContent = current
+        ? (which === "undo" ? "Went back to: " : "Moved forward to: ") + current.label + "."
+        : "";
+      // The results on screen belonged to the state just left. The
+      // restored state's own record is its after-review page, so
+      // the run output clears and everything else is re-read.
+      document.getElementById("results").innerHTML = "";
+      document.getElementById("directStatus").textContent = "";
+      reloadJobState();
+    }).catch(function () {
+      historyStatusEl.textContent = "That step could not be taken.";
+    });
+  }
+
+  undoBtn.addEventListener("click", function () { moveHistory("undo"); });
+  redoBtn.addEventListener("click", function () { moveHistory("redo"); });
+
+  fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
+    videos = job.videos || [];
+    videoShapes = job.video_shapes || {};
+    state.outputDuration = job.output_duration_s || 0;
     if (!META_AVAILABLE) {
       var opt = document.getElementById("metaOption");
       opt.disabled = true;
@@ -1256,12 +1485,9 @@
       vid.hidden = true;
       tlbarEl.hidden = true;
     }
-    renderList();
-    renderOverall();
-    renderDots();
-    corrections = job.word_corrections || [];
-    renderTranscript(job.transcript_words);
+    applyJobState(job);
     updatePlayhead();
+    refreshHistory();
   });
 })();
 </script>

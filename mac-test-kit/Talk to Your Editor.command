@@ -33,6 +33,8 @@ printf 'Installing or refreshing Talk to Your Editor...\n'
 pip install --quiet -e . || fail "The app could not be installed into its private environment. Read the error above, fix that problem, and try again."
 printf '\n'
 
+printf 'Quick map: the runner is part 1. It makes the first edit and gives you a job folder.\n'
+printf 'This app is part 2: you watch that edit here and direct the fixes.\n\n'
 printf 'Paste the runner job folder path, or press Enter for the built-in sample: '
 IFS= read -r JOB_DIR || true
 
@@ -59,6 +61,9 @@ else
   printf 'Using this job folder: %s\n' "$JOB_DIR"
 fi
 
+if [ -f "$JOB_DIR" ]; then
+  fail "That is a file, not a folder: $JOB_DIR. This app (part 2) runs on the runner job folder itself, the folder that holds transcript.json and cuts.json, not on the video file."
+fi
 if [ ! -d "$JOB_DIR" ]; then
   fail "That job folder does not exist: $JOB_DIR"
 fi

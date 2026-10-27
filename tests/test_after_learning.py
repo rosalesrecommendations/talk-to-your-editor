@@ -161,6 +161,81 @@ class AfterReviewPageTests(unittest.TestCase):
             self.assertIn('src="revised.mp4"', page)
 
 
+class PlainActionReasonTests(unittest.TestCase):
+    """The grading page never shows a provider's raw reason.
+
+    Operations that arrive without a plain_action (a raw operations
+    file fed to the CLI) fall back to the provider's ``reason``, which
+    is internal text: it can name the provider, cite word indexes, or
+    carry a machine code. Only a cleaned, genuinely plain reason may
+    be shown; anything else falls back to the per-type template.
+    """
+
+    def action_for(self, op: dict) -> str:
+        return after_review._plain_action(op, op.get("status", "applied"))
+
+    def test_word_index_reason_falls_back_to_template(self) -> None:
+        op = {
+            "type": "cut_words",
+            "status": "applied",
+            "reason": "mock: remove the sentence at word 16",
+        }
+        self.assertEqual(
+            self.action_for(op),
+            "Removed the words this note pointed at from the finished edit.",
+        )
+
+    def test_join_index_reason_falls_back_to_template(self) -> None:
+        op = {
+            "type": "set_join_pause",
+            "status": "applied",
+            "reason": "mock: set join 2 pause to 0.4s",
+        }
+        self.assertEqual(
+            self.action_for(op),
+            "Changed the pause at this join to the length this note asked for.",
+        )
+
+    def test_code_reason_falls_back_to_template(self) -> None:
+        op = {
+            "type": "cut_words",
+            "status": "flagged",
+            "reason": "protected_span:prayer protection (curation)",
+        }
+        action = self.action_for(op)
+        self.assertNotIn("protected_span", action)
+        self.assertEqual(
+            action,
+            "Removed the words this note pointed at from the finished edit.",
+        )
+
+    def test_plain_reason_is_shown_without_the_provider_prefix(self) -> None:
+        op = {
+            "type": "restore_words",
+            "status": "applied",
+            "reason": "mock: restore the cut span",
+        }
+        self.assertEqual(self.action_for(op), "Restore the cut span.")
+
+    def test_rendered_page_shows_no_raw_reason(self) -> None:
+        operations = {
+            "operations": [
+                {
+                    "comment_id": "c1",
+                    "type": "cut_words",
+                    "status": "applied",
+                    "reason": "mock: remove the sentence at word 16",
+                }
+            ]
+        }
+        page = after_review.render_after_review(FEEDBACK, operations)
+        self.assertNotIn("mock:", page)
+        self.assertNotIn("word 16", page)
+        self.assertIn(
+            "Removed the words this note pointed at", page
+        )
+
+
 class LearningTests(unittest.TestCase):
     def setUp(self) -> None:
         self.records = learning.load_graded_records(

@@ -6,10 +6,12 @@ layer (mock or live Meta), and open the after-review page, all against one
 runner job folder.
 
 Job-dir contract: the job dir holds ``transcript.json`` and ``cuts.json``,
-optionally ``profile.json``, ``feedback.json``, and video files named
-``review.mp4``, ``final.mp4``, or ``final-long.mp4``. Every output of a
-test session lands in ``<job-dir>/tye-session/``; the job's own
-``transcript.json`` and ``cuts.json`` are never modified.
+optionally ``profile.json``, ``feedback.json``, and any video files
+(``.mp4``, ``.mov``, or ``.m4v``). A video that is not already in a
+browser-safe codec is served through a converted playback copy kept
+in the session folder; the job's own files are never modified. Every
+output of a test session lands in ``<job-dir>/tye-session/``; the
+job's own ``transcript.json`` and ``cuts.json`` are never modified.
 
 Standard library only. Run it with::
 
@@ -25,22 +27,25 @@ import html
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 from urllib.parse import unquote, urlsplit
 
+from . import checkpoints
 from .after_review import generate_after_review
 from .applier import ApplyError, apply_verdicts
 from .cli import _load_json, _verify_and_apply, _write_json
 from .meta_provider import MetaProvider, MockProvider, ProviderError
 from .schema import SchemaError, validate_operations
 from .timeline import Timeline
-from .verifier import OVERLAP_FLAG_REASON, verify_operations
+from .verifier import plain_reason_sentence, verify_operations
 from .word_corrections import (
     CORRECTIONS_FILENAME,
     load_corrections,
@@ -105,7 +110,161 @@ def _mp4_dimensions(path: Path) -> Optional[tuple]:
 
 
 VIDEO_NAMES = ("review.mp4", "final.mp4", "final-long.mp4")
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v")
 SESSION_VIDEO_NAME = "revised-review.mp4"
+PLAYBACK_DIR_NAME = "playback"
+BROWSER_SAFE_CODEC = "h264"
+
+
+def _job_videos(job_dir: Path) -> list[str]:
+    """The job folder's video files, best first.
+
+    Any file with a video extension counts, whatever its name or
+    the case of its extension: a runner export called ``review.mp4``
+    and an original dropped in as ``IMG_2383.MOV`` are both videos
+    the creator may need to watch. The known export names keep
+    their familiar order at the front; anything else follows,
+    sorted by name.
+    """
+    try:
+        names = [
+            path.name
+            for path in job_dir.iterdir()
+            if path.is_file()
+            and path.suffix.lower() in VIDEO_EXTENSIONS
+        ]
+    except OSError:
+        return []
+    preferred = [name for name in VIDEO_NAMES if name in names]
+    rest = sorted(name for name in names if name not in VIDEO_NAMES)
+    return preferred + rest
+
+
+_CODEC_CACHE: dict = {}
+
+
+def _probe_video_codec(path: Path) -> Optional[str]:
+    """The first video stream's codec name, or None when unreadable.
+
+    Probed with ffprobe when it is available; results are cached
+    per file version. A file ffprobe cannot read at all (not really
+    a video) also returns None, and is treated as not browser-safe.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = f"{path}|{stat.st_mtime_ns}|{stat.st_size}"
+    if key in _CODEC_CACHE:
+        return _CODEC_CACHE[key]
+    codec: Optional[str] = None
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        try:
+            out = subprocess.run(
+                [
+                    ffprobe, "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=codec_name",
+                    "-of", "csv=p=0", str(path),
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            lines = out.stdout.strip().splitlines()
+            codec = lines[0].strip() if lines and lines[0].strip() else None
+        except (OSError, subprocess.SubprocessError):
+            codec = None
+    _CODEC_CACHE[key] = codec
+    return codec
+
+
+def _playback_copy_path(config: "WebAppConfig", name: str) -> Path:
+    """Where a video's converted playback copy lives in the session."""
+    stem = Path(name).stem
+    suffix = Path(name).suffix.lstrip(".").lower()
+    return (
+        config.session_dir
+        / PLAYBACK_DIR_NAME
+        / f"{stem}-{suffix}.playback.mp4"
+    )
+
+
+def _convert_playback_copy(source: Path, dest: Path) -> bool:
+    """Build an H.264 copy of ``source`` at ``dest`` with ffmpeg.
+
+    The copy is written to a scratch name and moved into place only
+    when it is complete, so a stopped conversion never leaves a
+    half-written file to serve. Returns False (with the detail in
+    the server log) when no copy could be built.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        print(
+            f"[video] no ffmpeg available to convert {source.name}",
+            file=sys.stderr,
+        )
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / (dest.name + ".part")
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg, "-y", "-v", "error", "-i", str(source),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-movflags", "+faststart",
+                # The scratch name has no video extension, so the
+                # MP4 format is named outright.
+                "-f", "mp4", str(tmp),
+            ],
+            capture_output=True, text=True, timeout=1800,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[video] conversion of {source.name} failed: {exc}",
+              file=sys.stderr)
+        tmp.unlink(missing_ok=True)
+        return False
+    if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size == 0:
+        tail = (proc.stderr or "").strip()[-1000:]
+        print(
+            f"[video] conversion of {source.name} failed:\n{tail}",
+            file=sys.stderr,
+        )
+        tmp.unlink(missing_ok=True)
+        return False
+    tmp.replace(dest)
+    return True
+
+
+def _playback_target(config: "WebAppConfig", name: str) -> Path:
+    """The file to actually serve for one of the job's videos.
+
+    The job's own file when it is already encoded the way browsers
+    can play (H.264). Otherwise a converted playback copy inside
+    the session folder, built once and then reused; the original is
+    never touched. When no copy can be built, the original is
+    served as-is: the browser refuses it and the player shows its
+    plain could-not-play message instead of sitting on a loading
+    note forever.
+    """
+    source = config.job_dir / name
+    with config.playback_lock:
+        cached = config.playback_cache.get(name)
+        if cached is not None:
+            return cached
+        target = source
+        if _probe_video_codec(source) != BROWSER_SAFE_CODEC:
+            copy_path = _playback_copy_path(config, name)
+            if copy_path.is_file() and copy_path.stat().st_size > 0:
+                target = copy_path
+            elif _convert_playback_copy(source, copy_path):
+                target = copy_path
+        config.playback_cache[name] = target
+        return target
+
+
+def _video_content_type(path: Path) -> str:
+    if path.suffix.lower() == ".mov":
+        return "video/quicktime"
+    return "video/mp4"
 DOWNLOAD_NAMES = (
     "feedback.json",
     "operations.json",
@@ -131,11 +290,39 @@ class WebAppConfig:
         self.render_py = render_py
         self.source_video = source_video
         self.cleaned_wav = cleaned_wav
+        # Render auto-wiring: a piece the server was not handed
+        # explicitly is picked up from the job folder itself when the
+        # folder carries it (the runner's render script, the original
+        # video, the cleaned audio). Explicit flags always win, and
+        # the pieces found this way are named in ``render_autowired``
+        # so the status sentence can say where setup came from.
+        self.render_autowired: list[str] = []
+        if not self.render_py:
+            candidate = self.job_dir / RENDER_SCRIPT_NAME
+            if candidate.is_file():
+                self.render_py = str(candidate)
+                self.render_autowired.append("render_py")
+        if not self.cleaned_wav:
+            candidate = self.job_dir / CLEANED_WAV_NAME
+            if candidate.is_file():
+                self.cleaned_wav = str(candidate)
+                self.render_autowired.append("cleaned_wav")
+        if not self.source_video:
+            found = _autodetect_source_video(self.job_dir)
+            if found:
+                self.source_video = found
+                self.render_autowired.append("source_video")
         # The one piece of state that may change while the server
         # runs: a Meta sign-in pasted on the page. It is kept in this
         # attribute only, in memory: never written to a file, never
         # sent back to the page, and gone when the server stops.
         self.session_api_key: Optional[str] = None
+        # Which file to serve for each job video (the original, or
+        # its converted playback copy), decided once per video; the
+        # lock keeps two watchers from converting the same file at
+        # the same time.
+        self.playback_cache: dict = {}
+        self.playback_lock = threading.Lock()
 
     @property
     def session_dir(self) -> Path:
@@ -172,6 +359,31 @@ class WebAppConfig:
         if not self.cleaned_wav:
             missing.append("cleaned_wav")
         return missing
+
+    def render_message(self) -> str:
+        """One plain sentence about rendering, for people to read.
+
+        Says rendering is ready (and whether the job folder itself
+        provided the pieces), or names what is missing in plain
+        words. Machine names stay in ``render_missing``; this is the
+        sentence the startup line, the render response, and the job
+        summary carry.
+        """
+        missing = self.render_missing()
+        if not missing:
+            if self.render_autowired:
+                return "Rendering is set up from this job folder."
+            return "Rendering is set up."
+        names = [
+            _RENDER_PIECE_PLAIN[piece]
+            for piece in _RENDER_PIECE_ORDER
+            if piece in missing
+        ]
+        return (
+            "Rendering is not set up yet: this job is missing "
+            + _join_plain(names)
+            + "."
+        )
 
 
 def _load_optional_file(path: Path) -> Optional[dict]:
@@ -262,10 +474,8 @@ def _video_name_for_review(config: WebAppConfig) -> Optional[str]:
     """Video name the after-review page should reference, if any."""
     if (config.session_dir / SESSION_VIDEO_NAME).is_file():
         return SESSION_VIDEO_NAME
-    for name in VIDEO_NAMES:
-        if (config.job_dir / name).is_file():
-            return name
-    return None
+    videos = _job_videos(config.job_dir)
+    return videos[0] if videos else None
 
 
 def _regenerate_after_review(config: WebAppConfig) -> Path:
@@ -277,6 +487,23 @@ def _regenerate_after_review(config: WebAppConfig) -> Path:
         config.session_dir / "after-review.html",
         video_filename=_video_name_for_review(config),
     )
+
+
+def _refresh_after_review(config: WebAppConfig) -> None:
+    """Rebuild the after-review page after a checkpoint restore.
+
+    The page is derived from the session state, so a restore rebuilds
+    it from the restored audit; a restore to before any direction run
+    has no audit, and the stale page is removed so the placeholder
+    shows instead of grades for edits that are no longer current.
+    """
+    if (config.session_dir / "operations_audit.json").is_file():
+        try:
+            _regenerate_after_review(config)
+            return
+        except Exception:
+            pass
+    (config.session_dir / "after-review.html").unlink(missing_ok=True)
 
 
 def _effective_cuts(config: WebAppConfig) -> dict:
@@ -323,9 +550,7 @@ def _job_summary(config: WebAppConfig) -> dict:
     timeline = Timeline(transcript, cuts)
     kept = timeline.kept_word_indices()
     transcript_entries, corrections = _transcript_entries(config)
-    videos = [
-        name for name in VIDEO_NAMES if (config.job_dir / name).is_file()
-    ]
+    videos = _job_videos(config.job_dir)
     video_shapes = {}
     for name in videos:
         dims = _mp4_dimensions(config.job_dir / name)
@@ -368,6 +593,8 @@ def _job_summary(config: WebAppConfig) -> dict:
         "overall_feedback": overall_feedback,
         "meta_available": bool(config.signin_key()),
         "render_missing": config.render_missing(),
+        "render_ready": not config.render_missing(),
+        "render_message": config.render_message(),
     }
 
 
@@ -468,6 +695,40 @@ def _check_signin(config: WebAppConfig) -> tuple[bool, str]:
     return False, SIGNIN_NOT_ACCEPTED_MESSAGE
 
 
+def _next_round_number(config: WebAppConfig) -> int:
+    """The number the next direction run in this session gets."""
+    rounds_dir = config.session_dir / "rounds"
+    if not rounds_dir.is_dir():
+        return 1
+    return 1 + sum(
+        1
+        for path in rounds_dir.iterdir()
+        if path.is_dir() and path.name.startswith("round-")
+    )
+
+
+def _archive_direction_round(config: WebAppConfig, number: int) -> None:
+    """Copy the run that just finished into its own round folder.
+
+    The session's operations.json, operations_audit.json, and
+    revised_cuts.json always hold the latest run, so without this a
+    new run would silently overwrite the previous round's record.
+    Each run is copied to ``rounds/round-NNN/`` in the session, and
+    those folders are append-only: undo and redo never remove them.
+    """
+    session = config.session_dir
+    target = session / "rounds" / f"round-{number:03d}"
+    target.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "operations.json",
+        "operations_audit.json",
+        "revised_cuts.json",
+    ):
+        source = session / name
+        if source.is_file():
+            shutil.copyfile(source, target / name)
+
+
 def _run_direction(
     config: WebAppConfig, provider_name: str, fmt: str = "vertical"
 ) -> dict:
@@ -476,6 +737,14 @@ def _run_direction(
     The run is for one format (``fmt``): the provider only receives
     the comments whose scope covers that format, plus the overall
     notes, which go with every run.
+
+    The run builds on the session's current plan: when anything has
+    already revised the edit (an earlier direction run, a transcript
+    word click), that revised plan is the run's starting point, so
+    round two continues from round one instead of re-deciding it,
+    and a word cut by clicking is never silently restored by a run.
+    Only a session with no revised plan yet starts from the job's
+    own cuts.
     """
     feedback_path = _feedback_path(config)
     if feedback_path is None:
@@ -487,6 +756,9 @@ def _run_direction(
     profile_path = config.job_dir / "profile.json"
     profile = _load_optional_file(profile_path)
     feedback = _load_json(str(feedback_path))
+    session = config.session_dir
+    revised_path = session / "revised_cuts.json"
+    base_cuts_path = revised_path if revised_path.is_file() else cuts_path
     # The provider reads the corrected transcript, so a direction run
     # works from the fixed words. Corrections change word texts only:
     # indices, timings, and the cuts the verifier checks against are
@@ -497,7 +769,7 @@ def _run_direction(
     )
     timeline = Timeline(
         transcript_with_corrections(transcript_data, corrections),
-        _load_json(str(cuts_path)),
+        _load_json(str(base_cuts_path)),
     )
     if provider_name == "meta":
         provider = MetaProvider(
@@ -507,12 +779,11 @@ def _run_direction(
         provider = MockProvider()
     run_feedback = _feedback_for_run(feedback, fmt)
     operations, routing = provider.direct(run_feedback, timeline, profile)
-    session = config.session_dir
     session.mkdir(parents=True, exist_ok=True)
     _write_json(session / "operations.json", {"operations": operations})
     args = SimpleNamespace(
         transcript=str(transcript_path),
-        cuts=str(cuts_path),
+        cuts=str(base_cuts_path),
         profile=str(profile_path) if profile is not None else None,
     )
     audit = _verify_and_apply(args, {"operations": operations}, session)
@@ -522,7 +793,12 @@ def _run_direction(
     # format it served and the overall guidance it carried.
     audit_with_routing["format"] = fmt
     audit_with_routing["overall_feedback"] = run_feedback["overall_feedback"]
+    # Number the round before the audit is saved, so the saved audit
+    # and the archived copy both carry it.
+    round_number = _next_round_number(config)
+    audit_with_routing["round"] = round_number
     _write_json(session / "operations_audit.json", audit_with_routing)
+    _archive_direction_round(config, round_number)
     return audit_with_routing
 
 
@@ -530,39 +806,13 @@ def _plain_toggle_message(verdict) -> str:
     """One plain sentence for a transcript word the verifier would not move.
 
     Verdict reasons are machine codes; the page shows a person one
-    sentence they can understand and act on.
+    sentence they can understand and act on. The code-to-sentence
+    mapping is shared with the per-note result text (see
+    ``verifier.plain_reason_sentence``), so a held word and a held
+    note are explained in the same words.
     """
     for reason in verdict.reasons:
-        if reason.startswith("protected_span:"):
-            label = reason[len("protected_span:"):].split(" (")[0].strip()
-            if label:
-                return (
-                    f"That word is protected ({label}), so it cannot "
-                    "be changed here."
-                )
-            return "That word is protected, so it cannot be changed here."
-        if reason == "negation_bearing_span":
-            return (
-                "That word is part of a negative statement, so a "
-                "person needs to review changing it."
-            )
-        if reason == "special_insert_targeted":
-            return (
-                "That word is inside a special insert, so it cannot "
-                "be changed here."
-            )
-        if reason == "min_range_duration":
-            return (
-                "Changing that word would leave a piece too short "
-                "to play, so it was left as it is."
-            )
-        if reason == "removes_over_25_percent":
-            return (
-                "That change would take out too much of the edit at "
-                "once, so it was left as it is."
-            )
-        if reason == OVERLAP_FLAG_REASON:
-            return reason[0].upper() + reason[1:] + "."
+        return plain_reason_sentence(reason)
     return "The safety check would not move that word, so it was left as it is."
 
 
@@ -636,7 +886,9 @@ def _toggle_word(config: WebAppConfig, word_index: int) -> dict:
     revised, _audit = apply_verdicts(base_cuts, timeline, [verdict])
     session = config.session_dir
     session.mkdir(parents=True, exist_ok=True)
+    checkpoints.begin(config)
     _write_json(session / "revised_cuts.json", revised)
+    checkpoints.commit(config, "Transcript word change")
     new_status = Timeline(transcript, revised).word_status(word_index)
     return {
         "ok": True,
@@ -780,13 +1032,20 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(200, _job_summary(self.config))
             elif path == "/api/signin":
                 self._send_json(200, _signin_state(self.config))
+            elif path == "/api/history":
+                self._send_json(
+                    200, {"ok": True, **checkpoints.state(self.config)}
+                )
             elif path.startswith("/video/"):
                 self._serve_video(path[len("/video/"):])
             elif path == "/after-review":
                 self._serve_after_review()
             elif path.startswith("/api/download/"):
                 self._serve_download(path[len("/api/download/"):])
-            elif path[1:] in VIDEO_NAMES or path[1:] == SESSION_VIDEO_NAME:
+            elif (
+                path[1:] in _job_videos(self.config.job_dir)
+                or path[1:] == SESSION_VIDEO_NAME
+            ):
                 # The after-review page references its video by bare name;
                 # resolve it from the session dir first, then the job dir.
                 self._serve_media_by_name(path[1:])
@@ -815,6 +1074,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_word_correct_remove()
         elif path == "/api/render":
             self._post_render()
+        elif path == "/api/history/undo":
+            self._post_history_move(undo=True)
+        elif path == "/api/history/redo":
+            self._post_history_move(undo=False)
         else:
             self._error(404, "not found")
 
@@ -850,23 +1113,27 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def _serve_video(self, name: str) -> None:
-        if name not in VIDEO_NAMES:
+        if name not in _job_videos(self.config.job_dir):
             self._error(404, "unknown video")
             return
-        target = self.config.job_dir / name
-        if not target.is_file():
-            self._error(404, "video not in this job")
-            return
-        self._serve_file_with_range(target, "video/mp4")
+        # A video that is not browser-safe is served through its
+        # converted playback copy; the job's file is never served
+        # in a form the browser cannot decode when a copy exists.
+        target = _playback_target(self.config, name)
+        self._serve_file_with_range(target, _video_content_type(target))
 
     def _serve_media_by_name(self, name: str) -> None:
         session_target = self.config.session_dir / name
         if session_target.is_file():
-            self._serve_file_with_range(session_target, "video/mp4")
+            self._serve_file_with_range(
+                session_target, _video_content_type(session_target)
+            )
             return
-        job_target = self.config.job_dir / name
-        if job_target.is_file():
-            self._serve_file_with_range(job_target, "video/mp4")
+        if name in _job_videos(self.config.job_dir):
+            target = _playback_target(self.config, name)
+            self._serve_file_with_range(
+                target, _video_content_type(target)
+            )
             return
         self._error(404, "video not found")
 
@@ -999,7 +1266,9 @@ class _Handler(BaseHTTPRequestHandler):
         }
         session = self.config.session_dir
         session.mkdir(parents=True, exist_ok=True)
+        checkpoints.begin(self.config)
         _write_json(session / "feedback.json", payload)
+        checkpoints.commit(self.config, "Saved notes")
         self._send_json(
             200,
             {
@@ -1050,6 +1319,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "so direction cannot run with it.",
             )
             return
+        checkpoints.begin(self.config)
         try:
             audit = _run_direction(self.config, provider_name, fmt)
         except ValueError as exc:
@@ -1075,12 +1345,14 @@ class _Handler(BaseHTTPRequestHandler):
             after_review = True
         except Exception:
             after_review = False
+        checkpoints.commit(self.config, "Direction run")
         self._send_json(
             200,
             {
                 "ok": True,
                 "provider": provider_name,
                 "format": fmt,
+                "round": audit.get("round"),
                 "overall_feedback": audit.get("overall_feedback", []),
                 "applied_comment_ids": audit["applied_comment_ids"],
                 "flagged_comment_ids": audit["flagged_comment_ids"],
@@ -1181,9 +1453,11 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._error(400, str(exc))
             return
+        checkpoints.begin(self.config)
         save_corrections(
             self.config.session_dir / CORRECTIONS_FILENAME, corrections
         )
+        checkpoints.commit(self.config, "Word correction")
         self._send_correction_state(corrections)
 
     def _post_word_correct_remove(self) -> None:
@@ -1202,10 +1476,45 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._error(400, str(exc))
             return
+        checkpoints.begin(self.config)
         save_corrections(
             self.config.session_dir / CORRECTIONS_FILENAME, corrections
         )
+        checkpoints.commit(self.config, "Word correction removed")
         self._send_correction_state(corrections)
+
+    def _post_history_move(self, undo: bool) -> None:
+        """Undo or redo one checkpoint, restoring the session state.
+
+        The after-review page is derived state, so it is refreshed
+        from whatever the restore brought back. Both moves answer in
+        plain words when there is nowhere to go.
+        """
+        if self._read_json_body() is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        moved = (
+            checkpoints.undo(self.config)
+            if undo
+            else checkpoints.redo(self.config)
+        )
+        if moved is None:
+            message = (
+                "There is nothing to go back to yet."
+                if undo
+                else "There is nothing to redo."
+            )
+            self._send_json(
+                200,
+                {
+                    "ok": False,
+                    "message": message,
+                    **checkpoints.state(self.config),
+                },
+            )
+            return
+        _refresh_after_review(self.config)
+        self._send_json(200, {"ok": True, **moved})
 
     def _post_render(self) -> None:
         body = self._read_json_body()
@@ -1214,7 +1523,14 @@ class _Handler(BaseHTTPRequestHandler):
             return
         missing = self.config.render_missing()
         if missing:
-            self._send_json(200, {"ok": False, "missing": missing})
+            self._send_json(
+                200,
+                {
+                    "ok": False,
+                    "missing": missing,
+                    "message": self.config.render_message(),
+                },
+            )
             return
         session = self.config.session_dir
         revised = session / "revised_cuts.json"
@@ -1253,17 +1569,40 @@ class _Handler(BaseHTTPRequestHandler):
             )
         except subprocess.TimeoutExpired:
             self._send_json(
-                200, {"ok": False, "error": "render timed out"}
+                200,
+                {
+                    "ok": False,
+                    "error": "Building the fixed video took too "
+                    "long, so it was stopped. The revised plan is "
+                    "still saved.",
+                },
             )
             return
         except OSError as exc:
+            # Raw detail is for the server log; the page gets words.
+            _log_raw_error("render start", exc)
             self._send_json(
-                200, {"ok": False, "error": f"could not start render: {exc}"}
+                200,
+                {
+                    "ok": False,
+                    "error": "The fixed video could not be started. "
+                    "The revised plan is still saved.",
+                },
             )
             return
         if proc.returncode != 0:
             tail = (proc.stdout + "\n" + proc.stderr).strip()[-2000:]
-            self._send_json(200, {"ok": False, "error": tail})
+            print(f"[render] render script failed:\n{tail}",
+                  file=sys.stderr)
+            self._send_json(
+                200,
+                {
+                    "ok": False,
+                    "error": "The fixed video could not be built. "
+                    "Nothing was changed, and the revised plan is "
+                    "still saved.",
+                },
+            )
             return
         try:
             _regenerate_after_review(self.config)
@@ -1277,15 +1616,94 @@ class _Handler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 
 
+class _Server(ThreadingHTTPServer):
+    """Threading server that stays quiet when a browser hangs up.
+
+    Browsers cut a video stream mid-flight all the time (seeking,
+    switching formats, closing the tab), and the default error
+    handler prints a full BrokenPipeError traceback for each one,
+    which reads like a crash to anyone watching the log. A client
+    disconnect is expected, so it logs nothing; every other error
+    keeps the default traceback.
+    """
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(
+            exc,
+            (BrokenPipeError, ConnectionResetError, ConnectionAbortedError),
+        ):
+            return
+        super().handle_error(request, client_address)
+
+
 def create_server(
     config: WebAppConfig,
     host: str = "127.0.0.1",
     port: int = 8765,
 ) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), _Handler)
+    httpd = _Server((host, port), _Handler)
     httpd.daemon_threads = True
     httpd.config = config  # type: ignore[attr-defined]
     return httpd
+
+
+RENDER_SCRIPT_NAME = "render.py"
+CLEANED_WAV_NAME = "cleaned.wav"
+SOURCE_VIDEO_NAMES = (
+    "source.mov",
+    "source.MOV",
+    "source.mp4",
+    "source.MP4",
+    "source.m4v",
+)
+
+# The render pieces in the order the plain sentence names them, each
+# with the words a person would use for it. The machine names stay in
+# the ``missing`` list for the page's own wording; these are for the
+# one plain sentence the server itself speaks (startup line, render
+# response, job summary).
+_RENDER_PIECE_ORDER = ("render_py", "source_video", "cleaned_wav")
+_RENDER_PIECE_PLAIN = {
+    "render_py": "the render script",
+    "source_video": "the original video",
+    "cleaned_wav": "the cleaned audio",
+}
+
+
+def _join_plain(items: list) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    if len(items) == 2:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + ", and " + items[-1]
+
+
+def _autodetect_source_video(job_dir: Path) -> Optional[str]:
+    """The job folder's own original video, when it carries one.
+
+    A file named ``source.*`` wins. Otherwise any ``.mov`` in the
+    folder: the runner's finished cuts are all ``.mp4`` under known
+    names, so a ``.mov`` can only be an original the creator dropped
+    in. Anything else is a guess, and rendering never guesses.
+    """
+    for name in SOURCE_VIDEO_NAMES:
+        candidate = job_dir / name
+        if candidate.is_file():
+            return str(candidate)
+    try:
+        movs = sorted(
+            path
+            for path in job_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".mov"
+        )
+    except OSError:
+        return None
+    if movs:
+        return str(movs[0])
+    return None
 
 
 def _lan_ip() -> Optional[str]:
@@ -1309,6 +1727,19 @@ def serve(
     cleaned_wav: Optional[str] = None,
 ) -> int:
     job = Path(job_dir)
+    if job.is_file():
+        # A video file is the mistake everyone makes first; say what
+        # was handed over and what the app actually runs on, plainly.
+        print(
+            f"error: {job} is a file, not a folder. Talk to Your "
+            "Editor runs on a runner job folder (the folder holding "
+            "transcript.json and cuts.json), not on a video file.",
+            file=sys.stderr,
+        )
+        return 2
+    if not job.is_dir():
+        print(f"error: job folder not found: {job}", file=sys.stderr)
+        return 2
     for required in ("transcript.json", "cuts.json"):
         if not (job / required).is_file():
             print(f"error: {job / required} not found", file=sys.stderr)
@@ -1330,14 +1761,14 @@ def serve(
         "Your phone must be on the same Wi-Fi as this computer.",
         flush=True,
     )
-    missing = config.render_missing()
-    if missing:
+    if config.render_missing():
         print(
-            "Render is not configured (missing: "
-            + ", ".join(missing)
-            + "). Direction still works; rendering is off.",
+            config.render_message()
+            + " Direction still works; rendering is off.",
             flush=True,
         )
+    elif config.render_autowired:
+        print(config.render_message(), flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

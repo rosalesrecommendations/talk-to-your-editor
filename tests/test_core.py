@@ -16,7 +16,13 @@ from talk_to_your_editor.applier import apply_verdicts
 from talk_to_your_editor.meta_provider import MockProvider
 from talk_to_your_editor.schema import SchemaError, validate_operations
 from talk_to_your_editor.timeline import Timeline
-from talk_to_your_editor.verifier import verify_operations
+from talk_to_your_editor.verifier import (
+    OVERLAP_FLAG_REASON,
+    plain_applied_action,
+    plain_held_action,
+    plain_reason_sentence,
+    verify_operations,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -341,6 +347,89 @@ class ApplyTests(FixtureCase):
         verdicts, revised, _ = self._run_ops([raw])
         self.assertEqual(verdicts[0].status, "reject")
         self.assertEqual(revised["kept_ranges"], self.cuts["kept_ranges"])
+
+
+class PlainReasonTests(unittest.TestCase):
+    """Every verdict reason code maps to a real plain sentence.
+
+    The pages build their result text from these sentences, so a
+    code with no sentence here is a code that could reach a screen.
+    The fallback sentence exists for codes nobody has seen yet; the
+    known codes must never land on it.
+    """
+
+    KNOWN_CODES = (
+        "creator_review_requested",
+        "negation_bearing_span",
+        "special_insert_targeted",
+        "special_insert_join",
+        "wonder_review_required",
+        "removes_over_25_percent",
+        "word_index_out_of_range",
+        "span_beyond_source_duration",
+        "join_index_out_of_range",
+        "cut_span_not_kept",
+        "restore_span_not_cut",
+        "replace_take_spans_overlap",
+        "word_boundary_split",
+        "frame_quantization_clips_neighbor",
+        "min_range_duration",
+        "join_has_no_speech_edge",
+        "pause_out_of_bounds",
+    )
+
+    def test_every_known_code_has_its_own_sentence(self):
+        fallback = plain_reason_sentence("some_code_nobody_has_seen")
+        for code in self.KNOWN_CODES:
+            sentence = plain_reason_sentence(code)
+            self.assertNotEqual(sentence, fallback, code)
+            self.assertNotIn(code, sentence)
+            self.assertTrue(sentence.endswith("."), sentence)
+
+    def test_protected_span_names_its_label_in_words(self):
+        sentence = plain_reason_sentence(
+            "protected_span:prayer protection: never cut the prayer "
+            "(curation)"
+        )
+        self.assertIn("protected", sentence)
+        self.assertIn("prayer protection: never cut the prayer", sentence)
+        self.assertNotIn("protected_span", sentence)
+        # A label written with underscores is shown with spaces.
+        sentence = plain_reason_sentence(
+            "protected_span:signature_breath_insert (post_edits)"
+        )
+        self.assertIn("signature breath insert", sentence)
+        self.assertNotIn("signature_breath_insert", sentence.replace(
+            "signature breath insert", ""
+        ))
+
+    def test_overlap_reason_becomes_a_sentence(self):
+        sentence = plain_reason_sentence(OVERLAP_FLAG_REASON)
+        self.assertIn("overlaps another note", sentence)
+        self.assertTrue(sentence.endswith("."))
+
+    def test_held_action_joins_sentences_without_codes(self):
+        text = plain_held_action(
+            ["protected_span:closing call to action (profile)",
+             "negation_bearing_span", "negation_bearing_span"]
+        )
+        self.assertTrue(text.startswith("No change was applied. "))
+        self.assertIn("protected", text)
+        self.assertIn("negative", text)
+        self.assertNotIn("protected_span", text)
+        self.assertNotIn("negation_bearing_span", text)
+        # A repeated reason is said once.
+        self.assertEqual(text.count("negative statement"), 1)
+
+    def test_applied_action_is_plain_for_every_type(self):
+        for op_type in (
+            "cut_words", "restore_words", "replace_take",
+            "set_join_pause", "flag_for_review",
+        ):
+            sentence = plain_applied_action(op_type)
+            self.assertTrue(sentence.endswith("."), sentence)
+            self.assertNotIn("mock", sentence)
+            self.assertNotIn("word ", sentence)
 
 
 class MockDirectTests(FixtureCase):

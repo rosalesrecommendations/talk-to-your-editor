@@ -113,13 +113,44 @@ def index_operations(operations: Any) -> dict[str, dict]:
     return index
 
 
+# A provider's raw ``reason`` is internal text: it can carry the
+# provider's own name as a prefix ("mock: ..."), word-index jargon
+# ("at word 16"), or a machine code in snake_case. Only a reason that
+# survives cleaning may be shown; anything else falls back to the
+# per-type template, which is plain by construction.
+_PROVIDER_PREFIX = re.compile(r"^(?:mock|meta|spark|wonder)\s*:\s*", re.IGNORECASE)
+_CODE_TOKEN = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+_INDEX_JARGON = re.compile(r"\b(?:word|join)\s+\d+\b", re.IGNORECASE)
+
+
+def _clean_reason(value: Any) -> Optional[str]:
+    """A provider reason made safe to show, or None when it is not.
+
+    Strips a leading provider-name prefix, then refuses anything
+    still carrying a machine code or a word/join index reference.
+    """
+    text = str(value or "").strip()
+    text = _PROVIDER_PREFIX.sub("", text).strip()
+    if not text:
+        return None
+    if _CODE_TOKEN.search(text) or _INDEX_JARGON.search(text):
+        return None
+    text = text[0].upper() + text[1:]
+    if not text.endswith((".", "!", "?")):
+        text += "."
+    return text
+
+
 def _plain_action(op: Optional[dict], status: str) -> str:
     """Plain-language description of what happened for one comment."""
     if op is not None:
-        for key in ("plain_action", "action_taken", "summary", "action", "reason"):
+        for key in ("plain_action", "action_taken", "summary", "action"):
             value = op.get(key)
             if value and str(value).strip():
                 return str(value).strip()
+        cleaned = _clean_reason(op.get("reason"))
+        if cleaned:
+            return cleaned
         template = _OPERATION_ACTION_TEMPLATES.get(str(op.get("type") or ""))
         if template:
             return template

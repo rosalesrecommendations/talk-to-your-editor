@@ -48,6 +48,146 @@ OVERLAP_FLAG_REASON = (
     "applied and this one was held for your review"
 )
 
+# ---------------------------------------------------------------------------
+# Plain words for people
+#
+# Verdict reasons are machine codes (``protected_span:...``,
+# ``negation_bearing_span``, ...). They are for the audit record and
+# the tests, never for a screen. Everything a page shows about what
+# happened to a note is built here, in one place, so the player page,
+# the after-review page, and the transcript word toggle all speak the
+# same plain sentences and no code can leak through any of them.
+# ---------------------------------------------------------------------------
+
+# What an applied change did, per operation type, in words a creator
+# already uses. These say nothing about who proposed the change or
+# where it pointed, only what happened to the edit.
+PLAIN_ACTION_BY_TYPE = {
+    "cut_words": (
+        "Removed the words this note pointed at from the finished edit."
+    ),
+    "restore_words": "Restored words that had been cut, as this note asked.",
+    "replace_take": (
+        "Swapped the take used here for the other take, as this note asked."
+    ),
+    "set_join_pause": (
+        "Changed the pause at this join to the length this note asked for."
+    ),
+    "flag_for_review": "No change was made. A person needs to decide this one.",
+}
+
+_PLAIN_REASON_SENTENCES = {
+    "creator_review_requested": "A person needs to decide this one.",
+    "negation_bearing_span": (
+        "That part includes a negative statement, so a person needs "
+        "to review it before it can change."
+    ),
+    "special_insert_targeted": (
+        "That part is inside a special insert, so it cannot be changed."
+    ),
+    "special_insert_join": (
+        "That pause sits next to a special insert, so it cannot be "
+        "changed."
+    ),
+    "wonder_review_required": (
+        "That change needs a second review before it can be applied."
+    ),
+    "removes_over_25_percent": (
+        "That change would take out too much of the edit at once."
+    ),
+    "word_index_out_of_range": (
+        "That edit pointed at words that are not in the transcript."
+    ),
+    "span_beyond_source_duration": (
+        "That edit pointed past the end of the video."
+    ),
+    "join_index_out_of_range": (
+        "That edit pointed at a pause that is not in this edit."
+    ),
+    "cut_span_not_kept": (
+        "Those words are already cut, so there was nothing to remove."
+    ),
+    "restore_span_not_cut": (
+        "Those words are already in the edit, so there was nothing "
+        "to bring back."
+    ),
+    "replace_take_spans_overlap": (
+        "The two takes in that swap overlap, so the swap could not "
+        "be made."
+    ),
+    "word_boundary_split": "That edit would split a word in half.",
+    "frame_quantization_clips_neighbor": (
+        "That edit would clip the word next to it."
+    ),
+    "min_range_duration": (
+        "That change would leave a piece too short to play."
+    ),
+    "join_has_no_speech_edge": (
+        "That pause is not between two spoken parts."
+    ),
+    "pause_out_of_bounds": "That pause length does not fit in that spot.",
+}
+
+_PLAIN_FALLBACK_SENTENCE = (
+    "The safety check held this change, so a person can review it."
+)
+
+
+def _protected_label(reason: str) -> str:
+    """The human label inside a ``protected_span:`` reason, if any.
+
+    Labels come from the creator's own plan ("prayer protection:
+    never cut the prayer", "closing call to action"), so they are
+    words a person wrote; underscores in a label are still machine
+    dressing, and are shown as spaces.
+    """
+    label = reason[len("protected_span:"):].split(" (")[0].strip()
+    return label.replace("_", " ").strip()
+
+
+def plain_reason_sentence(reason: str) -> str:
+    """One plain sentence for one verdict reason code.
+
+    Every code the verifier can produce has a sentence here; an
+    unrecognized code still maps to a plain fallback, so a raw code
+    can never reach a page through this path.
+    """
+    if reason == OVERLAP_FLAG_REASON:
+        return reason[0].upper() + reason[1:] + "."
+    if reason.startswith("protected_span:"):
+        label = _protected_label(reason)
+        if label:
+            return (
+                f"That part is protected ({label}), so it cannot "
+                "be changed."
+            )
+        return "That part is protected, so it cannot be changed."
+    return _PLAIN_REASON_SENTENCES.get(reason, _PLAIN_FALLBACK_SENTENCE)
+
+
+def plain_applied_action(operation_type: str) -> str:
+    """The plain sentence for a change that was applied."""
+    return PLAIN_ACTION_BY_TYPE.get(
+        operation_type,
+        "The change this note asked for was applied to the revised edit.",
+    )
+
+
+def plain_held_action(reasons: list) -> str:
+    """The plain text for a change that was flagged or rejected.
+
+    One sentence per distinct reason, in the order the verifier
+    raised them, behind a plain statement that nothing changed.
+    """
+    sentences: list[str] = []
+    for reason in reasons:
+        sentence = plain_reason_sentence(reason)
+        if sentence not in sentences:
+            sentences.append(sentence)
+    if not sentences:
+        sentences.append(_PLAIN_FALLBACK_SENTENCE)
+    return "No change was applied. " + " ".join(sentences)
+
 NEGATION_WORDS = {
     "no", "not", "never", "nor", "without", "cannot", "can't", "cant",
     "don't", "dont", "won't", "wont", "isn't", "isnt", "didn't", "didnt",

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 - 2026-10-27
+
+A night of fixes from the audit pass: everything the page says is now plainer, playback is safer, and a session can be walked back.
+
+- Plain words everywhere: every result and every held note is explained in plain language, on the test page and the grading page alike. Internal check codes and machine wording no longer appear anywhere a viewer can see them; a held note says what protected it and why, in a sentence a person would say.
+- Browser-safe video: the app now recognizes the common video files a runner job can hold (.mp4, .mov, .m4v), and when a file is in a format a browser cannot play, it quietly makes a converted playback copy inside the session folder and plays that instead. The original file is never touched. If a video truly cannot be played, the player says so in one plain sentence instead of loading forever.
+- Rendering sets itself up: when the job folder already carries the pieces rendering needs (the render script, the cleaned audio, the original video), the app finds and uses them on its own. When a piece is missing, the message is one plain sentence naming what is missing, not a list of machine names.
+- Undo, redo, and History: a new History card records every change in the session, and Undo and Redo step back and forward through them, so nothing done in a session is ever lost or final until you say so.
+- Direction builds on your session: a direction run now starts from the edit as your session currently has it, including words you cut or restored by clicking in the transcript, instead of resetting to the job's original plan. Each run is kept as its own round in the session, so earlier runs are never overwritten.
+- Quieter server logs: when a browser stops a video stream mid-flight, the server no longer prints a long error trace for it. Real errors still show.
+- Launcher speaks plainly: the Mac launcher now opens with the part 1 and part 2 map (the runner makes the first edit; this app directs the fixes), and if a video file is pasted where a job folder belongs, it says that is a file, not a folder, instead of calling the folder missing.
+
 ## 0.3.0 - 2026-10-27
 
 The feedback release: the test page learned to work the way a creator actually gives notes. Built piece by piece from a live test session on a real edit.

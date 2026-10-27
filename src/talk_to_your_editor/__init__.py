@@ -6,7 +6,7 @@ deterministic verifier checks them against locked safety rules, and the
 applier writes a revised cuts plan without ever mutating the original job.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 from .schema import Operation, SchemaError, validate_operations
 from .timeline import Timeline

@@ -23,7 +23,11 @@ from .applier import ApplyError, apply_verdicts
 from .meta_provider import MetaProvider, MockProvider, ProviderError
 from .schema import SchemaError, validate_operations
 from .timeline import Timeline
-from .verifier import verify_operations
+from .verifier import (
+    plain_applied_action,
+    plain_held_action,
+    verify_operations,
+)
 
 
 def _load_json(path: str) -> dict:
@@ -143,18 +147,23 @@ def _verify_and_apply(args, ops_data, out_dir: Path) -> dict:
     cuts = _load_json(args.cuts)
     revised, audit = apply_verdicts(cuts, timeline, verdicts)
     # A flat per-operation view of the verdicts, in the shape the
-    # after-review page consumes: one entry per operation, carrying
-    # its outcome and, for anything not applied, the named reasons.
+    # pages consume: one entry per operation, carrying its outcome
+    # and a plain_action written for a person. Every entry carries
+    # one: an applied change says what it did, and a held or rejected
+    # change says why in plain sentences mapped from the verdict
+    # reasons. The raw reason codes stay in the audit's verdicts;
+    # they never appear in this text.
     page_operations = []
     for verdict in verdicts:
         entry = dict(verdict.operation.to_dict())
         entry["status"] = _STATUS_FOR_PAGE.get(
             verdict.status, verdict.status)
-        if verdict.status != "apply" and verdict.reasons:
-            entry["plain_action"] = (
-                "No change was applied. Safety check: "
-                + "; ".join(verdict.reasons)
+        if verdict.status == "apply":
+            entry["plain_action"] = plain_applied_action(
+                verdict.operation.type
             )
+        else:
+            entry["plain_action"] = plain_held_action(verdict.reasons)
         page_operations.append(entry)
     audit["operations"] = page_operations
     _write_json(out_dir / "revised_cuts.json", revised)

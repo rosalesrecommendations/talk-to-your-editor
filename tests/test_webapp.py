@@ -8,8 +8,12 @@ requests.
 
 from __future__ import annotations
 
+import contextlib
+import html as html_module
+import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,11 +49,14 @@ def load_fixture(name: str):
 
 
 class WebAppTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.tmp = Path(tempfile.mkdtemp(prefix="tye-webapp-"))
-        cls.job = cls.tmp / "job"
-        cls.job.mkdir()
+    # Each test gets its own job and server. Direction runs build on
+    # the session's current plan, so a run in one test would change
+    # the starting point of the next test's run if the session were
+    # shared; isolation keeps every baseline the job's own cuts.
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="tye-webapp-"))
+        self.job = self.tmp / "job"
+        self.job.mkdir()
         for name in (
             "sample_transcript.json",
             "sample_cuts.json",
@@ -60,25 +67,24 @@ class WebAppTests(unittest.TestCase):
                 "sample_cuts.json": "cuts.json",
                 "sample_profile.json": "profile.json",
             }[name]
-            shutil.copyfile(FIXTURES / name, cls.job / target)
-        (cls.job / "review.mp4").write_bytes(VIDEO_BYTES)
-        cls.original_cuts = (cls.job / "cuts.json").read_bytes()
-        cls.original_transcript = (cls.job / "transcript.json").read_bytes()
-        cls.server = create_server(
-            WebAppConfig(cls.job), host="127.0.0.1", port=0
+            shutil.copyfile(FIXTURES / name, self.job / target)
+        (self.job / "review.mp4").write_bytes(VIDEO_BYTES)
+        self.original_cuts = (self.job / "cuts.json").read_bytes()
+        self.original_transcript = (self.job / "transcript.json").read_bytes()
+        self.server = create_server(
+            WebAppConfig(self.job), host="127.0.0.1", port=0
         )
-        cls.port = cls.server.server_address[1]
-        cls.thread = threading.Thread(
-            target=cls.server.serve_forever, daemon=True
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, daemon=True
         )
-        cls.thread.start()
-        cls.base = f"http://127.0.0.1:{cls.port}"
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.port}"
 
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.server.shutdown()
-        cls.server.server_close()
-        shutil.rmtree(cls.tmp, ignore_errors=True)
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     # -- helpers -----------------------------------------------------------
 
@@ -473,8 +479,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("/api/word-toggle", page)
         # The job summary carries every word with its state, kept and
         # cut styled differently by the page. Word 0 opens the edit
-        # (kept in every flow) and word 8 is the cut first take (no
-        # flow restores it), so both are stable on the shared server.
+        # and word 8 is the cut first take.
         summary = self.get_json("/api/job")
         words = summary["transcript_words"]
         self.assertEqual(len(words), summary["words_total"])
@@ -1153,7 +1158,17 @@ class CommentScopeAndOverallTests(unittest.TestCase):
         self.assertEqual(status, 200, landscape)
         self.assertEqual(landscape["format"], "landscape")
         self.assertEqual(run_ids(landscape), {"l1", "b1"})
-        self.assertIn("l1", landscape["applied_comment_ids"])
+        # The two formats share one plan, and a run builds on the
+        # session's current plan rather than resetting to the job's
+        # cuts: the landscape run starts from the words the vertical
+        # run left, and the sentence the landscape note points at is
+        # the same one the vertical note already removed, so that
+        # note has nothing left to apply.
+        self.assertEqual(
+            landscape["before"]["kept_words"],
+            vertical["after"]["kept_words"],
+        )
+        self.assertNotIn("l1", landscape["applied_comment_ids"])
 
     def test_overall_note_reaches_every_direction_run(self):
         status, _ = self.save(
@@ -1675,6 +1690,1098 @@ class SigninTests(unittest.TestCase):
         self.assertIn("error", payload)
         state = self.get_json("/api/signin")
         self.assertFalse(state["meta_signin_set"])
+
+
+class RenderAutoWireTests(unittest.TestCase):
+    """Render auto-wiring and server manners.
+
+    A job folder that carries the render script, the original video,
+    and the cleaned audio wires rendering up by itself; the status is
+    one plain sentence; explicit flags still win. The server log
+    stays quiet when a browser cuts a video stream, and ``serve``
+    says plainly when it is handed a file instead of a folder.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="tye-autowire-"))
+        self.job = self.tmp / "job"
+        self.job.mkdir()
+        for src, dst in (
+            ("sample_transcript.json", "transcript.json"),
+            ("sample_cuts.json", "cuts.json"),
+            ("sample_profile.json", "profile.json"),
+        ):
+            shutil.copyfile(FIXTURES / src, self.job / dst)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # -- helpers ---------------------------------------------------------
+
+    def _start_server(self, job: Path) -> str:
+        server = create_server(
+            WebAppConfig(job), host="127.0.0.1", port=0
+        )
+        thread = threading.Thread(
+            target=server.serve_forever, daemon=True
+        )
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    def call(self, base, path, data=None):
+        payload = None if data is None else json.dumps(data).encode()
+        req = urllib.request.Request(
+            base + path,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST" if data is not None else "GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode())
+
+    # -- auto-wiring -------------------------------------------------------
+
+    def test_full_job_folder_wires_rendering_itself(self):
+        for name in ("render.py", "source.mov", "cleaned.wav"):
+            (self.job / name).write_bytes(b"piece")
+        config = WebAppConfig(self.job)
+        self.assertEqual(config.render_missing(), [])
+        self.assertEqual(
+            sorted(config.render_autowired),
+            ["cleaned_wav", "render_py", "source_video"],
+        )
+        self.assertEqual(config.render_py, str(self.job / "render.py"))
+        self.assertEqual(
+            config.source_video, str(self.job / "source.mov")
+        )
+        self.assertEqual(
+            config.cleaned_wav, str(self.job / "cleaned.wav")
+        )
+        self.assertEqual(
+            config.render_message(),
+            "Rendering is set up from this job folder.",
+        )
+
+    def test_named_source_file_wins_over_a_loose_mov(self):
+        (self.job / "IMG_0001.MOV").write_bytes(b"a")
+        (self.job / "source.mp4").write_bytes(b"b")
+        config = WebAppConfig(self.job)
+        self.assertEqual(
+            config.source_video, str(self.job / "source.mp4")
+        )
+
+    def test_loose_mov_is_the_original_when_no_source_name(self):
+        (self.job / "IMG_0001.MOV").write_bytes(b"a")
+        config = WebAppConfig(self.job)
+        self.assertEqual(
+            config.source_video, str(self.job / "IMG_0001.MOV")
+        )
+
+    def test_mp4_outputs_are_never_guessed_as_the_original(self):
+        (self.job / "review.mp4").write_bytes(VIDEO_BYTES)
+        (self.job / "final.mp4").write_bytes(VIDEO_BYTES)
+        config = WebAppConfig(self.job)
+        self.assertIsNone(config.source_video)
+        self.assertIn("source_video", config.render_missing())
+
+    def test_partial_folder_names_what_is_missing_in_plain_words(self):
+        (self.job / "cleaned.wav").write_bytes(b"w")
+        config = WebAppConfig(self.job)
+        self.assertEqual(
+            sorted(config.render_missing()),
+            ["render_py", "source_video"],
+        )
+        self.assertEqual(
+            config.render_message(),
+            "Rendering is not set up yet: this job is missing "
+            "the render script and the original video.",
+        )
+
+    def test_empty_folder_names_all_three_pieces(self):
+        config = WebAppConfig(self.job)
+        self.assertEqual(
+            config.render_message(),
+            "Rendering is not set up yet: this job is missing "
+            "the render script, the original video, and the cleaned "
+            "audio.",
+        )
+
+    def test_explicit_flags_win_over_the_folder(self):
+        for name in ("render.py", "source.mov", "cleaned.wav"):
+            (self.job / name).write_bytes(b"piece")
+        config = WebAppConfig(
+            self.job,
+            render_py="/elsewhere/render.py",
+            source_video="/elsewhere/in.mov",
+            cleaned_wav="/elsewhere/c.wav",
+        )
+        self.assertEqual(config.render_py, "/elsewhere/render.py")
+        self.assertEqual(config.source_video, "/elsewhere/in.mov")
+        self.assertEqual(config.cleaned_wav, "/elsewhere/c.wav")
+        self.assertEqual(config.render_autowired, [])
+        self.assertEqual(config.render_message(), "Rendering is set up.")
+
+    # -- over HTTP ---------------------------------------------------------
+
+    def test_summary_and_render_carry_the_plain_sentence(self):
+        (self.job / "cleaned.wav").write_bytes(b"w")
+        base = self._start_server(self.job)
+        status, summary = self.call(base, "/api/job")
+        self.assertEqual(status, 200)
+        self.assertFalse(summary["render_ready"])
+        self.assertEqual(
+            sorted(summary["render_missing"]),
+            ["render_py", "source_video"],
+        )
+        self.assertEqual(
+            summary["render_message"],
+            "Rendering is not set up yet: this job is missing "
+            "the render script and the original video.",
+        )
+        status, payload = self.call(base, "/api/render", {})
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["message"], summary["render_message"])
+        self.assertEqual(
+            sorted(payload["missing"]), ["render_py", "source_video"]
+        )
+
+    def test_auto_wired_render_actually_renders(self):
+        (self.job / "render.py").write_text(
+            "import sys\n"
+            "open(sys.argv[4], 'wb').write(b'review')\n"
+            "open(sys.argv[5], 'wb').write(b'master')\n",
+            encoding="utf-8",
+        )
+        (self.job / "source.mov").write_bytes(b"source")
+        (self.job / "cleaned.wav").write_bytes(b"audio")
+        base = self._start_server(self.job)
+        status, summary = self.call(base, "/api/job")
+        self.assertEqual(status, 200)
+        self.assertTrue(summary["render_ready"])
+        self.assertEqual(
+            summary["render_message"],
+            "Rendering is set up from this job folder.",
+        )
+        feedback = load_fixture("sample_feedback.json")
+        status, _ = self.call(
+            base, "/api/comments", {"comments": feedback["comments"]}
+        )
+        self.assertEqual(status, 200)
+        status, payload = self.call(
+            base, "/api/direct", {"provider": "mock"}
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        status, payload = self.call(base, "/api/render", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"], payload)
+        rendered = self.job / "tye-session" / "revised-review.mp4"
+        self.assertEqual(rendered.read_bytes(), b"review")
+
+    def test_failed_render_speaks_plainly(self):
+        (self.job / "render.py").write_text(
+            "import sys\n"
+            "print('raw renderer noise', file=sys.stderr)\n"
+            "sys.exit(3)\n",
+            encoding="utf-8",
+        )
+        (self.job / "source.mov").write_bytes(b"source")
+        (self.job / "cleaned.wav").write_bytes(b"audio")
+        base = self._start_server(self.job)
+        feedback = load_fixture("sample_feedback.json")
+        status, _ = self.call(
+            base, "/api/comments", {"comments": feedback["comments"]}
+        )
+        self.assertEqual(status, 200)
+        status, payload = self.call(
+            base, "/api/direct", {"provider": "mock"}
+        )
+        self.assertEqual(status, 200)
+        status, payload = self.call(base, "/api/render", {})
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(
+            payload["error"],
+            "The fixed video could not be built. Nothing was "
+            "changed, and the revised plan is still saved.",
+        )
+        self.assertNotIn("raw renderer noise", payload["error"])
+
+    # -- serve() guards ------------------------------------------------------
+
+    def test_serve_says_a_file_is_a_file(self):
+        target = self.tmp / "IMG_0001.MOV"
+        target.write_bytes(b"x")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = webapp_module.serve(str(target))
+        self.assertEqual(code, 2)
+        self.assertIn("is a file, not a folder", err.getvalue())
+
+    def test_serve_says_a_missing_folder_is_missing(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = webapp_module.serve(str(self.tmp / "nope"))
+        self.assertEqual(code, 2)
+        self.assertIn("job folder not found", err.getvalue())
+
+    # -- server log manners --------------------------------------------------
+
+    def test_client_disconnect_logs_nothing(self):
+        server = create_server(
+            WebAppConfig(self.job), host="127.0.0.1", port=0
+        )
+        try:
+            for exc_type in (BrokenPipeError, ConnectionResetError):
+                err = io.StringIO()
+                try:
+                    raise exc_type("client went away")
+                except exc_type:
+                    with contextlib.redirect_stderr(err):
+                        server.handle_error(None, ("127.0.0.1", 0))
+                self.assertEqual(err.getvalue(), "")
+        finally:
+            server.server_close()
+
+    def test_real_errors_still_log(self):
+        server = create_server(
+            WebAppConfig(self.job), host="127.0.0.1", port=0
+        )
+        try:
+            err = io.StringIO()
+            try:
+                raise ValueError("a real problem")
+            except ValueError:
+                with contextlib.redirect_stderr(err):
+                    server.handle_error(None, ("127.0.0.1", 0))
+            self.assertIn("ValueError", err.getvalue())
+        finally:
+            server.server_close()
+
+
+class CheckpointTests(unittest.TestCase):
+    """Session checkpoints: every change is recorded, undo and redo
+    walk the session back and forward, and nothing is ever lost.
+
+    Each test gets its own job and server, because checkpoints live
+    in the session folder.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="tye-checkpoints-"))
+        self.job = self.tmp / "job"
+        self.job.mkdir()
+        for src, dst in (
+            ("sample_transcript.json", "transcript.json"),
+            ("sample_cuts.json", "cuts.json"),
+            ("sample_profile.json", "profile.json"),
+        ):
+            shutil.copyfile(FIXTURES / src, self.job / dst)
+        self.original_cuts = (self.job / "cuts.json").read_bytes()
+        self.original_transcript = (
+            self.job / "transcript.json"
+        ).read_bytes()
+        self.server = create_server(
+            WebAppConfig(self.job), host="127.0.0.1", port=0
+        )
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, daemon=True
+        )
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # -- helpers ---------------------------------------------------------
+
+    def call(self, path, data=None):
+        payload = None if data is None else json.dumps(data).encode()
+        req = urllib.request.Request(
+            self.base + path,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST" if data is not None else "GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode()
+                try:
+                    return resp.status, json.loads(body)
+                except ValueError:
+                    return resp.status, body
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode()
+            try:
+                return exc.code, json.loads(body)
+            except ValueError:
+                return exc.code, body
+
+    def save_comments(self, text="trim this part"):
+        status, payload = self.call(
+            "/api/comments",
+            {
+                "comments": [
+                    {"id": "c1", "ts": 1.0, "fmt": "vertical",
+                     "text": text}
+                ]
+            },
+        )
+        self.assertEqual(status, 200, payload)
+        return payload
+
+    def history(self):
+        status, payload = self.call("/api/history")
+        self.assertEqual(status, 200)
+        return payload
+
+    def labels(self):
+        return [c["label"] for c in self.history()["checkpoints"]]
+
+    def summary(self):
+        status, payload = self.call("/api/job")
+        self.assertEqual(status, 200)
+        return payload
+
+    # -- the checkpoint list ------------------------------------------------
+
+    def test_history_starts_empty_and_undo_says_so_plainly(self):
+        state = self.history()
+        self.assertEqual(state["checkpoints"], [])
+        self.assertFalse(state["can_undo"])
+        self.assertFalse(state["can_redo"])
+        status, payload = self.call("/api/history/undo", {})
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(
+            payload["message"], "There is nothing to go back to yet."
+        )
+
+    def test_saving_notes_records_a_checkpoint(self):
+        self.save_comments()
+        state = self.history()
+        self.assertEqual(
+            self.labels(), ["Session start", "Saved notes"]
+        )
+        self.assertEqual(state["current"], 1)
+        self.assertTrue(state["can_undo"])
+        self.assertFalse(state["can_redo"])
+
+    def test_undo_restores_notes_and_redo_brings_them_back(self):
+        self.save_comments()
+        self.assertEqual(len(self.summary()["comments"]), 1)
+        status, payload = self.call("/api/history/undo", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["current"], 0)
+        self.assertEqual(self.summary()["comments"], [])
+        status, payload = self.call("/api/history/redo", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["current"], 1)
+        comments = self.summary()["comments"]
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0]["text"], "trim this part")
+
+    def test_direction_run_is_a_checkpoint(self):
+        feedback = load_fixture("sample_feedback.json")
+        status, _ = self.call(
+            "/api/comments", {"comments": feedback["comments"]}
+        )
+        self.assertEqual(status, 200)
+        status, payload = self.call(
+            "/api/direct", {"provider": "mock"}
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        session = self.job / "tye-session"
+        self.assertTrue((session / "revised_cuts.json").is_file())
+        self.assertEqual(
+            self.labels(),
+            ["Session start", "Saved notes", "Direction run"],
+        )
+        status, payload = self.call("/api/history/undo", {})
+        self.assertTrue(payload["ok"])
+        # Back at the saved-notes checkpoint: no revised plan, and
+        # the after-review page is the placeholder again.
+        self.assertFalse((session / "revised_cuts.json").exists())
+        status, page = self.call("/after-review")
+        self.assertEqual(status, 200)
+        self.assertIn("No after-review yet", page)
+
+    def test_word_toggle_is_a_checkpoint(self):
+        entries = self.summary()["transcript_words"]
+        kept = next(e for e in entries if e["status"] == "kept")
+        status, payload = self.call(
+            "/api/word-toggle", {"word_index": kept["index"]}
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["changed"])
+        self.assertEqual(
+            self.labels(), ["Session start", "Transcript word change"]
+        )
+        status, payload = self.call("/api/history/undo", {})
+        self.assertTrue(payload["ok"])
+        entries = self.summary()["transcript_words"]
+        restored = next(
+            e for e in entries if e["index"] == kept["index"]
+        )
+        self.assertEqual(restored["status"], "kept")
+
+    def test_new_change_after_undo_replaces_the_redo_road(self):
+        self.save_comments("first version")
+        self.save_comments("second version")
+        status, payload = self.call("/api/history/undo", {})
+        self.assertTrue(payload["ok"])
+        self.assertTrue(self.history()["can_redo"])
+        self.save_comments("third version")
+        state = self.history()
+        self.assertFalse(state["can_redo"])
+        self.assertEqual(state["current"], 2)
+        self.assertEqual(
+            self.labels(),
+            ["Session start", "Saved notes", "Saved notes"],
+        )
+        status, payload = self.call("/api/history/redo", {})
+        self.assertFalse(payload["ok"])
+        self.assertEqual(
+            self.summary()["comments"][0]["text"], "third version"
+        )
+
+    def test_checkpoints_never_touch_the_job_files(self):
+        self.save_comments()
+        self.call("/api/history/undo", {})
+        self.call("/api/history/redo", {})
+        self.assertEqual(
+            (self.job / "cuts.json").read_bytes(), self.original_cuts
+        )
+        self.assertEqual(
+            (self.job / "transcript.json").read_bytes(),
+            self.original_transcript,
+        )
+
+
+# Text a viewer must never see: raw verdict codes, provider
+# internals, and word-index jargon. Plain result sentences contain
+# none of these shapes.
+RAW_TEXT_PATTERNS = (
+    "protected_span",
+    "negation_bearing_span",
+    "wonder_review_required",
+    "creator_review_requested",
+    "removes_over_25_percent",
+    "special_insert_targeted",
+    "special_insert_join",
+    "Safety check",
+    "mock:",
+    "meta_api",
+)
+RAW_TEXT_REGEXES = (
+    re.compile(r"\bword \d+\b"),
+    re.compile(r"\bjoin \d+\b"),
+    re.compile(r"\b[a-z]+_[a-z]+\b"),
+)
+
+
+def assert_no_raw_text(case: unittest.TestCase, text: str) -> None:
+    for pattern in RAW_TEXT_PATTERNS:
+        case.assertNotIn(pattern, text)
+    for regex in RAW_TEXT_REGEXES:
+        case.assertIsNone(regex.search(text), f"{regex.pattern} in {text!r}")
+
+
+class PlainWordsTests(unittest.TestCase):
+    """Regression: per-note results and grading explanations are
+    plain words on every path.
+
+    The sample job's protected prayer note and negation note used to
+    reach both pages as raw verifier codes ("Safety check:
+    protected_span:..."), and applied notes reached the grading page
+    as the mock provider's internal reason ("mock: remove the
+    sentence at word 16"). This class runs exactly those cases
+    through a direction run and scans everything the pages show.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="tye-plain-"))
+        self.job = self.tmp / "job"
+        self.job.mkdir()
+        for src, dst in (
+            ("sample_transcript.json", "transcript.json"),
+            ("sample_cuts.json", "cuts.json"),
+            ("sample_profile.json", "profile.json"),
+        ):
+            shutil.copyfile(FIXTURES / src, self.job / dst)
+        self.server = create_server(
+            WebAppConfig(self.job), host="127.0.0.1", port=0
+        )
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, daemon=True
+        )
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def call(self, path, data=None):
+        payload = None if data is None else json.dumps(data).encode()
+        req = urllib.request.Request(
+            self.base + path,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST" if data is not None else "GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode()
+                try:
+                    return resp.status, json.loads(body)
+                except ValueError:
+                    return resp.status, body
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode()
+            try:
+                return exc.code, json.loads(body)
+            except ValueError:
+                return exc.code, body
+
+    def run_sample_direction(self):
+        comments = load_fixture("sample_feedback.json")["comments"]
+        # One more note the provider cannot act on at all, so the
+        # flag_for_review path (creator_review_requested) is covered
+        # alongside the sample's protected and negation notes.
+        comments = comments + [
+            {
+                "id": "c9",
+                "ts": 2.0,
+                "fmt": "vertical",
+                "text": "Make this moment feel bigger somehow.",
+            }
+        ]
+        status, payload = self.call(
+            "/api/comments", {"video": "job", "comments": comments}
+        )
+        self.assertEqual(status, 200, payload)
+        status, result = self.call("/api/direct", {"provider": "mock"})
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result["ok"])
+        return result
+
+    def test_direction_results_are_plain_words(self):
+        result = self.run_sample_direction()
+        by_id = {op["comment_id"]: op for op in result["operations"]}
+        # The sample's known outcomes, unchanged.
+        self.assertEqual(by_id["c1"]["status"], "applied")
+        self.assertEqual(by_id["c2"]["status"], "flagged")
+        self.assertEqual(by_id["c3"]["status"], "flagged")
+        self.assertEqual(by_id["c9"]["status"], "flagged")
+        # Every operation carries a plain_action, and none of the
+        # text the results page shows carries a raw code, a provider
+        # name, or a word index.
+        for op in result["operations"]:
+            self.assertIn("plain_action", op)
+            assert_no_raw_text(self, op["plain_action"])
+        # The held notes say why, in words: the prayer note names
+        # its protection, the negation note names the negative
+        # statement, the unrecognized note asks for a person.
+        self.assertIn("protected", by_id["c2"]["plain_action"])
+        self.assertIn("prayer", by_id["c2"]["plain_action"])
+        self.assertTrue(
+            by_id["c2"]["plain_action"].startswith("No change was applied.")
+        )
+        self.assertIn("negative", by_id["c3"]["plain_action"])
+        self.assertIn("person needs to decide", by_id["c9"]["plain_action"])
+        # The applied note's text is the plain per-type sentence,
+        # not the provider's internal reason.
+        self.assertNotIn("mock", by_id["c1"]["plain_action"])
+        self.assertIn("Removed the words", by_id["c1"]["plain_action"])
+
+    def test_saved_audit_operations_are_plain_words(self):
+        self.run_sample_direction()
+        audit = json.loads(
+            (self.job / "tye-session" / "operations_audit.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertTrue(audit["operations"])
+        for op in audit["operations"]:
+            self.assertIn("plain_action", op)
+            assert_no_raw_text(self, op["plain_action"])
+        # The raw codes still exist where they belong: the audit's
+        # internal verdict records, which no page renders as text.
+        verdicts = {v["operation"]["comment_id"]: v for v in audit["verdicts"]}
+        self.assertTrue(
+            any(
+                r.startswith("protected_span")
+                for r in verdicts["c2"]["reasons"]
+            )
+        )
+
+    def test_after_review_page_is_plain_words(self):
+        self.run_sample_direction()
+        status, page = self.call("/after-review")
+        self.assertEqual(status, 200)
+        actions = re.findall(
+            r'<span class="action-text">(.*?)</span>', page, re.DOTALL
+        )
+        # One grading explanation per comment row.
+        self.assertEqual(len(actions), 5)
+        for action in actions:
+            assert_no_raw_text(self, html_module.unescape(action))
+        joined = " ".join(html_module.unescape(a) for a in actions)
+        self.assertIn("protected", joined)
+        self.assertIn("negative", joined)
+
+
+def _make_video_with_codec(path: Path, codec: str) -> None:
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=c=black:s=256x144:d=0.5",
+            "-c:v", codec, "-pix_fmt", "yuv420p", str(path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+
+def _probe_codec(path: Path) -> str:
+    return subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "csv=p=0", str(path),
+        ],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+@unittest.skipUnless(
+    shutil.which("ffmpeg") and shutil.which("ffprobe"),
+    "needs ffmpeg and ffprobe to build the codec fixture",
+)
+class BrowserSafeVideoTests(unittest.TestCase):
+    """Browser-safe video: any video file in the job is recognized,
+    and one a browser cannot decode is served through a converted
+    H.264 playback copy instead of sitting black forever.
+
+    The fixture mirrors the live-test failure: an iPhone-style
+    H.265 .MOV next to an ordinary H.264 export.
+    """
+
+    @classmethod
+    def _start_server(cls, job: Path):
+        server = create_server(WebAppConfig(job), host="127.0.0.1", port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+    @classmethod
+    def _get(cls, base: str, path: str):
+        try:
+            with urllib.request.urlopen(base + path, timeout=30) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = Path(tempfile.mkdtemp(prefix="tye-codec-"))
+        cls.job = cls.tmp / "job"
+        cls.job.mkdir()
+        for fixture, target in (
+            ("sample_transcript.json", "transcript.json"),
+            ("sample_cuts.json", "cuts.json"),
+            ("sample_profile.json", "profile.json"),
+        ):
+            shutil.copyfile(FIXTURES / fixture, cls.job / target)
+        _make_video_with_codec(cls.job / "clip.MOV", "libx265")
+        _make_video_with_codec(cls.job / "review.mp4", "libx264")
+        _make_video_with_codec(cls.job / "extra.m4v", "libx264")
+        # The fixture really is what this class claims it is.
+        assert _probe_codec(cls.job / "clip.MOV") == "hevc"
+        assert _probe_codec(cls.job / "review.mp4") == "h264"
+        assert _probe_codec(cls.job / "extra.m4v") == "h264"
+        cls.original_mov = (cls.job / "clip.MOV").read_bytes()
+        cls.server, cls.base = cls._start_server(cls.job)
+        # A second job whose only video is not a video at all, so
+        # no playback copy can ever be built from it.
+        cls.broken_job = cls.tmp / "job-broken"
+        cls.broken_job.mkdir()
+        for fixture, target in (
+            ("sample_transcript.json", "transcript.json"),
+            ("sample_cuts.json", "cuts.json"),
+        ):
+            shutil.copyfile(FIXTURES / fixture, cls.broken_job / target)
+        (cls.broken_job / "broken.mov").write_bytes(VIDEO_BYTES)
+        cls.server2, cls.base2 = cls._start_server(cls.broken_job)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        for server in (cls.server, cls.server2):
+            server.shutdown()
+            server.server_close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_all_video_files_are_recognized(self):
+        _, body = self._get(self.base, "/api/job")
+        summary = json.loads(body)
+        # .MOV and .m4v count, in any case, not just the three
+        # export names the app used to know.
+        self.assertEqual(
+            set(summary["videos"]), {"clip.MOV", "review.mp4", "extra.m4v"}
+        )
+        # The export name keeps its place at the front of the list.
+        self.assertEqual(summary["videos"][0], "review.mp4")
+        self.assertEqual(
+            summary["video_shapes"]["clip.MOV"],
+            {"width": 256, "height": 144},
+        )
+
+    def test_hevc_mov_is_served_as_an_h264_playback_copy(self):
+        status, served = self._get(self.base, "/video/clip.MOV")
+        self.assertEqual(status, 200)
+        # What the page receives is not the HEVC original...
+        self.assertNotEqual(served, self.original_mov)
+        probe_copy = self.tmp / "served-clip.mp4"
+        probe_copy.write_bytes(served)
+        self.assertEqual(_probe_codec(probe_copy), "h264")
+        # ...it is the converted copy kept in the session folder...
+        copy_path = (
+            self.job / "tye-session" / "playback" / "clip-mov.playback.mp4"
+        )
+        self.assertTrue(copy_path.is_file())
+        self.assertEqual(served, copy_path.read_bytes())
+        # ...and the job's original file is byte-identical.
+        self.assertEqual((self.job / "clip.MOV").read_bytes(), self.original_mov)
+        # A second watch serves the same copy, not a reconversion.
+        status, served_again = self._get(self.base, "/video/clip.MOV")
+        self.assertEqual(status, 200)
+        self.assertEqual(served_again, served)
+
+    def test_h264_files_are_served_as_themselves(self):
+        for name in ("review.mp4", "extra.m4v"):
+            status, served = self._get(self.base, f"/video/{name}")
+            self.assertEqual(status, 200)
+            self.assertEqual(served, (self.job / name).read_bytes())
+        playback_dir = self.job / "tye-session" / "playback"
+        copies = (
+            [p.name for p in playback_dir.iterdir()]
+            if playback_dir.is_dir()
+            else []
+        )
+        self.assertFalse(
+            any(name.startswith(("review", "extra")) for name in copies),
+            copies,
+        )
+
+    def test_unplayable_file_falls_back_to_the_original(self):
+        # No copy can be built from bytes that are not a video, so
+        # the original is served as-is and the player's error state
+        # (checked in the page test below) takes it from there.
+        status, served = self._get(self.base2, "/video/broken.mov")
+        self.assertEqual(status, 200)
+        self.assertEqual(served, VIDEO_BYTES)
+        playback_dir = self.broken_job / "tye-session" / "playback"
+        self.assertFalse(
+            playback_dir.is_dir() and any(playback_dir.iterdir())
+        )
+
+    def test_page_has_a_plain_could_not_play_state(self):
+        _, body = self._get(self.base, "/")
+        page = body.decode("utf-8")
+        self.assertIn('id="vidError"', page)
+        self.assertIn("could not be played here", page)
+        self.assertIn('vid.addEventListener("error", showVideoError)', page)
+        self.assertIn('vid.addEventListener("canplay", clearVideoError)', page)
+        # Loading still shows and clears exactly as before.
+        self.assertIn('vid.addEventListener("loadstart", showLoading)', page)
+        self.assertIn('vid.addEventListener("canplay", hideLoading)', page)
+
+
+class HistoryUiTests(unittest.TestCase):
+    """The History area on the player page: the checkpoint list and
+    the Undo and Redo buttons, wired to the history endpoints.
+
+    The endpoint behavior itself is covered by CheckpointTests;
+    this class proves the page carries the controls and that the
+    exact calls the buttons make move the state the page re-reads.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="tye-history-ui-"))
+        self.job = self.tmp / "job"
+        self.job.mkdir()
+        for src, dst in (
+            ("sample_transcript.json", "transcript.json"),
+            ("sample_cuts.json", "cuts.json"),
+            ("sample_profile.json", "profile.json"),
+        ):
+            shutil.copyfile(FIXTURES / src, self.job / dst)
+        self.server = create_server(
+            WebAppConfig(self.job), host="127.0.0.1", port=0
+        )
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, daemon=True
+        )
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def call(self, path, data=None):
+        payload = None if data is None else json.dumps(data).encode()
+        req = urllib.request.Request(
+            self.base + path,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST" if data is not None else "GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode()
+                try:
+                    return resp.status, json.loads(body)
+                except ValueError:
+                    return resp.status, body
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode()
+            try:
+                return exc.code, json.loads(body)
+            except ValueError:
+                return exc.code, body
+
+    def test_page_has_the_history_area_and_its_wiring(self):
+        status, page = self.call("/")
+        self.assertEqual(status, 200)
+        self.assertIn('id="historyCard"', page)
+        self.assertIn("<h2>History</h2>", page)
+        self.assertIn('id="historyList"', page)
+        self.assertIn('id="undoBtn"', page)
+        self.assertIn('id="redoBtn"', page)
+        self.assertIn('id="historyStatus"', page)
+        # The list is read from the history endpoint, the buttons
+        # post to the undo and redo endpoints, and a move re-reads
+        # the job state so comments and transcript match again.
+        self.assertIn('fetch("/api/history")', page)
+        self.assertIn("refreshHistory", page)
+        self.assertIn('"/api/history/" + which', page)
+        self.assertIn('moveHistory("undo")', page)
+        self.assertIn('moveHistory("redo")', page)
+        self.assertIn("reloadJobState()", page)
+        self.assertIn("applyJobState(job)", page)
+        # Checkpoints render with their labels, the current one
+        # marked, and the buttons follow can_undo / can_redo.
+        self.assertIn("you are here", page)
+        self.assertIn("can_undo", page)
+        self.assertIn("can_redo", page)
+
+    def test_the_buttons_calls_walk_the_session_state(self):
+        # Save notes the way the page does, then make the exact
+        # calls the Undo and Redo buttons make and confirm the job
+        # state the page re-reads follows along.
+        status, _ = self.call(
+            "/api/comments",
+            {
+                "comments": [
+                    {"id": "c1", "ts": 1.0, "fmt": "vertical",
+                     "text": "trim this part"}
+                ]
+            },
+        )
+        self.assertEqual(status, 200)
+        status, hist = self.call("/api/history")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [c["label"] for c in hist["checkpoints"]],
+            ["Session start", "Saved notes"],
+        )
+        self.assertTrue(hist["can_undo"])
+        self.assertFalse(hist["can_redo"])
+
+        status, moved = self.call("/api/history/undo", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(moved["ok"])
+        status, summary = self.call("/api/job")
+        self.assertEqual(summary["comments"], [])
+
+        status, moved = self.call("/api/history/redo", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(moved["ok"])
+        status, summary = self.call("/api/job")
+        self.assertEqual(len(summary["comments"]), 1)
+        self.assertEqual(summary["comments"][0]["text"], "trim this part")
+
+
+class DirectionBuildsOnSessionTests(unittest.TestCase):
+    """A direction run starts from the session's current plan.
+
+    Regression for the silent-loss behavior the audit found: cut a
+    word by clicking it in the transcript, then run direction, and
+    the run used to rebuild from the job's original cuts, quietly
+    restoring the clicked word. Each run is also kept as a numbered
+    round, so an earlier run's audit is never overwritten.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="tye-builds-on-"))
+        self.job = self.tmp / "job"
+        self.job.mkdir()
+        for src, dst in (
+            ("sample_transcript.json", "transcript.json"),
+            ("sample_cuts.json", "cuts.json"),
+            ("sample_profile.json", "profile.json"),
+        ):
+            shutil.copyfile(FIXTURES / src, self.job / dst)
+        self.original_cuts = (self.job / "cuts.json").read_bytes()
+        self.server = create_server(
+            WebAppConfig(self.job), host="127.0.0.1", port=0
+        )
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, daemon=True
+        )
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def call(self, path, data=None):
+        payload = None if data is None else json.dumps(data).encode()
+        req = urllib.request.Request(
+            self.base + path,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST" if data is not None else "GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode()
+                try:
+                    return resp.status, json.loads(body)
+                except ValueError:
+                    return resp.status, body
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode()
+            try:
+                return exc.code, json.loads(body)
+            except ValueError:
+                return exc.code, body
+
+    def word_status(self, index):
+        status, summary = self.call("/api/job")
+        self.assertEqual(status, 200)
+        return {
+            w["index"]: w["status"] for w in summary["transcript_words"]
+        }[index]
+
+    def save_fixture_comments(self):
+        feedback = load_fixture("sample_feedback.json")
+        status, payload = self.call(
+            "/api/comments",
+            {"video": feedback["video"], "comments": feedback["comments"]},
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["ok"])
+
+    def test_click_cut_survives_a_direction_run(self):
+        self.save_fixture_comments()
+        # Click-cut word 5 ("today", in the opening sentence): no
+        # comment points at it, so only the click can explain it
+        # being out of the final plan.
+        self.assertEqual(self.word_status(5), "kept")
+        status, payload = self.call("/api/word-toggle", {"word_index": 5})
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["changed"])
+        self.assertEqual(self.word_status(5), "cut")
+
+        status, result = self.call("/api/direct", {"provider": "mock"})
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result["ok"])
+        # The run started from the plan the click left: 31 kept
+        # words, not the job's original 32. Its own cut still
+        # applied on top of that (the repeated line, 8 more words).
+        self.assertEqual(result["before"]["kept_words"], 31)
+        self.assertEqual(result["after"]["kept_words"], 23)
+        self.assertIn("c1", result["applied_comment_ids"])
+        # And the clicked word is still cut in the final plan, both
+        # in the summary the page renders and in the revised cuts
+        # on disk.
+        self.assertEqual(self.word_status(5), "cut")
+        revised = json.loads(
+            (self.job / "tye-session" / "revised_cuts.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        timeline = Timeline(
+            load_fixture("sample_transcript.json"), revised
+        )
+        self.assertEqual(timeline.word_status(5), "cut")
+        self.assertEqual(timeline.word_status(20), "cut")
+        # The job's own cuts were never the run's output target.
+        self.assertEqual(
+            (self.job / "cuts.json").read_bytes(), self.original_cuts
+        )
+
+    def test_each_run_is_kept_as_a_numbered_round(self):
+        self.save_fixture_comments()
+        status, first = self.call("/api/direct", {"provider": "mock"})
+        self.assertEqual(status, 200, first)
+        self.assertEqual(first["round"], 1)
+        status, second = self.call("/api/direct", {"provider": "mock"})
+        self.assertEqual(status, 200, second)
+        self.assertEqual(second["round"], 2)
+        # The second run built on the first: it started from the
+        # words the first run left.
+        self.assertEqual(
+            second["before"]["kept_words"], first["after"]["kept_words"]
+        )
+        session = self.job / "tye-session"
+        for number, run in ((1, first), (2, second)):
+            round_dir = session / "rounds" / f"round-{number:03d}"
+            for name in (
+                "operations.json",
+                "operations_audit.json",
+                "revised_cuts.json",
+            ):
+                self.assertTrue((round_dir / name).is_file(), name)
+            archived = json.loads(
+                (round_dir / "operations_audit.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(archived["round"], number)
+            self.assertEqual(
+                archived["applied_comment_ids"], run["applied_comment_ids"]
+            )
+        # Round one's audit was not overwritten by round two: it
+        # still records the run that cut the repeated line.
+        round_one = json.loads(
+            (session / "rounds" / "round-001" / "operations_audit.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertIn("c1", round_one["applied_comment_ids"])
+        self.assertEqual(round_one["before"]["kept_words"], 32)
+        # The session's headline audit is the latest round.
+        latest = json.loads(
+            (session / "operations_audit.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(latest["round"], 2)
 
 
 if __name__ == "__main__":
