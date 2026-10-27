@@ -113,7 +113,10 @@ class MockProvider:
             mapping = None
             if ts is not None:
                 try:
-                    mapping = timeline.map_output_time(float(ts))
+                    # A pinned time is an estimate: resolve it to the
+                    # nearest editable words within a few seconds
+                    # either way instead of demanding the exact second.
+                    mapping = timeline.map_output_time_approx(float(ts))
                 except ValueError:
                     mapping = None
             if "pause" in lowered:
@@ -227,6 +230,36 @@ def _overall_guidance(feedback: dict) -> list[str]:
     return texts
 
 
+def _edit_guidance(feedback: dict) -> list[dict]:
+    """Notes the creator left on specific earlier edits.
+
+    A note on an edit is about the removed material itself, not about
+    a timestamp, so it is handed to the model labeled with what was
+    removed and why, and the model applies it wherever that material
+    is involved in this run.
+    """
+    if not isinstance(feedback, dict):
+        return []
+    notes = feedback.get("edit_notes")
+    if not isinstance(notes, list):
+        return []
+    guidance = []
+    for item in notes:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("note") or "").strip()
+        if not text:
+            continue
+        guidance.append(
+            {
+                "removed_text": str(item.get("removed_text") or ""),
+                "reason": str(item.get("reason") or ""),
+                "note": text,
+            }
+        )
+    return guidance
+
+
 class MetaProvider:
     """Live provider over the Meta Model API (OpenAI-compatible)."""
 
@@ -314,6 +347,10 @@ class MetaProvider:
         system = (
             "You are the direction layer of a video editor. You convert one "
             "creator comment into strict edit operations. " + SCHEMA_SPEC
+            + " The comment's timestamp is an estimate, not an exact "
+            "point: it has been resolved to the nearest words within a "
+            "few seconds either way. Trust the words in the evidence "
+            "window and what the comment says over the exact second."
         )
         public_evidence = {
             k: v for k, v in evidence.items() if not k.startswith("_")
@@ -346,8 +383,11 @@ class MetaProvider:
         operations: list[dict] = []
         routing: list[dict] = []
         overall = _overall_guidance(feedback)
+        edit_guidance = _edit_guidance(feedback)
         for comment in _comments(feedback):
-            evidence = self._evidence(comment, timeline, profile, overall)
+            evidence = self._evidence(
+                comment, timeline, profile, overall, edit_guidance
+            )
             proposed = self._propose(SPARK_MODEL, comment, evidence)
             for op in proposed:
                 route = self._route(op, comment, evidence, operations, routing)
@@ -416,12 +456,13 @@ class MetaProvider:
         timeline: Timeline,
         profile: Optional[dict],
         overall: Optional[list] = None,
+        edit_guidance: Optional[list] = None,
     ) -> dict:
         ts = comment.get("ts")
         mapping = None
         if ts is not None:
             try:
-                mapping = timeline.map_output_time(float(ts))
+                mapping = timeline.map_output_time_approx(float(ts))
             except ValueError:
                 mapping = None
         window: list[dict] = []
@@ -441,9 +482,20 @@ class MetaProvider:
         return {
             "_timeline": timeline,
             "mapping": mapping,
+            "timestamp_estimate": {
+                "window_s": mapping.get("window_s") if mapping else None,
+                "approximate": bool(mapping and mapping.get("approximate")),
+                "note": (
+                    "The pinned time is an estimate. The mapping was "
+                    "resolved to the nearest words within a few seconds "
+                    "either way; trust the words and the comment over "
+                    "the exact second."
+                ),
+            },
             "words": window,
             "joins": timeline.joins(),
             "protected_spans": timeline.protected_spans(profile),
             "profile": profile or {},
             "overall_guidance": list(overall or []),
+            "edit_guidance": list(edit_guidance or []),
         }

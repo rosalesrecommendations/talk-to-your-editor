@@ -21,6 +21,13 @@ from typing import Any, Optional
 
 EPS = 1e-6
 
+# A pinned comment time is an estimate, not a measurement: the creator
+# paused somewhere near the moment they mean. When a timestamp lands
+# somewhere with no editable word (a protected insert, a gap), the
+# mapping resolves to the nearest editable words within this many
+# seconds either way instead of giving up or pointing at the insert.
+APPROX_WINDOW_S = 3.0
+
 
 def is_special_range(rng: dict) -> bool:
     """A kept range is special if it is an insert or uses donor audio."""
@@ -152,6 +159,68 @@ class Timeline:
         if word_index is not None:
             result["word"] = self.words[word_index]["word"]
         return result
+
+    def map_output_time_approx(
+        self, output_time: float, window_s: float = APPROX_WINDOW_S
+    ) -> Optional[dict]:
+        """Map an estimated timestamp to the words it most likely means.
+
+        The exact mapping wins when it lands on an editable word. When
+        it does not (the pin sits on a protected insert, or past the
+        last word of a segment), the nearest non-special segment whose
+        output span comes within ``window_s`` of the pin is mapped
+        instead, and the result carries ``approximate: True`` plus the
+        output time it resolved to. Returns None when nothing editable
+        is within the window at all.
+        """
+        try:
+            exact = self.map_output_time(output_time)
+        except ValueError:
+            exact = None
+        if (
+            exact is not None
+            and not exact["special"]
+            and exact["word_index"] is not None
+        ):
+            exact = dict(exact)
+            exact["approximate"] = False
+            exact["window_s"] = window_s
+            return exact
+        candidates: list[tuple[float, float, dict]] = []
+        for segment in self.segments:
+            if segment["special"] or segment["duration"] <= EPS:
+                continue
+            lo, hi = segment["output_start"], segment["output_end"]
+            candidate = min(max(output_time, lo), hi)
+            distance = abs(candidate - output_time)
+            if distance <= window_s + EPS:
+                candidates.append((distance, candidate, segment))
+        candidates.sort(key=lambda item: item[0])
+        for _distance, candidate, segment in candidates:
+            # A candidate sitting exactly on a segment edge can map
+            # into the segment next door (an edge belongs to the
+            # segment that starts there), so when the edge does not
+            # resolve, the segment's own middle is tried before
+            # moving on to the next-nearest segment.
+            probes = (
+                candidate,
+                (segment["output_start"] + segment["output_end"]) / 2.0,
+            )
+            for probe in probes:
+                try:
+                    resolved = self.map_output_time(
+                        min(probe, self.output_duration)
+                    )
+                except ValueError:
+                    continue
+                if resolved["special"] or resolved["word_index"] is None:
+                    continue
+                resolved = dict(resolved)
+                resolved["approximate"] = True
+                resolved["window_s"] = window_s
+                resolved["pinned_output_time"] = round(output_time, 4)
+                return resolved
+        return None
 
     def _word_at_source_time(self, source_time: float, rng: dict) -> Optional[int]:
         candidates = self.words_in_range(rng)

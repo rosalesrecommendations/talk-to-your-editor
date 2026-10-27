@@ -118,6 +118,17 @@
   }
   #export-btn { background: var(--accent); color: #fff; flex: 1; }
   #done-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+  #send-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+  .rule-request-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    margin-top: 10px;
+    cursor: pointer;
+    min-height: 40px;
+  }
+  .rule-request-label input { accent-color: var(--accent); }
   .saved-note { color: var(--muted); font-size: 13px; text-align: center; margin-top: 12px; }
 </style>
 </head>
@@ -135,6 +146,7 @@
   <div class="toolbar">
     <button id="export-btn" type="button">Export grading file</button>
     <button id="done-btn" type="button">Mark all graded</button>
+    <button id="send-btn" type="button">Send grades to the app</button>
   </div>
   <p class="saved-note">Your grades save on this device as you go. Nothing is sent anywhere.</p>
 </main>
@@ -149,10 +161,35 @@
     return Array.prototype.slice.call(document.querySelectorAll(".comment"));
   }
 
+  function addRuleRequestControls() {
+    rows().forEach(function (row) {
+      if (row.querySelector(".rule-request")) { return; }
+      var fieldset = row.querySelector("fieldset.verdicts");
+      var label = document.createElement("label");
+      label.className = "rule-request-label";
+      var checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "rule-request";
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(" This is my style"));
+      if (fieldset) {
+        fieldset.appendChild(label);
+      } else {
+        var notesLabel = row.querySelector(".notes-label");
+        if (notesLabel && notesLabel.parentNode) {
+          notesLabel.parentNode.insertBefore(label, notesLabel.nextSibling);
+        } else {
+          row.appendChild(label);
+        }
+      }
+    });
+  }
+
   function collect() {
     var entries = rows().map(function (row) {
       var checked = row.querySelector("input[type=radio]:checked");
       var notesEl = row.querySelector(".notes");
+      var ruleEl = row.querySelector(".rule-request");
       return {
         "comment_id": row.getAttribute("data-comment-id"),
         "ts": parseFloat(row.getAttribute("data-ts")),
@@ -161,7 +198,8 @@
         "action_taken": row.querySelector(".action-text").textContent,
         "operation_type": row.getAttribute("data-operation-type") || null,
         "verdict": checked ? checked.value : null,
-        "notes": notesEl ? notesEl.value : ""
+        "notes": notesEl ? notesEl.value : "",
+        "rule_request": ruleEl ? ruleEl.checked : false
       };
     });
     return {
@@ -200,6 +238,8 @@
         var notesEl = row.querySelector(".notes");
         if (notesEl) { notesEl.value = entry.notes; }
       }
+      var ruleEl = row.querySelector(".rule-request");
+      if (ruleEl) { ruleEl.checked = !!entry.rule_request; }
     });
   }
 
@@ -217,6 +257,7 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 500);
   }
 
+  addRuleRequestControls();
   rows().forEach(function (row) {
     row.addEventListener("change", save);
     row.addEventListener("input", save);
@@ -225,6 +266,27 @@
   document.getElementById("done-btn").addEventListener("click", function () {
     save();
     window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+  document.getElementById("send-btn").addEventListener("click", function () {
+    var note = document.querySelector(".saved-note");
+    fetch("/api/grades", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries: collect().entries })
+    }).then(function (response) {
+      if (!response.ok) { throw new Error("send failed"); }
+      return response.json();
+    }).then(function (data) {
+      var message = "Grades sent to the app.";
+      if (data && data.suggestions && data.suggestions.length) {
+        message += " A pattern is ready: open the main page to see the rule it offers.";
+      }
+      if (note) { note.textContent = message; }
+    }).catch(function () {
+      if (note) {
+        note.textContent = "Could not send the grades. The export file still works; send that back instead.";
+      }
+    });
   });
   restore();
 })();

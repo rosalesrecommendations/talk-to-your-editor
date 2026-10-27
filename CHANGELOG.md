@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 - 2026-10-27
+
+The simple build. The test page was rebuilt around how a creator actually works: two choices, one button, and the transcript itself explaining every change.
+
+- A front door that fits on one screen: Remove retakes and Cut silence, both on unless you turn them off, one silence buffer (a slider or a typed number, starting at 0.1 seconds), and one Make the edit button. Everything else lives behind a single More choices fold, which holds the format scope and a spoken-direction box; what you say there adds to the two choices, and saying "unless" marks the one spot to treat differently. Cut silence trims the long pauses toward your buffer through the same safety checks as any other change, and never adds silence back.
+- Scrubbing you can feel: the timeline handle grows under your finger or cursor while you drag, a bubble above it shows the exact time where you will land, and Back 5s and Back 1s buttons sit beside the player.
+- Times are estimates now, everywhere: a pinned comment is treated as pointing near a moment, not at an exact frame. Direction resolves it to the nearest words within about three seconds either way, and the model is told to trust the words and the note over the exact second.
+- The transcript is the why: every span this app has taken out carries a dot. Click the dot and a small panel names the removed words and why they were removed, in plain sentences. There is no separate page to hunt through.
+- Notes belong to edits, not timestamps: from that same panel you can type a note, or speak it where the browser offers voice typing. The note is stored against the edit itself, listed under it from then on, and handed to the next direction run labeled with what was removed, so it still means the same thing after the timing shifts. No note is ever lost.
+- Your style, learned one yes at a time: when the same kind of change keeps working in your grades (three times, or once when you mark a change "This is my style" on the review page), the app offers it once, in plain words: "Pattern caught." Save it and it becomes a rule that rides into every later run as standing direction; pass it over and it waits; remove a saved rule whenever you like. Nothing is ever adopted without your tap. The review page gained a Send grades to the app button, so grades reach the app without a file hand-off (the export still works too).
+- The page's headline counts now describe the edit as your session currently has it, matching the transcript, instead of the job as it originally shipped.
+
 ## 0.3.1 - 2026-10-27
 
 A night of fixes from the audit pass: everything the page says is now plainer, playback is safer, and a session can be walked back.

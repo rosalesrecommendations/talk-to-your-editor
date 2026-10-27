@@ -18,6 +18,10 @@ Creators do not think in timelines and cut points. They think in sentences: "tha
 6. **After-review.** A fresh page lists every comment exactly once, what was done about it, and a verdict control (worked, partly, did not work) with notes. The exported grades are the learning record.
 7. **Learning.** Repeated graded patterns become candidate rules in a draft creator template. Candidates are always marked unapproved; a person promotes them. This is inference over records, not model training, and the draft says so.
 
+## The test app in 0.4: the simple front door
+
+The local test app now opens on the whole workflow in two choices: **Remove retakes** and **Cut silence**, both on by default, with one silence buffer (0.1 seconds to start) and one button. Everything else, format scope and a spoken-direction box, sits behind a single More choices fold. Comment times are treated as estimates and resolved to the nearest words within a few seconds. The transcript itself explains every removal: a dot on each removed span opens the plain reason, and a note left there is stored against that edit and carried into the next run labeled with what was removed. When graded changes repeat a pattern, the app offers it once as a rule in a Your style card; a saved rule rides into every later run as standing direction, and nothing is adopted without the creator's tap.
+
 ## The operation language
 
 Version one allows exactly five operation types:

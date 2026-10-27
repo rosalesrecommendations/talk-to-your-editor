@@ -32,18 +32,26 @@ import socket
 import subprocess
 import sys
 import threading
+import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 from urllib.parse import unquote, urlsplit
 
-from . import checkpoints
+from . import checkpoints, creator_rules
 from .after_review import generate_after_review
 from .applier import ApplyError, apply_verdicts
+from .checkpoints import (
+    CREATOR_RULES_FILENAME,
+    EDIT_NOTES_FILENAME,
+    FRONT_DOOR_FILENAME,
+    GRADES_FILENAME,
+)
 from .cli import _load_json, _verify_and_apply, _write_json
 from .meta_provider import MetaProvider, MockProvider, ProviderError
-from .schema import SchemaError, validate_operations
+from .schema import MAX_JOIN_PAUSE_S, MIN_JOIN_PAUSE_S, SchemaError, validate_operations
 from .timeline import Timeline
 from .verifier import plain_reason_sentence, verify_operations
 from .word_corrections import (
@@ -470,6 +478,291 @@ def _feedback_path(config: WebAppConfig) -> Optional[Path]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# v0.4 session state: front door choices, notes on edits, grades, rules
+#
+# The simplified build keeps four small stores in the session folder,
+# beside the state the earlier versions already kept. None of them
+# ever touches the job's own files, and all four ride the checkpoint
+# history, so undo covers them like everything else.
+# ---------------------------------------------------------------------------
+
+FRONT_DOOR_DEFAULTS = {
+    "remove_retakes": True,
+    "cut_silence": True,
+    "buffer_s": 0.1,
+}
+BUFFER_MIN_S = 0.05
+BUFFER_MAX_S = 0.50
+RETAKES_GUIDANCE = (
+    "Remove retakes: when the same line is said more than once, keep "
+    "the last take and take the earlier tries out."
+)
+SILENCE_COMMENT_ID = "front-door-silence"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _load_session_json(config: WebAppConfig, name: str, fallback):
+    path = config.session_dir / name
+    if path.is_file():
+        try:
+            return _load_json(str(path))
+        except (OSError, ValueError):
+            return fallback
+    return fallback
+
+
+def _front_door_settings(config: WebAppConfig) -> dict:
+    """The front door's choices: the saved ones, else the defaults.
+
+    Remove retakes and Cut silence start on; the silence buffer
+    starts at 0.1 seconds. A choice the creator changed is kept in
+    the session and offered back the same way next time.
+    """
+    saved = _load_session_json(config, FRONT_DOOR_FILENAME, {})
+    settings = dict(FRONT_DOOR_DEFAULTS)
+    if isinstance(saved, dict):
+        for key in ("remove_retakes", "cut_silence"):
+            if isinstance(saved.get(key), bool):
+                settings[key] = saved[key]
+        buffer = saved.get("buffer_s")
+        if isinstance(buffer, (int, float)) and not isinstance(buffer, bool):
+            settings["buffer_s"] = min(
+                BUFFER_MAX_S, max(BUFFER_MIN_S, float(buffer))
+            )
+    return settings
+
+
+def _save_front_door_settings(config: WebAppConfig, settings: dict) -> dict:
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(config.session_dir / FRONT_DOOR_FILENAME, settings)
+    return settings
+
+
+def _load_edit_notes(config: WebAppConfig) -> dict:
+    """Notes left on individual edits, keyed by edit id."""
+    payload = _load_session_json(
+        config, EDIT_NOTES_FILENAME, {"edits": {}}
+    )
+    if isinstance(payload, dict) and isinstance(payload.get("edits"), dict):
+        return payload
+    return {"edits": {}}
+
+
+def _save_edit_notes(config: WebAppConfig, payload: dict) -> None:
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(config.session_dir / EDIT_NOTES_FILENAME, payload)
+
+
+def _edit_guidance(config: WebAppConfig) -> list:
+    """Every note left on an edit, flattened for a direction run.
+
+    Each item names what was removed and why, so the direction step
+    can apply the note to that material wherever it is involved,
+    instead of guessing from a timestamp.
+    """
+    guidance = []
+    for record in _load_edit_notes(config)["edits"].values():
+        if not isinstance(record, dict):
+            continue
+        for note in record.get("notes", []):
+            if isinstance(note, dict) and str(note.get("text") or "").strip():
+                guidance.append(
+                    {
+                        "removed_text": str(record.get("removed_text") or ""),
+                        "reason": str(record.get("reason") or ""),
+                        "note": str(note["text"]),
+                    }
+                )
+    return guidance
+
+
+def _load_grades(config: WebAppConfig) -> list:
+    payload = _load_session_json(config, GRADES_FILENAME, {"entries": []})
+    if isinstance(payload, dict) and isinstance(payload.get("entries"), list):
+        return [e for e in payload["entries"] if isinstance(e, dict)]
+    return []
+
+
+def _save_grades(config: WebAppConfig, entries: list) -> None:
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(config.session_dir / GRADES_FILENAME, {"entries": entries})
+
+
+def _rules_store(config: WebAppConfig) -> dict:
+    return creator_rules.load_rules_store(
+        config.session_dir / CREATOR_RULES_FILENAME
+    )
+
+
+def _save_rules_store(config: WebAppConfig, store: dict) -> None:
+    creator_rules.save_rules_store(
+        config.session_dir / CREATOR_RULES_FILENAME, store
+    )
+
+
+def _rule_suggestions(config: WebAppConfig) -> list:
+    """Patterns in the grades that are ready to offer as rules."""
+    return creator_rules.suggestions_for(_load_grades(config), _rules_store(config))
+
+
+def _saved_rules_view(config: WebAppConfig) -> list:
+    """The saved rules as the page shows them (id, statement, pattern)."""
+    return [
+        {
+            "rule_id": rule.get("rule_id"),
+            "pattern_key": rule.get("pattern_key"),
+            "statement": rule.get("statement"),
+        }
+        for rule in _rules_store(config).get("rules", [])
+        if rule.get("active", True)
+    ]
+
+
+def _audit_operations(config: WebAppConfig) -> list:
+    """Page operations from every run this session has recorded.
+
+    The latest run's audit plus the archived rounds, so a removed
+    span can be matched to the change that removed it even when a
+    later run has happened since.
+    """
+    operations: list = []
+    session = config.session_dir
+    audit_paths = []
+    if (session / "operations_audit.json").is_file():
+        audit_paths.append(session / "operations_audit.json")
+    rounds = session / "rounds"
+    if rounds.is_dir():
+        audit_paths.extend(
+            sorted(rounds.glob("round-*/operations_audit.json"))
+        )
+    for path in audit_paths:
+        try:
+            audit = _load_json(str(path))
+        except (OSError, ValueError):
+            continue
+        if isinstance(audit, dict):
+            operations.extend(
+                op
+                for op in audit.get("operations", [])
+                if isinstance(op, dict)
+            )
+    return operations
+
+
+def _edit_spans(config: WebAppConfig) -> list:
+    """The spans this app has taken out of the edit, with their reasons.
+
+    A span is a run of words the job's own plan kept and the
+    session's current plan has cut. Each span is matched to the
+    recorded change that removed it (a direction run's applied cut,
+    with the note that asked for it when there is one); a span no
+    recorded change explains was cut by clicking in the transcript.
+    Notes left on an edit ride along with its span.
+    """
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    words = transcript.get("words", [])
+    base = Timeline(transcript, _load_json(str(config.job_dir / "cuts.json")))
+    current = Timeline(transcript, _effective_cuts(config))
+    operations = _audit_operations(config)
+    comments_by_id: dict = {}
+    feedback_path = _feedback_path(config)
+    if feedback_path is not None:
+        try:
+            payload = _load_json(str(feedback_path))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            for comment in payload.get("comments", []):
+                if isinstance(comment, dict) and comment.get("id") is not None:
+                    comments_by_id[str(comment["id"])] = comment
+    notes_by_edit = _load_edit_notes(config)["edits"]
+
+    def covering_op(start: int, end: int) -> Optional[dict]:
+        for op in operations:
+            if op.get("status") != "applied":
+                continue
+            spans = []
+            if op.get("type") == "cut_words":
+                spans = [(op.get("word_start"), op.get("word_end"))]
+            elif op.get("type") == "replace_take":
+                spans = [(op.get("cut_word_start"), op.get("cut_word_end"))]
+            for span_start, span_end in spans:
+                if (
+                    isinstance(span_start, int)
+                    and isinstance(span_end, int)
+                    and span_start < end
+                    and start < span_end
+                ):
+                    return op
+        return None
+
+    spans = []
+    index = 0
+    while index < len(words):
+        removed_here = (
+            base.word_status(index) == "kept"
+            and current.word_status(index) == "cut"
+        )
+        if not removed_here:
+            index += 1
+            continue
+        start = index
+        while index < len(words) and (
+            base.word_status(index) == "kept"
+            and current.word_status(index) == "cut"
+        ):
+            index += 1
+        end = index
+        edit_id = f"edit-{start}-{end}"
+        op = covering_op(start, end)
+        if op is not None:
+            source = "direction"
+            reason = str(
+                op.get("plain_action")
+                or "These words were removed by a direction run."
+            )
+            comment_id = op.get("comment_id")
+            comment = comments_by_id.get(str(comment_id)) if comment_id else None
+            comment_text = (
+                str(comment.get("text")) if comment and comment.get("text") else None
+            )
+        else:
+            source = "transcript"
+            reason = "You cut these words by clicking in the transcript."
+            comment_id = None
+            comment_text = None
+        record = notes_by_edit.get(edit_id)
+        notes = []
+        if isinstance(record, dict) and (
+            record.get("word_start") == start and record.get("word_end") == end
+        ):
+            notes = [
+                {"id": n.get("id"), "text": n.get("text")}
+                for n in record.get("notes", [])
+                if isinstance(n, dict) and n.get("text")
+            ]
+        spans.append(
+            {
+                "edit_id": edit_id,
+                "word_start": start,
+                "word_end": end,
+                "removed_text": " ".join(
+                    str(words[i].get("word") or "") for i in range(start, end)
+                ),
+                "reason": reason,
+                "source": source,
+                "comment_id": comment_id,
+                "comment_text": comment_text,
+                "notes": notes,
+            }
+        )
+    return spans
+
+
 def _video_name_for_review(config: WebAppConfig) -> Optional[str]:
     """Video name the after-review page should reference, if any."""
     if (config.session_dir / SESSION_VIDEO_NAME).is_file():
@@ -546,7 +839,11 @@ def _transcript_entries(config: WebAppConfig) -> tuple[list, list]:
 
 def _job_summary(config: WebAppConfig) -> dict:
     transcript = _load_json(str(config.job_dir / "transcript.json"))
-    cuts = _load_json(str(config.job_dir / "cuts.json"))
+    # The headline counts describe the edit as the session currently
+    # has it, not as the job originally shipped: once anything has
+    # revised the plan, the session's plan is the truth here too,
+    # the same one the transcript view reads.
+    cuts = _effective_cuts(config)
     timeline = Timeline(transcript, cuts)
     kept = timeline.kept_word_indices()
     transcript_entries, corrections = _transcript_entries(config)
@@ -591,6 +888,10 @@ def _job_summary(config: WebAppConfig) -> dict:
         "feedback_exists": feedback_exists,
         "comments": comments,
         "overall_feedback": overall_feedback,
+        "edit_spans": _edit_spans(config),
+        "front_door": _front_door_settings(config),
+        "saved_rules": _saved_rules_view(config),
+        "rule_suggestions": _rule_suggestions(config),
         "meta_available": bool(config.signin_key()),
         "render_missing": config.render_missing(),
         "render_ready": not config.render_missing(),
@@ -730,7 +1031,11 @@ def _archive_direction_round(config: WebAppConfig, number: int) -> None:
 
 
 def _run_direction(
-    config: WebAppConfig, provider_name: str, fmt: str = "vertical"
+    config: WebAppConfig,
+    provider_name: str,
+    fmt: str = "vertical",
+    extra_overall: Optional[list] = None,
+    front_door: Optional[dict] = None,
 ) -> dict:
     """Mirror cli.cmd_direct, writing every output into the session dir.
 
@@ -745,17 +1050,26 @@ def _run_direction(
     and a word cut by clicking is never silently restored by a run.
     Only a session with no revised plan yet starts from the job's
     own cuts.
+
+    ``extra_overall`` carries guidance that belongs to this run only
+    (the front door's choices). Saved creator rules and notes left
+    on edits ride into every run: the rules as standing direction,
+    ahead of the run's own notes, and the edit notes as edit-scoped
+    guidance labeled with what was removed.
     """
     feedback_path = _feedback_path(config)
     if feedback_path is None:
-        raise ValueError(
-            "No feedback yet. Save at least one comment first."
-        )
+        if extra_overall is None and front_door is None:
+            raise ValueError(
+                "No feedback yet. Save at least one comment first."
+            )
+        feedback = {"comments": [], "overall_feedback": []}
+    else:
+        feedback = _load_json(str(feedback_path))
     transcript_path = config.job_dir / "transcript.json"
     cuts_path = config.job_dir / "cuts.json"
     profile_path = config.job_dir / "profile.json"
     profile = _load_optional_file(profile_path)
-    feedback = _load_json(str(feedback_path))
     session = config.session_dir
     revised_path = session / "revised_cuts.json"
     base_cuts_path = revised_path if revised_path.is_file() else cuts_path
@@ -778,6 +1092,19 @@ def _run_direction(
     else:
         provider = MockProvider()
     run_feedback = _feedback_for_run(feedback, fmt)
+    # Standing direction goes first: the creator's saved rules, then
+    # this run's own extra guidance, then the saved overall notes.
+    rule_statements = creator_rules.active_rule_statements(_rules_store(config))
+    standing = [
+        {"id": f"saved-rule-{index + 1}", "text": statement}
+        for index, statement in enumerate(rule_statements)
+    ]
+    run_feedback["overall_feedback"] = (
+        standing
+        + list(extra_overall or [])
+        + run_feedback["overall_feedback"]
+    )
+    run_feedback["edit_notes"] = _edit_guidance(config)
     operations, routing = provider.direct(run_feedback, timeline, profile)
     session.mkdir(parents=True, exist_ok=True)
     _write_json(session / "operations.json", {"operations": operations})
@@ -793,6 +1120,10 @@ def _run_direction(
     # format it served and the overall guidance it carried.
     audit_with_routing["format"] = fmt
     audit_with_routing["overall_feedback"] = run_feedback["overall_feedback"]
+    audit_with_routing["saved_rules"] = rule_statements
+    audit_with_routing["edit_notes"] = run_feedback["edit_notes"]
+    if front_door is not None:
+        audit_with_routing["front_door"] = front_door
     # Number the round before the audit is saved, so the saved audit
     # and the archived copy both carry it.
     round_number = _next_round_number(config)
@@ -800,6 +1131,227 @@ def _run_direction(
     _write_json(session / "operations_audit.json", audit_with_routing)
     _archive_direction_round(config, round_number)
     return audit_with_routing
+
+
+def _silence_operations(config: WebAppConfig, buffer_s: float) -> list:
+    """Join-pause operations that trim silence toward the buffer.
+
+    The buffer is the silence left between one word and the next:
+    the tail of quiet at the end of one kept piece plus the lead-in
+    before the next word. A join whose silence already fits the
+    buffer is left alone (silence is never added), and a join beside
+    a special insert is never proposed. Each proposal is an ordinary
+    ``set_join_pause`` operation, so the safety verifier and the
+    applier decide what actually changes, exactly as they do for a
+    note that asks for a shorter pause.
+    """
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    timeline = Timeline(transcript, _effective_cuts(config))
+    operations = []
+    for join in timeline.joins():
+        if join["prev_special"] or join["next_special"]:
+            continue
+        index = join["join_index"]
+        prev_range = timeline.ranges[index]
+        next_range = timeline.ranges[index + 1]
+        prev_words = timeline.words_in_range(prev_range)
+        next_words = timeline.words_in_range(next_range)
+        if not prev_words or not next_words:
+            continue
+        prev_tail = float(prev_range["end"]) - float(
+            timeline.words[prev_words[-1]]["end"]
+        )
+        head = float(timeline.words[next_words[0]]["start"]) - float(
+            next_range["start"]
+        )
+        if prev_tail + head <= buffer_s + 1e-3:
+            continue
+        target = buffer_s - prev_tail
+        if target < MIN_JOIN_PAUSE_S:
+            target = MIN_JOIN_PAUSE_S
+        target = min(target, MAX_JOIN_PAUSE_S)
+        if target >= head - 1e-3:
+            continue  # This join cannot get any tighter from its head.
+        operations.append(
+            {
+                "type": "set_join_pause",
+                "comment_id": SILENCE_COMMENT_ID,
+                "join_index": index,
+                "target_pause_s": round(target, 3),
+                "reason": (
+                    "front door: trim the silence at this join "
+                    f"toward {buffer_s:g} seconds"
+                ),
+                "confidence": 1.0,
+                # A deterministic local proposal, like the mock's;
+                # the comment id and the reason carry its provenance.
+                "model": "mock",
+                "risk_tier": 1,
+                "wonder_reviewed": False,
+            }
+        )
+    return operations
+
+
+def _run_silence_pass(config: WebAppConfig, buffer_s: float) -> dict:
+    """Trim the session plan's long silences toward ``buffer_s``.
+
+    Runs the join-pause proposals through the same verify-and-apply
+    path as a direction run, against the session's current plan. The
+    pass is recorded in its own session file, and its page
+    operations are merged into the session audit so the removed and
+    shortened moments stay explained in one place.
+    """
+    summary = {
+        "ran": True,
+        "buffer_s": buffer_s,
+        "joins_trimmed": 0,
+        "operations": [],
+    }
+    operations = _silence_operations(config, buffer_s)
+    if not operations:
+        _record_silence_pass(config, summary)
+        return summary
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    revised_path = session / "revised_cuts.json"
+    base_cuts_path = (
+        revised_path if revised_path.is_file() else config.job_dir / "cuts.json"
+    )
+    profile_path = config.job_dir / "profile.json"
+    tmp = session / ".silence-tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    args = SimpleNamespace(
+        transcript=str(config.job_dir / "transcript.json"),
+        cuts=str(base_cuts_path),
+        profile=str(profile_path) if profile_path.is_file() else None,
+    )
+    try:
+        audit = _verify_and_apply(args, {"operations": operations}, tmp)
+    except (SchemaError, ApplyError) as exc:
+        # The proposals are built here and checked by the same
+        # verifier either way; if the pass still cannot run, the
+        # plan stays exactly as it was and the raw detail goes to
+        # the server log.
+        _log_raw_error("silence pass", exc)
+        shutil.rmtree(tmp, ignore_errors=True)
+        _record_silence_pass(config, summary)
+        return summary
+    shutil.copyfile(tmp / "revised_cuts.json", revised_path)
+    page_operations = audit.get("operations", [])
+    summary["operations"] = page_operations
+    summary["joins_trimmed"] = sum(
+        1 for op in page_operations if op.get("status") == "applied"
+    )
+    session_audit_path = session / "operations_audit.json"
+    if session_audit_path.is_file():
+        existing = _load_json(str(session_audit_path))
+        existing.setdefault("operations", []).extend(page_operations)
+        existing["after"] = audit["after"]
+        _write_json(session_audit_path, existing)
+    else:
+        shutil.copyfile(tmp / "operations_audit.json", session_audit_path)
+    shutil.rmtree(tmp, ignore_errors=True)
+    _record_silence_pass(config, summary)
+    return summary
+
+
+def _record_silence_pass(config: WebAppConfig, summary: dict) -> None:
+    """Append one silence pass to the session's own record of them."""
+    path = config.session_dir / "silence_pass.json"
+    payload = _load_session_json(config, "silence_pass.json", {"runs": []})
+    runs = payload.get("runs") if isinstance(payload, dict) else None
+    if not isinstance(runs, list):
+        runs = []
+    runs.append(
+        {
+            "at": _utc_now(),
+            "buffer_s": summary["buffer_s"],
+            "joins_trimmed": summary["joins_trimmed"],
+        }
+    )
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(path, {"runs": runs})
+
+
+def _run_front_door(config: WebAppConfig, body: dict) -> dict:
+    """The simplified front door: two choices, one buffer, one button.
+
+    Remove retakes and Cut silence are on unless the creator turned
+    them off. Firing runs direction for the chosen formats with the
+    retakes guidance riding along (plus anything typed in the spoken
+    direction box, which adds to the choices rather than replacing
+    them), then trims the plan's long silences toward the buffer.
+    Saved rules ride into the run inside ``_run_direction`` itself.
+    """
+    defaults = _front_door_settings(config)
+    try:
+        buffer_s = float(body.get("buffer_s", defaults["buffer_s"]))
+    except (TypeError, ValueError):
+        raise ValueError("The silence buffer must be a number of seconds.")
+    settings = {
+        "remove_retakes": bool(
+            body.get("remove_retakes", defaults["remove_retakes"])
+        ),
+        "cut_silence": bool(body.get("cut_silence", defaults["cut_silence"])),
+        "buffer_s": min(BUFFER_MAX_S, max(BUFFER_MIN_S, buffer_s)),
+    }
+    scope = str(body.get("format_scope") or "both").strip().lower()
+    if scope not in ("both", "vertical", "landscape"):
+        raise ValueError("Choose both formats, vertical only, or landscape only.")
+    direction_text = str(body.get("direction_text") or "").strip()
+    provider_name = str(body.get("provider") or "").strip().lower()
+    if provider_name not in ("mock", "meta"):
+        provider_name = "meta" if config.signin_key() else "mock"
+    if provider_name == "meta" and not config.signin_key():
+        raise ValueError(
+            "The Meta provider is not set up on this server yet, "
+            "so direction cannot run with it."
+        )
+    _save_front_door_settings(config, settings)
+    extras = []
+    if settings["remove_retakes"]:
+        extras.append({"id": "front-door-retakes", "text": RETAKES_GUIDANCE})
+    if direction_text:
+        extras.append({"id": "front-door-direction", "text": direction_text})
+    formats = ["vertical", "landscape"] if scope == "both" else [scope]
+    has_feedback = _feedback_path(config) is not None
+    direction_runs = []
+    for fmt in formats:
+        if not has_feedback and not extras:
+            continue
+        audit = _run_direction(
+            config,
+            provider_name,
+            fmt,
+            extra_overall=extras,
+            front_door=settings,
+        )
+        direction_runs.append(
+            {
+                "format": fmt,
+                "round": audit.get("round"),
+                "before": audit["before"],
+                "after": audit["after"],
+                "applied_comment_ids": audit["applied_comment_ids"],
+                "flagged_comment_ids": audit["flagged_comment_ids"],
+            }
+        )
+    silence = None
+    if settings["cut_silence"]:
+        silence = _run_silence_pass(config, settings["buffer_s"])
+    return {
+        "ok": True,
+        "provider": provider_name,
+        "settings": settings,
+        "format_scope": scope,
+        "direction_runs": direction_runs,
+        "silence": silence,
+        "saved_rules": creator_rules.active_rule_statements(
+            _rules_store(config)
+        ),
+    }
 
 
 def _plain_toggle_message(verdict) -> str:
@@ -1066,6 +1618,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_signin_check()
         elif path == "/api/direct":
             self._post_direct()
+        elif path == "/api/front-door":
+            self._post_front_door()
+        elif path == "/api/edit-note":
+            self._post_edit_note()
+        elif path == "/api/grades":
+            self._post_grades()
+        elif path == "/api/rule-save":
+            self._post_rule_save()
+        elif path == "/api/rule-dismiss":
+            self._post_rule_dismiss()
+        elif path == "/api/rule-remove":
+            self._post_rule_remove()
         elif path == "/api/word-toggle":
             self._post_word_toggle()
         elif path == "/api/word-correct":
@@ -1235,6 +1799,10 @@ class _Handler(BaseHTTPRequestHandler):
                 {
                     "id": str(item.get("id") or f"c{index + 1}"),
                     "ts": round(ts, 1),
+                    # A pinned time is an estimate, never a claim of
+                    # the exact frame: direction resolves it to the
+                    # nearest words within a few seconds either way.
+                    "time_is_estimate": True,
                     "fmt": str(item.get("fmt") or "vertical"),
                     "scope": _normalize_scope(item.get("scope")),
                     "text": text,
@@ -1364,6 +1932,224 @@ class _Handler(BaseHTTPRequestHandler):
                 "after_review": after_review,
             },
         )
+
+    def _post_front_door(self) -> None:
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        checkpoints.begin(self.config)
+        try:
+            result = _run_front_door(self.config, body)
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        except ProviderError as exc:
+            _log_raw_error("provider", exc)
+            self._error(502, _plain_direction_error(exc))
+            return
+        except SchemaError as exc:
+            _log_raw_error("schema", exc)
+            self._error(400, _plain_direction_error(exc))
+            return
+        except ApplyError as exc:
+            _log_raw_error("apply", exc)
+            self._error(400, _plain_direction_error(exc))
+            return
+        except FileNotFoundError:
+            self._error(404, "a job file is missing")
+            return
+        after_review = False
+        if result["direction_runs"]:
+            try:
+                _regenerate_after_review(self.config)
+                after_review = True
+            except Exception:
+                after_review = False
+        checkpoints.commit(self.config, "Front door run")
+        result["after_review"] = after_review
+        self._send_json(200, result)
+
+    def _post_edit_note(self) -> None:
+        """Save a note against one edit in the transcript.
+
+        The note anchors to the edit itself (the removed words and
+        their span), never to a timestamp, so it keeps meaning what
+        it meant even as the edit's timing shifts. It is stored in
+        the session with a snapshot of the edit, listed under that
+        edit from then on, and handed to the next direction run as
+        guidance labeled with what was removed. No note is ever
+        dropped: every save appends to the edit's own list.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        edit_id = str(body.get("edit_id") or "")
+        text = str(body.get("text") or "").strip()
+        if not text:
+            self._error(400, "Type or say the note first.")
+            return
+        span = next(
+            (s for s in _edit_spans(self.config) if s["edit_id"] == edit_id),
+            None,
+        )
+        if span is None:
+            self._error(
+                400,
+                "That edit is not in the transcript anymore, so the "
+                "note had nowhere to land.",
+            )
+            return
+        payload = _load_edit_notes(self.config)
+        record = payload["edits"].get(edit_id)
+        if not isinstance(record, dict):
+            record = {
+                "edit_id": edit_id,
+                "word_start": span["word_start"],
+                "word_end": span["word_end"],
+                "removed_text": span["removed_text"],
+                "reason": span["reason"],
+                "source": span["source"],
+                "notes": [],
+            }
+            payload["edits"][edit_id] = record
+        note = {
+            "id": uuid.uuid4().hex[:12],
+            "text": text,
+            "created_at": _utc_now(),
+        }
+        record.setdefault("notes", []).append(note)
+        checkpoints.begin(self.config)
+        _save_edit_notes(self.config, payload)
+        checkpoints.commit(self.config, "Note on an edit")
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "edit_id": edit_id,
+                "notes": [
+                    {"id": n.get("id"), "text": n.get("text")}
+                    for n in record["notes"]
+                ],
+            },
+        )
+
+    def _post_grades(self) -> None:
+        """Receive graded changes from the review page.
+
+        Grades accumulate in the session, merged by entry so grading
+        the same change again updates it instead of counting it
+        twice. The response carries the rule suggestions the grades
+        now support, so the style card can appear right away.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        raw = body.get("entries")
+        if raw is None and isinstance(body.get("graded"), list):
+            raw = body.get("graded")
+        if not isinstance(raw, list) or not all(
+            isinstance(entry, dict) for entry in raw
+        ):
+            self._error(400, "entries must be a list of graded changes")
+            return
+        entries = creator_rules.merge_grade_entries(
+            _load_grades(self.config), raw
+        )
+        checkpoints.begin(self.config)
+        _save_grades(self.config, entries)
+        checkpoints.commit(self.config, "Grades saved")
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "saved": len(entries),
+                "suggestions": _rule_suggestions(self.config),
+            },
+        )
+
+    def _rules_state_response(self) -> dict:
+        return {
+            "ok": True,
+            "saved_rules": _saved_rules_view(self.config),
+            "suggestions": _rule_suggestions(self.config),
+        }
+
+    def _post_rule_save(self) -> None:
+        """Save one offered pattern as a rule. Only ever on a yes."""
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        pattern_key = str(body.get("pattern_key") or "")
+        suggestion = next(
+            (
+                s
+                for s in _rule_suggestions(self.config)
+                if s["pattern_key"] == pattern_key
+            ),
+            None,
+        )
+        if suggestion is None:
+            self._error(400, "That pattern is not ready to save as a rule yet.")
+            return
+        store = _rules_store(self.config)
+        rule = creator_rules.save_rule(store, suggestion)
+        checkpoints.begin(self.config)
+        _save_rules_store(self.config, store)
+        checkpoints.commit(self.config, "Rule saved")
+        response = self._rules_state_response()
+        response["rule"] = {
+            "rule_id": rule.get("rule_id"),
+            "statement": rule.get("statement"),
+        }
+        self._send_json(200, response)
+
+    def _post_rule_dismiss(self) -> None:
+        """Pass over one offered pattern, at its current support."""
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        pattern_key = str(body.get("pattern_key") or "")
+        suggestion = next(
+            (
+                s
+                for s in _rule_suggestions(self.config)
+                if s["pattern_key"] == pattern_key
+            ),
+            None,
+        )
+        if suggestion is None:
+            self._error(400, "That pattern is not being offered right now.")
+            return
+        store = _rules_store(self.config)
+        creator_rules.dismiss_suggestion(
+            store, pattern_key, suggestion["support_count"]
+        )
+        checkpoints.begin(self.config)
+        _save_rules_store(self.config, store)
+        checkpoints.commit(self.config, "Rule suggestion passed over")
+        self._send_json(200, self._rules_state_response())
+
+    def _post_rule_remove(self) -> None:
+        """Remove one saved rule. The pattern may be offered again."""
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        rule_id = str(body.get("rule_id") or "")
+        store = _rules_store(self.config)
+        removed = creator_rules.remove_rule(store, rule_id)
+        if removed is None:
+            self._error(400, "That rule is not saved.")
+            return
+        checkpoints.begin(self.config)
+        _save_rules_store(self.config, store)
+        checkpoints.commit(self.config, "Rule removed")
+        self._send_json(200, self._rules_state_response())
 
     def _post_word_toggle(self) -> None:
         body = self._read_json_body()

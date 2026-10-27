@@ -1,6 +1,6 @@
 # Testing Talk to Your Editor
 
-This is your personal test pass. Start on the Mac with the built-in sample, then try a real runner job, then use your phone.
+This is your personal test pass for the simple build. Start on the Mac with the built-in sample, then try a real runner job, then use your phone.
 
 There are no wrong reactions here. If something feels confusing, slow, fragile, or just not like how you think, that is the feedback we need.
 
@@ -8,7 +8,7 @@ There are no wrong reactions here. If something feels confusing, slow, fragile, 
 
 Quick map: the runner is part 1. It makes the first edit and gives you a job folder. This app is part 2: you watch that edit here and direct the fixes.
 
-You watch a finished edit, pin comments to moments you want changed, and let the program work out the edit. It should show you what it changed, flag anything it should not touch automatically, render a revised version for review, and let you grade each change. You can also read the whole edit as a transcript, cut or restore words with a click, and fix words the transcript heard wrong.
+This version is built around one idea: keep the front door simple. Two choices, both on unless you turn them off. One button. The transcript itself explains every change, and the app learns your style one yes at a time.
 
 ## Mac test
 
@@ -48,114 +48,115 @@ http://127.0.0.1:8765
 
 Keep the Terminal window open. Closing it stops the app.
 
-### 3. Pin comments
+### 3. Make the edit: the front door
 
-Under the video there is a timeline bar. Every saved comment gets a dot on it, in the place where the comment belongs. Hover over a dot (or tap it) to read the comment, click it to jump the video to that moment, and drag the white playhead line to move through the video by the second.
+Under the video is the card that matters most: **Make the edit**.
 
-While you watch, the keyboard works the way the big editors do, as long as you are not typing in a box: **Space** plays or pauses, **K** pauses, **J** steps back 5 seconds, **L** steps forward 5 seconds, the **arrow keys** step 1 second, **Shift** with an arrow steps 5 seconds, and **M** starts a note pinned right at the playhead. The quiet line under the video lists them all, and its switch turns them off for the rest of the session if you would rather not have them.
+Two choices sit there, both on:
 
-1. Play the sample edit.
-2. When you hear something you want changed, just start typing in the comment box. The note pins itself to wherever the playhead is at that moment, and the page shows "Pinned at" with the time so you can check it. Typing pauses the video; if you would rather keep listening while you write, switch on **Keep playing while I type**.
-3. Write the kind of thing you would naturally say, such as:
-   - "Remove this repeated line."
-   - "Make the pause here longer."
-   - "Bring back the first version of this sentence."
-   - "Do not change this part."
-4. Choose where the comment applies. The choice starts at **Both**, meaning both the vertical and the landscape cut. Change it to Vertical only or Landscape only when the note is about just one of them.
-5. Save the comment. Each new comment pins fresh at its own moment; a note never quietly reuses the time of the one before it. (If you ever need an exact moment, the seconds box still works as a deliberate override for that one note.)
-6. Add a few comments if you want. You do not need perfect wording. Plain words are the test.
+- **Remove retakes.** When a line is said more than once, the last take stays and the earlier tries come out.
+- **Cut silence.** Long silences are trimmed down toward the buffer.
 
-For a note about the whole video rather than one moment, like "there are retakes all through this," use the **Overall feedback** box under the comments. Overall notes are saved with your comments and go to direction as standing guidance.
+The **silence buffer** is how much silence stays between one word and the next. Slide it or type the number. It starts at **0.1 seconds**. Cutting silence only ever trims; it never adds quiet back, and it goes through the same safety checks as every other change.
 
-If the sample already has feedback loaded, you can use that too. Adding one comment of your own still helps because it tests how the page feels.
+Press **Make the edit**. That is the whole front door. The app runs direction with those two choices, trims the silences, and tells you the result: words kept before and after, and how many pauses were trimmed.
 
-One more thing on this page: the **Vertical (9:16)** and **Landscape (16:9)** buttons only offer cuts the job actually has, so a job with one cut simply shows the one it has. While a video loads, the player says it is loading instead of sitting black.
+Behind the **More choices** fold, for the days you want them:
 
-Playback is browser-safe. The app recognizes the common video files a job can hold (.mp4, .mov, .m4v). If a file is in a format your browser cannot play, the app quietly makes a converted playback copy inside the session folder and plays that instead; your original file is never changed. The first play of such a file can take a little longer while the copy is made. If a video truly cannot be played, the player says so in one plain sentence instead of loading forever.
+- **Format scope:** both formats, vertical only, or landscape only.
+- **Spoken direction:** anything else this video needs, in your own words. What you say adds to the two choices; it does not replace them. Say **"unless"** when you want one spot treated differently, like "keep the last take, unless the first try has the real laugh in it."
 
-### 4. Run direction
+Your choices are remembered in the session, so the card opens the way you left it.
 
-Pick a direction mode and run it.
+### 4. Watch and scrub
 
-- **Mock (offline) first:** this is the safe rehearsal mode. It proves the page, the mapping, the checks, and the revised edit flow.
-- **Meta (Muse Spark / Wonder) later:** live direction through your Meta Model API sign-in.
+Play the edit. A few things changed about moving through it:
 
-The run always finishes. When two of your notes collide on the same words, the first edit is applied and the later one is held with a plain reason on its own note, instead of the whole run stopping.
+- **Drag the timeline** and the handle grows under your finger or cursor. A bubble above it shows the exact time where you will land when you let go.
+- **Back 5s** and **Back 1s** buttons sit beside the player for quick steps back.
+- The keyboard still works the way the big editors do, as long as you are not typing in a box: **Space** plays or pauses, **K** pauses, **J** steps back 5 seconds, **L** steps forward 5 seconds, the **arrow keys** step 1 second, **Shift** with an arrow steps 5 seconds, and **M** starts a note pinned right at the playhead. The quiet line under the video lists them all, and its switch turns them off for the session.
 
-There are two ways to give the app your key:
+### 5. Pin comments, when a spot needs your words
 
-- **In the launcher:** quit the app, launch it again, and paste your Meta Model API key at the hidden prompt. The typing will not show on screen. After you paste it once, the launcher asks one extra question:
+The front door handles the patterns. For a specific moment, pin a comment:
+
+1. When you hear something you want changed, just start typing in the comment box. The note pins itself to wherever the playhead is at that moment. Typing pauses the video; switch on **Keep playing while I type** if you would rather keep listening.
+2. **The time does not have to be exact.** A pinned time is an estimate. The editor checks a few seconds either way, about three seconds, and resolves your note to the nearest words by context. Get close; the app does the rest.
+3. Write the kind of thing you would naturally say, such as "Remove this repeated line" or "Bring back the first version of this sentence."
+4. Choose where the comment applies. It starts at **Both**, meaning both the vertical and the landscape cut.
+5. Save the comment. Each new comment pins fresh at its own moment.
+
+For a note about the whole video rather than one moment, like "there are retakes all through this," use the **Overall feedback** box. Overall notes go along with every direction run.
+
+Then either press **Make the edit** on the front door, or use the **Run direction** card lower down, which is the same direction step with the provider picker showing.
+
+Each change comes back with a clear status:
+
+- **Applied:** the program made the change.
+- **Flagged:** the program did not change it. A person needs to decide, often because the note touches protected material, a special breath or insert, an unclear target, or wording that could change the meaning.
+- **Rejected:** the proposed change failed a check and was not applied.
+
+The reason is always in plain language. If a status surprises you, that surprise is useful test data.
+
+### 6. Read the transcript: every removal explains itself
+
+Open the **Transcript** section. Kept words read normally; cut words are struck through and dimmed.
+
+Every span this app has taken out carries a small **dot** after it. Click the dot:
+
+- A panel names the words that were removed and **why**, in one plain sentence, with the note that asked for it when there is one.
+- You can **leave a note on that edit** right there. Type it, or press **Speak the note** where the browser offers voice typing (Chrome does; on an iPhone, the keyboard's own microphone works in the typing box). The note is stored against the edit itself, not against a timestamp, so it keeps meaning the same thing even after the timing shifts. It is listed under that edit from then on, and the next direction run receives it labeled with what was removed. No note is ever lost.
+
+Clicking a word still cuts it or brings it back, through the same safety checks, and **Fix words** still repairs words the transcript heard wrong. Fixing words changes the transcript text only; the sound and the timing never change.
+
+### 7. Build the fixed video, then grade the changes
+
+Rendering sets itself up when it can. If the job folder already carries the pieces rendering needs (the render script, the cleaned audio, and the original video), the app finds and uses them on its own. If a piece is missing, the page says which piece, in one plain sentence.
+
+1. Press **Build the fixed video**.
+2. Press **Grade the changes** to open the review page.
+3. Watch the changed moments and grade each one: **Worked**, **Partly**, or **Did not work**.
+4. On any change that is simply how you edit, check **This is my style**.
+5. Press **Send grades to the app**. Your grades go straight back into the app. (The export button still works too; keep the file if you want a copy.)
+
+### 8. Your style: rules you approve
+
+Back on the main page, the **Your style** card is where the learning lands.
+
+When the same kind of change keeps working in your grades, three times, or once when you marked it "This is my style," the app offers it once, in plain words:
+
+> Pattern caught: (the pattern, in your words). Make this a rule for future edits?
+
+- **Save as a rule** and it rides into every later run as standing direction, alongside your own notes.
+- **Not now** and it waits. If the pattern keeps earning grades, it can be offered again later.
+- Every saved rule is listed with a **Remove** button. Removing one is always one tap.
+
+Nothing is ever saved without your yes. There is no silent learning.
+
+### 9. Undo, redo, and History
+
+At the bottom of the page is a **History** card. Every change in this session is recorded there: comments saved, front door runs, words cut or restored, notes on edits, grades, and rules.
+
+- Press **Undo** to step back one change, or **Redo** to step forward again.
+- Stepping back never touches the runner job itself; it only moves your session.
+
+Try it once: make a small change you do not care about, undo it, then redo it. The page, the transcript, and the results should all follow.
+
+### Remembering your key on this Mac
+
+Live Muse direction uses your Meta Model API key. There are two ways to give it:
+
+- **In the launcher:** paste the key at the hidden prompt. After you paste it once, the launcher asks:
 
 ```text
 Remember this key on this Mac only? It is saved in a private file in your home folder, never in the app or the repo. [y/N]
 ```
 
-Answer **y** and you will not be asked again on this Mac. Answer **n** (or just press Enter) and the key is used only for that Terminal session.
+Answer **y** and it is saved on this Mac only, in `~/.talk-to-your-editor/meta_key` (folder and file readable only by your account). It never enters the app folder, the kit, the zip, or the project files. Later launches use it without asking. Delete that one file to go back to being asked each time.
 
-- **On the page:** the page shows whether a Meta sign-in is set. You can paste a key there instead; it is kept for that session only, never written to disk, and never shown back. Before a live run, press **Check the Meta sign-in** on the page. It makes one harmless call to Meta and tells you in plain words whether the sign-in was accepted, so a wrong or expired key is caught before you spend a run on it.
+- **On the page:** the Run direction card shows whether a sign-in is set. You can paste a key there instead; it is kept for that session only, never written to disk, and never shown back. Press **Check the Meta sign-in** before a live run; it makes one harmless call and tells you in plain words whether the sign-in was accepted.
 
 Never paste the key into chat. The launcher prompt and the page's sign-in field are the places it belongs.
-
-### Remembering your key on this Mac
-
-If you answer **y**, the key is saved on this Mac only, in a private file in your home folder:
-
-```text
-~/.talk-to-your-editor/meta_key
-```
-
-The folder is readable only by your account, and the file is readable only by you. The key is never written into the app folder, the test kit, the zip, or the project files. On later launches, the launcher reads that file, prints a line saying the saved key from this Mac is being used, and turns live Muse direction on without asking.
-
-To remove the saved key, delete that one file:
-
-```text
-rm ~/.talk-to-your-editor/meta_key
-```
-
-After that, the launcher goes back to asking each time, and pressing Enter at the prompt uses the offline mock.
-
-### 5. Read the result for each comment
-
-Each comment should get a clear status:
-
-- **Applied:** the program made the change.
-- **Flagged:** the program did not change it. A person needs to decide, often because the comment touches protected material, a special breath or insert, an unclear target, or wording that could change the meaning.
-- **Rejected:** the proposed change failed a check and was not applied.
-
-Read the reason in plain language. If a status surprises you, note the comment and what you expected instead. That surprise is useful test data.
-
-### 6. Build the fixed video, then grade the changes
-
-Rendering sets itself up when it can. If the job folder already carries the pieces rendering needs (the render script, the cleaned audio, and the original video), the app finds and uses them on its own. If a piece is missing, the page tells you in one plain sentence which piece it is, so you know what the job still needs.
-
-1. Press **Build the fixed video** to turn the revised plan into a watchable video of the fixed edit.
-2. Press **Grade the changes** to open the review page.
-3. Watch the changed moments.
-4. Pick one change and grade it:
-   - **Worked**
-   - **Partly**
-   - **Did not work**
-5. Add a note if the grade needs one sentence of explanation.
-6. Download or export the graded results.
-
-Keep that graded export. Send it back with your notes so the exact comments, operations, and grades can drive the next version.
-
-### 7. Work in the transcript
-
-Open the **Transcript** section on the page. It shows the edit as words: kept words read normally, and cut words are struck through and dimmed, so you can see the whole edit at a glance.
-
-- **Cut or restore with a click:** click a struck word to bring it back, or a kept word to cut it. The click goes through the same safety checks as any other change. If a word cannot be moved (for example protected material), it stays put and the page says why in one plain sentence.
-- **Fix words the transcript heard wrong:** press **Fix words**, then click one word, or a run of neighboring words, and retype what belongs there. Split one word into the two or three it should be, merge pieces back into one word, or just fix a spelling. Fixing words changes the words in the transcript, and the text direction reads, only; the sound and the timing never change, and a video you build from the edit still shows the original words in its captions. Fixed words sit in the transcript underlined, with a "Corrected from" note, and any correction can be removed to put the original words back. Direction reads the corrected text, so a misheard word stops confusing it.
-
-### 8. Undo, redo, and History
-
-At the bottom of the page is a **History** card. Every change in this session is recorded there as a step: comments saved, direction runs, words cut or restored in the transcript, and word corrections.
-
-- Press **Undo** to step back one change, or **Redo** to step forward again.
-- The list shows where you are, so you can walk the session back to an earlier state and forward again without losing anything.
-- Stepping back never touches the runner job itself; it only moves your session.
-
-Try it once: make a small change you do not care about, undo it from History, then redo it. The page, the transcript, and the results should all follow.
 
 ## Test with a real runner job
 
@@ -165,33 +166,20 @@ After the sample feels clear, quit the app and launch it again.
 
 Paste the **runner job or export folder itself**, not a single file inside it.
 
-**Finder drag trick:** you do not have to type or copy the path. Open the folder's parent in Finder, then drag the job folder straight into the Terminal window at the prompt. Its full path is pasted for you; just press **Enter**.
+**Finder drag trick:** open the folder's parent in Finder, then drag the job folder straight into the Terminal window at the prompt. Its full path is pasted for you; just press **Enter**.
 
-The right folder contains:
-
-- `transcript.json`
-- `cuts.json`
-
-It may also contain:
-
-- `profile.json`
-- `feedback.json`
-- `review.mp4` or `final.mp4`
-- other files from that runner export
-
-A simple check: open the folder in Finder. If you can see `transcript.json` and `cuts.json` together, that is the folder to paste.
-
-If you only see the video, or you see a folder full of other job folders, you are one level too high or too low. Go into the specific export for the video you want to test.
+The right folder contains `transcript.json` and `cuts.json` together. It may also contain `profile.json`, `feedback.json`, `review.mp4` or `final.mp4`, and other files from the runner export. If you only see the video, or a folder full of other job folders, you are one level too high or too low.
 
 ### Real-job pass
 
-1. Paste the full folder path at the launcher prompt. Dragging the folder into Terminal is an easy way to get the path.
-2. Press **Enter** at the API key prompt for the mock, unless this specific run is meant to test live Muse.
-3. Watch the finished edit and pin comments in your own words. Add an overall note if the whole video has a pattern worth naming.
-4. Run direction.
-5. Check every status and reason.
-6. Skim the transcript for words the edit cut that should be back, and for any word the transcript heard wrong; fix them there.
-7. Build the fixed video, then open **Grade the changes**, grade at least one change, and download the graded export.
+1. Paste the full folder path at the launcher prompt.
+2. Press **Enter** at the API key prompt for the mock, unless this run is meant to test live Muse.
+3. Press **Make the edit** with the two choices on and watch what the front door does on its own.
+4. Pin a comment or two in your own words where the front door did not cover it. Do not aim for exact times.
+5. Run it again and check every status and reason.
+6. Open the transcript, click a dot, and leave a note on one edit.
+7. Build the fixed video, grade the changes, mark one "This is my style" if it earns it, and send the grades to the app.
+8. Check the **Your style** card for the rule it offers.
 
 For a live run, repeat the same job later with the key. Comparing mock and live on the same comments makes differences easy to spot.
 
@@ -199,10 +187,9 @@ For a live run, repeat the same job later with the key. Comparing mock and live 
 
 The phone uses the app running on your Mac. The Mac does the work; the phone is another screen for the same test.
 
-1. Keep the Mac awake.
-2. Keep the Terminal window open.
-3. Connect the phone and Mac to the same Wi-Fi.
-4. On the phone, open the phone address printed by the launcher. It will look like this:
+1. Keep the Mac awake, and keep the Terminal window open.
+2. Connect the phone and the Mac to the **same Wi-Fi**.
+3. On the phone, open the phone address printed by the launcher. It will look like this:
 
 ```text
 http://192.168.1.25:8765
@@ -210,11 +197,11 @@ http://192.168.1.25:8765
 
 Your numbers will be different. Do not use the `127.0.0.1` address on the phone; that address points the phone back at itself.
 
-5. Play the edit on the phone.
-6. Pause and pin a comment from the phone. Try tapping a timeline dot to jump to a note.
-7. Run direction.
-8. Open **Grade the changes** and grade a change on the phone.
-9. Note anything that is hard to tap, hard to read, slow, or awkward with one hand.
+4. Play the edit on the phone.
+5. Scrub with a finger: the handle should grow, and the bubble should show where you will land.
+6. Pin a comment from the phone. For a note on an edit, tap a dot in the transcript and dictate with the keyboard's microphone.
+7. Press **Make the edit**, then open **Grade the changes** and grade one change on the phone.
+8. Note anything that is hard to tap, hard to read, slow, or awkward with one hand.
 
 If the phone cannot load the page, first check that both devices are on the same Wi-Fi and that the Mac did not fall asleep. Then restart the launcher so it prints a fresh phone address.
 
@@ -236,6 +223,6 @@ Please send:
 - The status and reason the app gave.
 - Whether the revised edit sounded right.
 - Anything that felt confusing, fragile, slow, or unlike your normal way of giving notes.
-- The graded export you downloaded.
+- The graded export, if you made one.
 
-Every grade and complaint feeds the next iteration. "This feels wrong" is a valid report; add the moment or comment if you can, and we will track down why.
+Two questions this version is still asking, whenever you have a feel for them: is **0.1 seconds** the right silence buffer to start from, or should it be 0.2? And should a rule need **three** repeats before it is offered, or should your one explicit "This is my style" be the only path? The build currently does both: three repeats, or one explicit yes.

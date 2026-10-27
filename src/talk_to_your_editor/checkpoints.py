@@ -23,6 +23,15 @@ from typing import Optional
 
 from .word_corrections import CORRECTIONS_FILENAME
 
+# Session files owned by the v0.4 surfaces: the front door's saved
+# choices, the notes left on individual edits, the grades the app has
+# received, and the creator's saved rules. They live beside the other
+# session state and are checkpointed with it, so undo covers them too.
+FRONT_DOOR_FILENAME = "front_door.json"
+EDIT_NOTES_FILENAME = "edit_notes.json"
+GRADES_FILENAME = "grades.json"
+CREATOR_RULES_FILENAME = "creator_rules.json"
+
 # The session files that together are the state of an edit in
 # progress. The after-review page and the rendered video are derived
 # from these, so they are regenerated, never checkpointed.
@@ -32,6 +41,10 @@ STATE_FILES = (
     "operations.json",
     "operations_audit.json",
     CORRECTIONS_FILENAME,
+    FRONT_DOOR_FILENAME,
+    EDIT_NOTES_FILENAME,
+    GRADES_FILENAME,
+    CREATOR_RULES_FILENAME,
 )
 HISTORY_DIR_NAME = "history"
 META_FILENAME = "meta.json"

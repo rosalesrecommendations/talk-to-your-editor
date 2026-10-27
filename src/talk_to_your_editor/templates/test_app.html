@@ -230,6 +230,46 @@
     z-index: 5;
   }
   .tl-dot:hover .tl-tip, .tl-dot:focus .tl-tip { opacity: 1; }
+  .tl-bubble {
+    position: absolute;
+    bottom: 46px;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 240px;
+    background: rgba(28, 28, 30, 0.88);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    color: var(--text);
+    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.45;
+    white-space: normal;
+    text-align: left;
+    pointer-events: none;
+    z-index: 5;
+  }
+  .tl-track.scrubbing .tl-playhead::before { width: 24px; height: 24px; top: -13px; }
+  .tdot {
+    display: inline-block;
+    width: 13px;
+    height: 13px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    vertical-align: middle;
+    margin: 0 3px;
+    cursor: pointer;
+  }
+  .fd-note { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 2px 0 10px; }
+  #fdBufferRow { transition: opacity 160ms var(--ease-out); }
+  input[type="range"] { accent-color: var(--accent); }
+  #editPopup { margin-top: 14px; }
   .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); cursor: pointer; min-height: 44px; }
   .switch input {
     appearance: none;
@@ -460,15 +500,54 @@
     <div class="tl-track" id="tlTrack">
       <div id="tlDots"></div>
       <div class="tl-playhead" id="tlPlayhead" style="left: 0%"></div>
+      <div class="tl-bubble" id="tlBubble" hidden></div>
     </div>
   </div>
   <div class="row">
     <button id="btnV" class="on" type="button">Vertical (9:16)</button>
     <button id="btnL" type="button">Landscape (16:9)</button>
+    <button id="back5" type="button">Back 5s</button>
+    <button id="back1" type="button">Back 1s</button>
     <span class="clock">Now at <b id="clock">0:00.0</b></span>
   </div>
   <p class="note" id="fmtNote" hidden></p>
   <p class="note" id="shortcutLine"><span>Shortcuts: Space play or pause · K pause · J back 5 seconds · L forward 5 seconds · ←/→ step 1 second · Shift+←/→ step 5 seconds · M pin a note here.</span><label class="switch"><input type="checkbox" id="shortcutToggle" checked> Keyboard shortcuts</label></p>
+
+  <div class="card">
+    <h2>Make the edit</h2>
+    <p class="note">Two choices, on unless you turn them off. Set them while you watch, then make the edit.</p>
+    <div>
+      <label class="switch"><input type="checkbox" id="fdRetakes" checked> Remove retakes</label>
+      <p class="fd-note">When a line is said more than once, the last take stays.</p>
+    </div>
+    <div>
+      <label class="switch"><input type="checkbox" id="fdSilence" checked> Cut silence</label>
+      <p class="fd-note">Long silences are trimmed down to the buffer.</p>
+    </div>
+    <div class="row" id="fdBufferRow">
+      <label for="fdBufferRange">Silence left between words</label>
+      <input type="range" id="fdBufferRange" min="0.05" max="0.5" step="0.05" value="0.2">
+      <input type="number" id="fdBufferNum" min="0.05" max="0.5" step="0.05" value="0.2">
+      <span>seconds</span>
+    </div>
+    <div class="row">
+      <button id="fdFire" class="primary" type="button">Make the edit</button>
+    </div>
+    <p class="status-line" id="fdStatus"></p>
+    <div id="fdResults"></div>
+    <details>
+      <summary>More choices</summary>
+      <div class="row">
+        <select id="fdScope" aria-label="Formats to make">
+          <option value="both" selected>Both formats</option>
+          <option value="vertical">Vertical only</option>
+          <option value="landscape">Landscape only</option>
+        </select>
+      </div>
+      <textarea id="fdDirection" rows="3" placeholder="Anything else for this video? What you say adds to the two choices above. Say unless when one spot should be treated differently."></textarea>
+      <p class="note" id="fdProviderNote"></p>
+    </details>
+  </div>
 
   <div class="card">
     <h2>Pin a comment</h2>
@@ -503,11 +582,33 @@
     <section id="overallList"></section>
   </div>
 
+  <div class="card">
+    <h2>Your style</h2>
+    <p class="note">Rules you save here ride into every run as standing direction. Nothing is saved without your yes.</p>
+    <div id="ruleSuggestions"></div>
+    <div id="savedRulesList"></div>
+    <p class="empty" id="rulesEmpty">No saved rules yet. When a kind of change keeps working, you will be offered it here as a rule.</p>
+  </div>
+
   <div class="card" id="transcriptCard">
     <h2>Transcript</h2>
     <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Click a word to cut it, or click a struck word to bring it back. Every click passes the same safety check as a direction change.</p>
     <p class="transcript" id="transcriptWords"></p>
     <p class="status-line" id="transcriptStatus"></p>
+    <div class="comment" id="editPopup" hidden>
+      <span id="editPopupTitle">Why these words were removed</span>
+      <p class="comment-text" id="editPopupRemoved"></p>
+      <p class="action" id="editPopupReason"></p>
+      <p id="editPopupComment" hidden></p>
+      <div id="editNotesList"></div>
+      <textarea id="editNoteText" rows="2" placeholder="Leave a note on this edit. It travels with the removed words into the next run."></textarea>
+      <div class="row">
+        <button id="editNoteSpeak" type="button">Speak the note</button>
+        <button id="editNoteSave" class="primary" type="button">Save note</button>
+        <button id="editPopupClose" type="button">Close</button>
+      </div>
+      <p class="status-line" id="editNoteStatus"></p>
+    </div>
     <div class="row">
       <button id="fixWordsBtn" type="button">Fix words</button>
     </div>
@@ -606,6 +707,10 @@
   var fixRemoveBtn = document.getElementById("fixRemove");
   var transcriptEntries = [];
   var corrections = [];
+  var editSpans = [];
+  var savedRules = [];
+  var ruleSuggestions = [];
+  var currentEditId = null;
   var fixMode = false;
   var fixStart = null;
   var fixEnd = null;
@@ -684,6 +789,7 @@
   }
 
   var tlDragging = false;
+  var tlBubble = document.getElementById("tlBubble");
   function tlSeekEvent(e) {
     var rect = tlTrack.getBoundingClientRect();
     if (!rect.width) { return; }
@@ -693,17 +799,31 @@
     if (d <= 0) { return; }
     vid.currentTime = Math.round(frac * d * 10) / 10;
     updatePlayhead();
+    if (tlBubble) {
+      tlBubble.style.left = (frac * 100) + "%";
+      tlBubble.textContent = fmtTime(vid.currentTime);
+    }
   }
   tlTrack.addEventListener("pointerdown", function (e) {
     tlDragging = true;
+    tlTrack.classList.add("scrubbing");
+    if (tlBubble) { tlBubble.hidden = false; }
     try { tlTrack.setPointerCapture(e.pointerId); } catch (err) {}
     tlSeekEvent(e);
   });
   tlTrack.addEventListener("pointermove", function (e) {
     if (tlDragging) { tlSeekEvent(e); }
   });
-  tlTrack.addEventListener("pointerup", function () { tlDragging = false; });
-  tlTrack.addEventListener("pointercancel", function () { tlDragging = false; });
+  tlTrack.addEventListener("pointerup", function () {
+    tlDragging = false;
+    tlTrack.classList.remove("scrubbing");
+    if (tlBubble) { tlBubble.hidden = true; }
+  });
+  tlTrack.addEventListener("pointercancel", function () {
+    tlDragging = false;
+    tlTrack.classList.remove("scrubbing");
+    if (tlBubble) { tlBubble.hidden = true; }
+  });
   vid.addEventListener("loadedmetadata", function () {
     renderDots();
     updatePlayhead();
@@ -879,6 +999,12 @@
   function renderTranscript(words) {
     transcriptEntries = words || [];
     transcriptEl.innerHTML = "";
+    var dotByLast = {};
+    (editSpans || []).forEach(function (s) {
+      if (s && typeof s.word_end === "number") {
+        dotByLast[s.word_end - 1] = s;
+      }
+    });
     transcriptEntries.forEach(function (w) {
       var span = document.createElement("span");
       span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "");
@@ -892,6 +1018,23 @@
           : "Click to cut this word.");
       transcriptEl.appendChild(span);
       transcriptEl.appendChild(document.createTextNode(" "));
+      Object.keys(dotByLast).forEach(function (k) {
+        var lastIdx = parseInt(k, 10);
+        var entryEnd = w.word_end || (w.index + 1);
+        if (w.index <= lastIdx && lastIdx < entryEnd) {
+          var editSpan = dotByLast[k];
+          var dot = document.createElement("button");
+          dot.type = "button";
+          dot.className = "tdot";
+          dot.dataset.editId = editSpan.edit_id;
+          dot.setAttribute("aria-label", "Why these words were removed, and notes on this edit");
+          dot.addEventListener("click", function (e) {
+            e.stopPropagation();
+            openEditPopup(editSpan);
+          });
+          transcriptEl.appendChild(dot);
+        }
+      });
     });
     refreshFixSelection();
   }
@@ -1062,6 +1205,8 @@
 
   document.getElementById("btnV").addEventListener("click", function () { setFmt("vertical"); });
   document.getElementById("btnL").addEventListener("click", function () { setFmt("landscape"); });
+  document.getElementById("back5").addEventListener("click", function () { stepBy(-5); });
+  document.getElementById("back1").addEventListener("click", function () { stepBy(-1); });
   vid.addEventListener("timeupdate", function () {
     clockEl.textContent = fmtTime(vid.currentTime);
     updatePlayhead();
@@ -1069,7 +1214,7 @@
 
   function updatePinNote() {
     pinNoteEl.textContent = pinnedTs !== null
-      ? "Pinned at " + fmtTime(pinnedTs) + " (" + pinnedFmt + "). This note stays at that moment."
+      ? "Pinned at " + fmtTime(pinnedTs) + " (" + pinnedFmt + "). The time is an estimate; the editor checks a few seconds either way."
       : "";
   }
 
@@ -1329,13 +1474,16 @@
 
   function refreshSignin() {
     return fetch("/api/signin").then(function (r) { return r.json(); }).then(function (s) {
+      var fdNote = document.getElementById("fdProviderNote");
       if (s.meta_signin_set) {
         signinStateEl.textContent = s.source === "session"
           ? "A Meta sign-in is set for this session."
           : "A Meta sign-in is set on this server.";
         enableMetaOption();
+        if (fdNote) { fdNote.textContent = "Direction will use your Meta sign-in."; }
       } else {
         signinStateEl.textContent = "No Meta sign-in is set on this server yet. Paste one below to use Meta direction.";
+        if (fdNote) { fdNote.textContent = "Direction will use the offline mock. To use Muse, add a Meta sign-in in the Run direction card below."; }
       }
     }).catch(function () {
       signinStateEl.textContent = "";
@@ -1373,6 +1521,317 @@
   });
 
   refreshSignin();
+
+  // -- edit popup -------------------------------------------------------
+  var editPopup = document.getElementById("editPopup");
+  var editPopupTitle = document.getElementById("editPopupTitle");
+  var editPopupRemoved = document.getElementById("editPopupRemoved");
+  var editPopupReason = document.getElementById("editPopupReason");
+  var editPopupComment = document.getElementById("editPopupComment");
+  var editNotesList = document.getElementById("editNotesList");
+  var editNoteText = document.getElementById("editNoteText");
+  var editNoteStatus = document.getElementById("editNoteStatus");
+  var editNoteSpeak = document.getElementById("editNoteSpeak");
+  var editNoteSave = document.getElementById("editNoteSave");
+  var editPopupClose = document.getElementById("editPopupClose");
+
+  if (editNoteSpeak) {
+    editNoteSpeak.hidden = !(window.SpeechRecognition || window.webkitSpeechRecognition);
+  }
+
+  function renderEditNotes(span) {
+    if (!editNotesList) { return; }
+    editNotesList.innerHTML = "";
+    var notes = (span && span.notes) || [];
+    if (!notes.length) {
+      var empty = document.createElement("p");
+      empty.className = "note";
+      empty.textContent = "No notes on this edit yet.";
+      editNotesList.appendChild(empty);
+      return;
+    }
+    notes.forEach(function (n) {
+      var p = document.createElement("p");
+      p.className = "note";
+      p.textContent = n.text || "";
+      editNotesList.appendChild(p);
+    });
+  }
+
+  function openEditPopup(span) {
+    if (!span || !editPopup) { return; }
+    currentEditId = span.edit_id;
+    if (editPopupTitle) { editPopupTitle.textContent = "Why these words were removed"; }
+    if (editPopupRemoved) { editPopupRemoved.textContent = '"' + (span.removed_text || "") + '"'; }
+    if (editPopupReason) { editPopupReason.textContent = span.reason || ""; }
+    if (editPopupComment) {
+      if (span.comment_text) {
+        editPopupComment.hidden = false;
+        editPopupComment.textContent = "Your note at that moment said: " + span.comment_text;
+      } else {
+        editPopupComment.hidden = true;
+        editPopupComment.textContent = "";
+      }
+    }
+    renderEditNotes(span);
+    if (editNoteStatus) { editNoteStatus.textContent = ""; }
+    editPopup.hidden = false;
+    editPopup.scrollIntoView({ block: "nearest" });
+  }
+
+  if (editPopupClose) {
+    editPopupClose.addEventListener("click", function () {
+      editPopup.hidden = true;
+    });
+  }
+
+  if (editNoteSpeak) {
+    editNoteSpeak.addEventListener("click", function () {
+      var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!Rec) {
+        editNoteStatus.textContent = "Voice typing is not available in this browser. Typing works, and the microphone on the keyboard works too.";
+        return;
+      }
+      try {
+        var rec = new Rec();
+        rec.lang = "en-US";
+        rec.interimResults = false;
+        rec.onresult = function (e) {
+          var transcript = "";
+          if (e.results && e.results[0] && e.results[0][0]) {
+            transcript = e.results[0][0].transcript || "";
+          }
+          if (!transcript) { return; }
+          if (editNoteText.value && !/\s$/.test(editNoteText.value)) {
+            editNoteText.value += " ";
+          }
+          editNoteText.value += transcript;
+        };
+        rec.onerror = function () {
+          editNoteStatus.textContent = "Voice typing is not available in this browser. Typing works, and the microphone on the keyboard works too.";
+        };
+        rec.start();
+      } catch (err) {
+        editNoteStatus.textContent = "Voice typing is not available in this browser. Typing works, and the microphone on the keyboard works too.";
+      }
+    });
+  }
+
+  if (editNoteSave) {
+    editNoteSave.addEventListener("click", function () {
+      if (currentEditId === null || currentEditId === undefined) { return; }
+      postJson("/api/edit-note", { edit_id: currentEditId, text: editNoteText.value }).then(function (res) {
+        var data = res.data || {};
+        if (!data.ok) {
+          editNoteStatus.textContent = data.error || "That note could not be saved.";
+          return;
+        }
+        var notes = data.notes || [];
+        for (var i = 0; i < editSpans.length; i++) {
+          if (String(editSpans[i].edit_id) === String(currentEditId)) {
+            editSpans[i].notes = notes;
+            renderEditNotes(editSpans[i]);
+            break;
+          }
+        }
+        editNoteText.value = "";
+        editNoteStatus.textContent = "Saved. This note stays with this edit, and goes into the next run.";
+      }).catch(function () {
+        editNoteStatus.textContent = "That note could not be saved.";
+      });
+    });
+  }
+
+  // -- your style (rules) ---------------------------------------------
+  var ruleSuggestionsEl = document.getElementById("ruleSuggestions");
+  var savedRulesListEl = document.getElementById("savedRulesList");
+  var rulesEmptyEl = document.getElementById("rulesEmpty");
+
+  function updateRulesFromData(data) {
+    if (!data) { return; }
+    if (data.saved_rules) { savedRules = data.saved_rules; }
+    if (data.suggestions) { ruleSuggestions = data.suggestions; }
+    else if (data.rule_suggestions) { ruleSuggestions = data.rule_suggestions; }
+  }
+
+  function renderRules() {
+    if (ruleSuggestionsEl) { ruleSuggestionsEl.innerHTML = ""; }
+    if (savedRulesListEl) { savedRulesListEl.innerHTML = ""; }
+    (ruleSuggestions || []).forEach(function (sug) {
+      var card = document.createElement("div");
+      card.className = "comment";
+      var p = document.createElement("p");
+      p.className = "comment-text";
+      p.textContent = "Pattern caught: " + (sug.statement || "");
+      var small = document.createElement("p");
+      small.className = "action";
+      small.textContent = sug.explicit
+        ? "You marked a change like this as your style."
+        : "This has worked " + sug.support_count + " times in your grades.";
+      var row = document.createElement("div");
+      row.className = "row";
+      var saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "primary";
+      saveBtn.textContent = "Save as a rule";
+      saveBtn.addEventListener("click", function () {
+        postJson("/api/rule-save", { pattern_key: sug.pattern_key }).then(function (res) {
+          updateRulesFromData(res.data || {});
+          renderRules();
+        }).catch(function () {});
+      });
+      var dismissBtn = document.createElement("button");
+      dismissBtn.type = "button";
+      dismissBtn.textContent = "Not now";
+      dismissBtn.addEventListener("click", function () {
+        postJson("/api/rule-dismiss", { pattern_key: sug.pattern_key }).then(function (res) {
+          updateRulesFromData(res.data || {});
+          renderRules();
+        }).catch(function () {});
+      });
+      row.appendChild(saveBtn);
+      row.appendChild(dismissBtn);
+      card.appendChild(p);
+      card.appendChild(small);
+      card.appendChild(row);
+      if (ruleSuggestionsEl) { ruleSuggestionsEl.appendChild(card); }
+    });
+    (savedRules || []).forEach(function (rule) {
+      var row = document.createElement("div");
+      row.className = "row";
+      var label = document.createElement("span");
+      label.textContent = typeof rule === "string" ? rule : (rule.statement || "");
+      var removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "del";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", function () {
+        postJson("/api/rule-remove", { rule_id: typeof rule === "string" ? rule : rule.rule_id }).then(function (res) {
+          updateRulesFromData(res.data || {});
+          renderRules();
+        }).catch(function () {});
+      });
+      row.appendChild(label);
+      row.appendChild(removeBtn);
+      if (savedRulesListEl) { savedRulesListEl.appendChild(row); }
+    });
+    if (rulesEmptyEl) {
+      rulesEmptyEl.hidden = !!((savedRules && savedRules.length) || (ruleSuggestions && ruleSuggestions.length));
+    }
+  }
+
+  // -- front door -------------------------------------------------------
+  var fdRetakes = document.getElementById("fdRetakes");
+  var fdSilence = document.getElementById("fdSilence");
+  var fdBufferRow = document.getElementById("fdBufferRow");
+  var fdBufferRange = document.getElementById("fdBufferRange");
+  var fdBufferNum = document.getElementById("fdBufferNum");
+  var fdFire = document.getElementById("fdFire");
+  var fdStatus = document.getElementById("fdStatus");
+  var fdResults = document.getElementById("fdResults");
+  var fdScope = document.getElementById("fdScope");
+  var fdDirection = document.getElementById("fdDirection");
+  var fdProviderNote = document.getElementById("fdProviderNote");
+
+  if (fdProviderNote && !fdProviderNote.textContent) {
+    fdProviderNote.textContent = "Direction will use the offline mock. To use Muse, add a Meta sign-in in the Run direction card below.";
+  }
+
+  function clampBuffer(v) {
+    var n = parseFloat(v);
+    if (isNaN(n)) { n = 0.2; }
+    return Math.min(0.5, Math.max(0.05, n));
+  }
+
+  function setBuffer(v) {
+    var clamped = clampBuffer(v);
+    if (fdBufferRange) { fdBufferRange.value = clamped; }
+    if (fdBufferNum) { fdBufferNum.value = clamped; }
+    return clamped;
+  }
+
+  function updateBufferDim() {
+    if (fdBufferRow && fdSilence) {
+      fdBufferRow.style.opacity = fdSilence.checked ? "" : "0.5";
+    }
+  }
+
+  if (fdBufferRange) {
+    fdBufferRange.addEventListener("input", function () { setBuffer(fdBufferRange.value); });
+    fdBufferRange.addEventListener("change", function () { setBuffer(fdBufferRange.value); });
+  }
+  if (fdBufferNum) {
+    fdBufferNum.addEventListener("input", function () { setBuffer(fdBufferNum.value); });
+    fdBufferNum.addEventListener("change", function () { setBuffer(fdBufferNum.value); });
+  }
+  if (fdSilence) {
+    fdSilence.addEventListener("change", updateBufferDim);
+  }
+  updateBufferDim();
+
+  if (fdFire) {
+    fdFire.addEventListener("click", function () {
+      var bufferVal = fdBufferNum ? clampBuffer(fdBufferNum.value) : 0.2;
+      fdFire.disabled = true;
+      if (fdStatus) { fdStatus.textContent = "Making the edit..."; }
+      if (fdResults) { fdResults.innerHTML = ""; }
+      persist().then(function () {
+        return postJson("/api/front-door", {
+          remove_retakes: fdRetakes ? !!fdRetakes.checked : true,
+          cut_silence: fdSilence ? !!fdSilence.checked : true,
+          buffer_s: bufferVal,
+          format_scope: fdScope ? fdScope.value : "both",
+          direction_text: fdDirection ? fdDirection.value : ""
+        });
+      }).then(function (res) {
+        var data = res.data || {};
+        fdFire.disabled = false;
+        if (!data.ok) {
+          if (fdStatus) { fdStatus.textContent = data.error || "The edit did not run."; }
+          return;
+        }
+        if (fdStatus) { fdStatus.textContent = "Done."; }
+        if (fdResults) {
+          var runs = data.direction_runs || [];
+          if (runs.length) {
+            var first = runs[0];
+            var last = runs[runs.length - 1];
+            var counts = document.createElement("p");
+            counts.className = "counts";
+            counts.textContent =
+              "Words kept: " + first.before.kept_words + " to " + last.after.kept_words +
+              ". Length: " + first.before.output_duration_s.toFixed(1) + "s to " +
+              last.after.output_duration_s.toFixed(1) + "s.";
+            fdResults.appendChild(counts);
+          }
+          if (data.silence && data.silence.joins_trimmed) {
+            var silenceLine = document.createElement("p");
+            silenceLine.className = "counts";
+            var buf = data.settings && typeof data.settings.buffer_s === "number"
+              ? data.settings.buffer_s : bufferVal;
+            silenceLine.textContent = "Silence trimmed at " + data.silence.joins_trimmed +
+              " joins, down toward " + buf + " seconds.";
+            fdResults.appendChild(silenceLine);
+          }
+          if (data.after_review) {
+            var link = document.createElement("p");
+            link.className = "note";
+            var a = document.createElement("a");
+            a.href = "/after-review";
+            a.textContent = "Grade the changes";
+            a.style.color = "var(--accent)";
+            link.appendChild(a);
+            fdResults.appendChild(link);
+          }
+        }
+        refreshHistory();
+        reloadJobState();
+      }).catch(function (err) {
+        fdFire.disabled = false;
+        if (fdStatus) { fdStatus.textContent = "The edit did not run: " + err; }
+      });
+    });
+  }
 
   // -- history --------------------------------------------------------
   // Every change the session makes is recorded on the server as a
@@ -1429,10 +1888,30 @@
       return { id: n.id, text: n.text };
     });
     corrections = job.word_corrections || [];
+    editSpans = job.edit_spans || [];
+    savedRules = job.saved_rules || [];
+    ruleSuggestions = job.rule_suggestions || [];
+    if (job.front_door) {
+      var fd = job.front_door;
+      var fdR = document.getElementById("fdRetakes");
+      var fdS = document.getElementById("fdSilence");
+      var fdBR = document.getElementById("fdBufferRange");
+      var fdBN = document.getElementById("fdBufferNum");
+      var fdRow = document.getElementById("fdBufferRow");
+      if (fdR) { fdR.checked = !!fd.remove_retakes; }
+      if (fdS) { fdS.checked = !!fd.cut_silence; }
+      if (typeof fd.buffer_s === "number") {
+        var clamped = Math.min(0.5, Math.max(0.05, fd.buffer_s));
+        if (fdBR) { fdBR.value = clamped; }
+        if (fdBN) { fdBN.value = clamped; }
+      }
+      if (fdRow && fdS) { fdRow.style.opacity = fdS.checked ? "" : "0.5"; }
+    }
     renderList();
     renderOverall();
     renderDots();
     renderTranscript(job.transcript_words);
+    renderRules();
   }
 
   function reloadJobState() {
