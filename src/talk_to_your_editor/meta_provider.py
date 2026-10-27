@@ -205,6 +205,10 @@ class MockProvider:
         """The mock provider judges nothing: Band B degrades to flags."""
         return None
 
+    def judge_shadow(self, pairs, timeline, guidance=None):
+        """The mock provider shadows nothing: the local ranking answers."""
+        return None
+
 
 def _comments(feedback: dict) -> list[dict]:
     if isinstance(feedback, list):
@@ -574,6 +578,121 @@ class MetaProvider:
                 route = self._route(op, comment, evidence, operations, routing)
                 routing.append(route)
         return operations, verdicts
+
+    def judge_shadow(
+        self,
+        pairs: list[dict],
+        timeline: Timeline,
+        guidance: Optional[list] = None,
+    ) -> Optional[dict]:
+        """Best delivery (Beta), in shadow: pick keepers, change nothing.
+
+        One Spark call for the whole video, like ``judge_retakes``.
+        The pairs handed in are genuine choices only (both
+        deliveries complete, never word-identical; identical twins
+        are declared ties before any call). The model names the
+        delivery it would keep per pair, or declares a tie; the
+        caller only records the pick, so no span is ever drawn or
+        applied from this answer. Returns a map of pair id to
+        {"pick": "positional" | "other" | "tie", "reason": str},
+        where "positional" names the delivery the positional rule
+        kept, or None when no judgment could be made at all, so the
+        caller falls back to the local ranking.
+        """
+        if not pairs:
+            return {}
+        words = timeline.words
+        packet = []
+        for pair in pairs:
+            spans = sorted(
+                (pair["cut"], pair["keep"]),
+                key=lambda span: span["word_start"],
+            )
+            first, second = spans[0], spans[1]
+            lo = max(0, first["word_start"] - 10)
+            hi = min(len(words), second["word_end"] + 10)
+            packet.append(
+                {
+                    "pair_id": pair["pair_id"],
+                    "first_delivery": first["text"],
+                    "second_delivery": second["text"],
+                    "surrounding_words": " ".join(
+                        str(words[i].get("word", "")) for i in range(lo, hi)
+                    ),
+                    "measured": {
+                        "coverage": pair.get("coverage"),
+                        "ratio": pair.get("ratio"),
+                        "shape": pair.get("shape"),
+                    },
+                }
+            )
+        system = (
+            "You are checking, for a video editor, which of two "
+            "deliveries of the same line carries the story best. "
+            "Both deliveries complete the sentence; a local checker "
+            "measured them and found them similar. Judge by "
+            "storytelling flow, not similarity alone: which delivery "
+            "says the line in one clean run, carries the story "
+            "forward, and serves the direction the creator gave for "
+            "this video (in the guidance, when any is given)? A "
+            "delivery that restarts inside the line, trails off, or "
+            "leaves part of the line out is the weaker one. When the "
+            "words cannot separate the two, answer tie; never invent "
+            "a difference the words do not show, and never judge by "
+            "which came first or last. You are only recording a "
+            "pick; nothing is cut from your answer. For each pair "
+            "answer one pick: keep_first, keep_second, or tie, with "
+            "one short plain sentence of reason. Return JSON only: "
+            '{"picks": [{"pair_id": "...", "pick": "keep_first" | '
+            '"keep_second" | "tie", "reason": "one short plain '
+            'sentence"}]}. Answer every pair exactly once.'
+        )
+        user = json.dumps(
+            {"pairs": packet, "guidance": guidance or []}
+        )
+        content = self._chat(
+            SPARK_MODEL,
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        parsed = extract_json(content)
+        raw_picks = parsed.get("picks") if isinstance(parsed, dict) else None
+        if not isinstance(raw_picks, list):
+            return None
+        by_id = {pair["pair_id"]: pair for pair in pairs}
+        picks: dict = {}
+        for item in raw_picks:
+            if not isinstance(item, dict):
+                continue
+            pair = by_id.get(item.get("pair_id"))
+            pick = item.get("pick")
+            if pair is None or pick not in ("keep_first", "keep_second", "tie"):
+                continue
+            reason = str(item.get("reason") or "").strip()
+            if pick == "tie":
+                picks[pair["pair_id"]] = {
+                    "pick": "tie",
+                    "reason": reason or (
+                        "The words could not separate these two, "
+                        "so the last take stays."
+                    ),
+                }
+                continue
+            spans = sorted(
+                (pair["cut"], pair["keep"]),
+                key=lambda span: span["word_start"],
+            )
+            chosen = spans[0] if pick == "keep_first" else spans[1]
+            picks[pair["pair_id"]] = {
+                "pick": (
+                    "positional" if chosen is pair["keep"] else "other"
+                ),
+                "reason": reason
+                or "This delivery carries the story better.",
+            }
+        return picks
 
     def _route(
         self,

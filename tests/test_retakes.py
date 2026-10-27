@@ -441,14 +441,17 @@ class RetakeHttpTests(unittest.TestCase):
         status, data = self.call("/api/grades", {"entries": [entry]})
         self.assertEqual(status, 200, data)
         keys = [s["pattern_key"] for s in data["suggestions"]]
-        self.assertIn("retake:earlier_take:band_a", keys)
+        # v0.5.1: graded records carry the keeper mode in the key.
+        self.assertIn("retake:earlier_take:band_a:last", keys)
         grades = json.loads(
             (self.job / "tye-session" / "grades.json").read_text(
                 encoding="utf-8"
             )
         )
         stored = grades["entries"] if isinstance(grades, dict) else grades
-        self.assertEqual(stored[0]["pattern_key"], "retake:earlier_take:band_a")
+        self.assertEqual(
+            stored[0]["pattern_key"], "retake:earlier_take:band_a:last"
+        )
         # A "did not work" grade retires the pair: restore the words,
         # fire again, and the pair is not proposed a second time.
         entry["verdict"] = "did_not_work"

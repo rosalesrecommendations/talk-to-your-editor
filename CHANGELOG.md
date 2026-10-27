@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 - 2026-10-27
+
+- **You can now choose which take stays.** Behind More choices there is one new line: "When a line is said more than once, keep:" with three choices. **The last take** is the rule you already know, and it stays the default. **The first clean take** keeps the first complete delivery instead, through the same safety checks, and the result says which rule decided. Your pick is saved with your profile and remembered in the session, and whenever it is not the default the front door says so before you fire: "Remove retakes is on. Keeping: the first clean take."
+- **Best delivery (Beta) is here, watching only.** Pick it and the last take still decides every cut. In the background, Beta records the take it would have kept on every pair where there is a real choice, judging by flow: which delivery finishes the sentence and carries the story forward. Its pick shows as a note on the removed words and in the review rows, and the card keeps score in plain words: "Best delivery has matched your pick in X of its last Y calls," once you grade a change or swap a take. When two takes say the very same words, Beta always calls it a tie and the last take stays; it never invents a difference. Pairs under protection or a keep-whole direction are left out of the score. Nothing promotes Beta on its own in this version.
+
 ## 0.5.0 - 2026-10-27
 
 Remove retakes is an engine now, not a suggestion. Until this version the front door's retakes switch only sent one sentence of guidance to the direction model, so with no comments pinned it measured nothing. Now the app measures the transcript itself, locally, before any model is asked anything.

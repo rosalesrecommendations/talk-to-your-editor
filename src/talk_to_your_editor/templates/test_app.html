@@ -550,7 +550,7 @@
     <p class="note">Two choices, on unless you turn them off. Set them while you watch, then make the edit.</p>
     <div>
       <label class="switch"><input type="checkbox" id="fdRetakes" checked> Remove retakes</label>
-      <p class="fd-note">When a line is said more than once, the last take stays.</p>
+      <p class="fd-note" id="fdRetakesNote">When a line is said more than once, the last take stays.</p>
     </div>
     <div>
       <label class="switch"><input type="checkbox" id="fdSilence" checked> Cut silence</label>
@@ -576,6 +576,13 @@
           <option value="landscape">Landscape only</option>
         </select>
       </div>
+      <p class="note">When a line is said more than once, keep:</p>
+      <div class="row" id="fdKeepPills">
+        <button type="button" data-keep="last">The last take</button>
+        <button type="button" data-keep="first">The first clean take</button>
+        <button type="button" data-keep="best">Best delivery (Beta)</button>
+      </div>
+      <p class="note" id="fdBetaLine"></p>
       <textarea id="fdDirection" rows="3" placeholder="Anything else for this video? What you say adds to the two choices above. Say unless when one spot should be treated differently."></textarea>
       <p class="note" id="fdProviderNote"></p>
     </details>
@@ -636,6 +643,7 @@
         <p class="note">The take that stayed:</p>
         <p class="comment-text" id="editPopupKeptText"></p>
       </div>
+      <p class="action" id="editPopupShadow" hidden></p>
       <div class="row" id="editPopupActions">
         <button id="editBringBack" type="button">Bring these words back</button>
         <button id="editSwapTakes" type="button" hidden>Swap takes</button>
@@ -1577,6 +1585,7 @@
   var editPopupClose = document.getElementById("editPopupClose");
   var editPopupKept = document.getElementById("editPopupKept");
   var editPopupKeptText = document.getElementById("editPopupKeptText");
+  var editPopupShadow = document.getElementById("editPopupShadow");
   var editBringBack = document.getElementById("editBringBack");
   var editSwapTakes = document.getElementById("editSwapTakes");
   var editActionStatus = document.getElementById("editActionStatus");
@@ -1626,6 +1635,19 @@
       } else {
         editPopupKept.hidden = true;
         if (editPopupKeptText) { editPopupKeptText.textContent = ""; }
+      }
+    }
+    if (editPopupShadow) {
+      var shadow = span.retake && span.retake.shadow;
+      if (shadow && shadow.flip) {
+        editPopupShadow.hidden = false;
+        editPopupShadow.textContent = "Best delivery would have kept the other take: " + (shadow.reason || "");
+      } else if (shadow && shadow.pick === "tie") {
+        editPopupShadow.hidden = false;
+        editPopupShadow.textContent = "Best delivery (Beta) had no pick here: " + (shadow.reason || "");
+      } else {
+        editPopupShadow.hidden = true;
+        editPopupShadow.textContent = "";
       }
     }
     if (editSwapTakes) { editSwapTakes.hidden = !(span.retake && span.retake.keep_text); }
@@ -1824,6 +1846,44 @@
   var fdScope = document.getElementById("fdScope");
   var fdDirection = document.getElementById("fdDirection");
   var fdProviderNote = document.getElementById("fdProviderNote");
+  var fdRetakesNote = document.getElementById("fdRetakesNote");
+  var fdKeepPills = document.getElementById("fdKeepPills");
+  var fdBetaLine = document.getElementById("fdBetaLine");
+  var fdKeepMode = "last";
+
+  var KEEP_NOTES = {
+    last: "When a line is said more than once, the last take stays.",
+    first: "When a line is said more than once, the first clean take stays.",
+    best: "When a line is said more than once, the last take stays for now. Best delivery (Beta) watches in the background, records the take it would have kept, and changes nothing until it has earned the job."
+  };
+
+  function setKeepMode(mode) {
+    if (mode !== "first" && mode !== "best") { mode = "last"; }
+    fdKeepMode = mode;
+    if (fdKeepPills) {
+      Array.prototype.forEach.call(fdKeepPills.querySelectorAll("button"), function (btn) {
+        if (btn.getAttribute("data-keep") === mode) { btn.classList.add("on"); }
+        else { btn.classList.remove("on"); }
+      });
+    }
+    if (fdRetakesNote) { fdRetakesNote.textContent = KEEP_NOTES[mode]; }
+  }
+
+  if (fdKeepPills) {
+    Array.prototype.forEach.call(fdKeepPills.querySelectorAll("button"), function (btn) {
+      btn.addEventListener("click", function () { setKeepMode(btn.getAttribute("data-keep")); });
+    });
+  }
+  setKeepMode("last");
+
+  function renderBetaLine(beta) {
+    if (!fdBetaLine) { return; }
+    if (beta && beta.line) {
+      fdBetaLine.textContent = beta.line + " Nothing changes on its own; the count is here so you can watch it earn the job.";
+    } else {
+      fdBetaLine.textContent = "";
+    }
+  }
 
   if (fdProviderNote && !fdProviderNote.textContent) {
     fdProviderNote.textContent = "Direction will use the offline mock. To use Muse, add a Meta sign-in in the Run direction card below.";
@@ -1872,6 +1932,7 @@
           remove_retakes: fdRetakes ? !!fdRetakes.checked : true,
           cut_silence: fdSilence ? !!fdSilence.checked : true,
           buffer_s: bufferVal,
+          keep_mode: fdKeepMode,
           format_scope: fdScope ? fdScope.value : "both",
           direction_text: fdDirection ? fdDirection.value : ""
         });
@@ -1883,7 +1944,14 @@
           return;
         }
         if (fdStatus) { fdStatus.textContent = "Done."; }
+        renderBetaLine(data.beta);
         if (fdResults) {
+          if (data.recap) {
+            var recapLine = document.createElement("p");
+            recapLine.className = "counts";
+            recapLine.textContent = data.recap;
+            fdResults.appendChild(recapLine);
+          }
           var runs = data.direction_runs || [];
           if (runs.length) {
             var first = runs[0];
@@ -1910,6 +1978,16 @@
               retakeLine.textContent = "Retakes: " + (parts.length ? parts.join("; ") : "checked, nothing changed") + ".";
             }
             fdResults.appendChild(retakeLine);
+            if (rt.shadow && rt.shadow.scored) {
+              var shadowLine = document.createElement("p");
+              shadowLine.className = "counts";
+              shadowLine.textContent = "Best delivery (Beta) recorded its pick on " +
+                rt.shadow.scored + (rt.shadow.scored === 1 ? " pair" : " pairs") +
+                " in the background" +
+                (rt.shadow.flips ? ", and would have kept the other take " + rt.shadow.flips + (rt.shadow.flips === 1 ? " time" : " times") : "") +
+                ". It changed nothing.";
+              fdResults.appendChild(shadowLine);
+            }
           }
           if (data.silence && data.silence.joins_trimmed) {
             var silenceLine = document.createElement("p");
@@ -2013,7 +2091,9 @@
         if (fdBN) { fdBN.value = clamped; }
       }
       if (fdRow && fdS) { fdRow.style.opacity = fdS.checked ? "" : "0.5"; }
+      if (fd.keep_mode) { setKeepMode(fd.keep_mode); }
     }
+    renderBetaLine(job.beta);
     renderList();
     renderOverall();
     renderDots();

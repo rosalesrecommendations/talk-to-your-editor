@@ -497,6 +497,7 @@ FRONT_DOOR_DEFAULTS = {
     "remove_retakes": True,
     "cut_silence": True,
     "buffer_s": 0.1,
+    "keep_mode": "last",
 }
 BUFFER_MIN_S = 0.05
 BUFFER_MAX_S = 0.50
@@ -504,6 +505,22 @@ RETAKES_GUIDANCE = (
     "Remove retakes: when the same line is said more than once, keep "
     "the last take and take the earlier tries out."
 )
+RETAKES_GUIDANCE_FIRST = (
+    "Remove retakes: when the same line is said more than once, keep "
+    "the first clean take and take the later tries out."
+)
+
+
+def _retakes_guidance(keep_mode: str) -> str:
+    """The direction guidance for the active keeper mode.
+
+    Best delivery applies the positional rule while it is in
+    shadow, so its guidance is the last-take sentence; only the
+    first-clean mode changes what direction is told.
+    """
+    if keep_mode == "first":
+        return RETAKES_GUIDANCE_FIRST
+    return RETAKES_GUIDANCE
 SILENCE_COMMENT_ID = "front-door-silence"
 
 
@@ -526,10 +543,16 @@ def _front_door_settings(config: WebAppConfig) -> dict:
 
     Remove retakes and Cut silence start on; the silence buffer
     starts at 0.1 seconds. A choice the creator changed is kept in
-    the session and offered back the same way next time.
+    the session and offered back the same way next time. The keeper
+    mode ("When a line is said more than once, keep:") starts from
+    the standing profile's retakes knob when the job carries one,
+    and from the last take otherwise; a changed mode is a session
+    choice like the rest, and the job's own files are never touched.
     """
     saved = _load_session_json(config, FRONT_DOOR_FILENAME, {})
     settings = dict(FRONT_DOOR_DEFAULTS)
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    settings["keep_mode"] = retakes.settings_from_profile(profile)["keep"]
     if isinstance(saved, dict):
         for key in ("remove_retakes", "cut_silence"):
             if isinstance(saved.get(key), bool):
@@ -539,7 +562,25 @@ def _front_door_settings(config: WebAppConfig) -> dict:
             settings["buffer_s"] = min(
                 BUFFER_MAX_S, max(BUFFER_MIN_S, float(buffer))
             )
+        if saved.get("keep_mode") in retakes.KEEP_MODES:
+            settings["keep_mode"] = saved["keep_mode"]
     return settings
+
+
+def _keep_mode_recap(settings: dict) -> Optional[str]:
+    """The mode announcement, present whenever the mode is not the default.
+
+    A run can never quietly use a forgotten mode: whenever the
+    keeper mode is not the last take, the recap names it in the
+    research's wording.
+    """
+    mode = settings.get("keep_mode", "last")
+    if mode == "last":
+        return None
+    label = retakes.MODE_LABELS[mode]
+    if settings.get("remove_retakes"):
+        return f"Remove retakes is on. Keeping: {label}."
+    return f"Keeping: {label}."
 
 
 def _save_front_door_settings(config: WebAppConfig, settings: dict) -> dict:
@@ -761,6 +802,7 @@ def _edit_spans(config: WebAppConfig) -> list:
                 "keep_text": meta.get("keep_text"),
                 "keep_word_start": meta.get("keep_word_start"),
                 "keep_word_end": meta.get("keep_word_end"),
+                "shadow": meta.get("shadow"),
             }
         spans.append(
             {
@@ -873,6 +915,13 @@ def _augmented_review_feedback(config: WebAppConfig) -> Optional[Path]:
             cut_text = cut_text[:107].rstrip() + "..."
         if len(keep_text) > 110:
             keep_text = keep_text[:107].rstrip() + "..."
+        shadow_note = ""
+        shadow = pair.get("shadow")
+        if isinstance(shadow, dict) and shadow.get("flip"):
+            shadow_note = (
+                " Best delivery (Beta) would have kept the other take: "
+                + str(shadow.get("reason") or "")
+            )
         synthetic.append(
             {
                 "id": pair["pair_id"],
@@ -881,8 +930,15 @@ def _augmented_review_feedback(config: WebAppConfig) -> Optional[Path]:
                 ),
                 "text": (
                     "Retake found by the front door. "
-                    f"Earlier: \"{cut_text}\" "
+                    + (
+                        "Earlier: "
+                        if int(cut.get("word_start") or 0)
+                        <= int(keep.get("word_start") or 0)
+                        else "Later: "
+                    )
+                    + f"\"{cut_text}\" "
                     f"The take that stayed: \"{keep_text}\""
+                    + shadow_note
                 ),
             }
         )
@@ -1012,6 +1068,7 @@ def _job_summary(config: WebAppConfig) -> dict:
         "overall_feedback": overall_feedback,
         "edit_spans": _edit_spans(config),
         "front_door": _front_door_settings(config),
+        "beta": _beta_score(config),
         "saved_rules": _saved_rules_view(config),
         "rule_suggestions": _rule_suggestions(config),
         "meta_available": bool(config.signin_key()),
@@ -1438,7 +1495,77 @@ def _load_retake_record(config: WebAppConfig) -> dict:
     payload.setdefault("runs", [])
     payload.setdefault("pairs", [])
     payload.setdefault("decisions", {})
+    payload.setdefault("shadow", [])
     return payload
+
+
+def _beta_score(config: WebAppConfig) -> dict:
+    """Best delivery's report card, as one plain count.
+
+    Only flips count (the times Beta disagreed with the take that
+    stayed), and only flips a grade or a swap has settled say
+    whether Beta matched the creator's own pick. The promotion bar
+    is 4 in 5 across the most recent 30 disagreements; this version
+    shows the count and promotes nothing on its own.
+    """
+    record = _load_retake_record(config)
+    shadow = [
+        entry
+        for entry in record.get("shadow", [])
+        if isinstance(entry, dict) and entry.get("flip")
+    ]
+    settled = [entry for entry in shadow if entry.get("matched") is not None]
+    recent = settled[-30:]
+    matched = sum(1 for entry in recent if entry.get("matched"))
+    line = None
+    if recent:
+        line = (
+            "Best delivery has matched your pick in "
+            f"{matched} of its last {len(recent)} calls."
+        )
+    elif shadow:
+        line = (
+            "Best delivery has disagreed with the take that stayed "
+            f"{len(shadow)} {'time' if len(shadow) == 1 else 'times'}; "
+            "none of those calls has been graded yet."
+        )
+    return {
+        "flips": len(shadow),
+        "settled": len(settled),
+        "matched": matched,
+        "recent_calls": len(recent),
+        "line": line,
+    }
+
+
+def _resolve_shadow_match(
+    record: dict,
+    pair: dict,
+    creators_keeper: Optional[str],
+    source: str,
+) -> bool:
+    """Settle one shadow flip against the creator's actual keeper.
+
+    ``creators_keeper`` is "positional" (the take that stayed is
+    the creator's pick), "other" (the creator took the other
+    delivery, by swapping), or None (the creator kept both, which
+    settles neither side). A flip matches exactly when Beta's pick
+    is the creator's keeper. Only the first settlement counts.
+    Returns True when the record changed.
+    """
+    if creators_keeper is None:
+        return False
+    key = retakes.pair_key(pair)
+    for entry in record.get("shadow", []):
+        if not isinstance(entry, dict) or entry.get("pair_key") != key:
+            continue
+        if not entry.get("flip") or entry.get("matched") is not None:
+            return False
+        entry["matched"] = entry.get("beta_pick") == creators_keeper
+        entry["match_source"] = source
+        entry["matched_at"] = _utc_now()
+        return True
+    return False
 
 
 def _save_retake_record(config: WebAppConfig, record: dict) -> None:
@@ -1464,9 +1591,12 @@ def _enrich_retake_grades(config: WebAppConfig, raw_entries: list) -> list:
     the explicit pattern key and a plain description (no machine
     tokens, so it can be shown), which is what lets grades tune the
     bands through the rule suggestions instead of dissolving into
-    the operation type. A "did not work" grade on a pair also
+    the operation type. The key carries the keeper mode that made
+    the pick, so what the creator grades teaches the mode that made
+    it, not some other mode. A "did not work" grade on a pair also
     records the creator's decision about it: that pair is never
-    proposed again.
+    proposed again. A "worked" grade settles any shadow flip on
+    the pair: the take that stayed was the creator's pick.
     """
     record = _load_retake_record(config)
     pairs_by_id = {
@@ -1486,7 +1616,8 @@ def _enrich_retake_grades(config: WebAppConfig, raw_entries: list) -> list:
         if pair is None:
             continue
         if not entry.get("pattern_key"):
-            entry["pattern_key"] = pair["pattern_key"]
+            mode = pair.get("keep_mode") or "last"
+            entry["pattern_key"] = f"{pair['pattern_key']}:{mode}"
             entry.setdefault(
                 "pattern_description",
                 _RETAKE_PATTERN_DESCRIPTIONS.get(
@@ -1500,13 +1631,154 @@ def _enrich_retake_grades(config: WebAppConfig, raw_entries: list) -> list:
             if not (decisions.get(key) or {}).get("keep_both"):
                 decisions[key] = {"keep_both": True, "at": _utc_now()}
                 decisions_changed = True
+        if entry.get("verdict") == "worked":
+            if _resolve_shadow_match(record, pair, "positional", "grade"):
+                decisions_changed = True
     if decisions_changed:
         _save_retake_record(config, record)
     return raw_entries
 
 
+def _run_shadow(
+    config: WebAppConfig,
+    provider_name: str,
+    all_pairs: list,
+    active_pairs: list,
+    timeline: Timeline,
+    spoken_direction: str,
+    record: dict,
+) -> dict:
+    """Best delivery (Beta), in shadow: record picks, change nothing.
+
+    Runs only when the keeper mode is Best delivery. Every pair
+    with a genuine choice (both deliveries complete) gets a
+    recorded pick: the keeper Beta would have chosen, and whether
+    that disagrees with the take the positional rule kept (a flip).
+    Pairs the creator already decided to keep whole are marked
+    excluded and never scored; pairs under protection never reach
+    the detector, so they never reach shadow either. Word-identical
+    pairs are declared ties before any model is asked, with no
+    exceptions. The rest go to the provider's shadow judge in one
+    call when it can judge, and to the local ranking when it
+    cannot or does not answer a pair. A settlement a grade or a
+    swap already recorded on a pair survives the refresh.
+    """
+    counts = {"scored": 0, "flips": 0, "ties": 0, "excluded": 0}
+    decisions = record.get("decisions") or {}
+    existing = {
+        entry.get("pair_key"): entry
+        for entry in record.get("shadow", [])
+        if isinstance(entry, dict) and entry.get("pair_key")
+    }
+    active_ids = {pair["pair_id"] for pair in active_pairs}
+    refreshed: dict = {}
+
+    def base_entry(pair: dict) -> dict:
+        old = existing.get(retakes.pair_key(pair)) or {}
+        return {
+            "pair_key": retakes.pair_key(pair),
+            "pair_id": pair["pair_id"],
+            "at": _utc_now(),
+            "matched": old.get("matched"),
+            "match_source": old.get("match_source"),
+            "matched_at": old.get("matched_at"),
+        }
+
+    candidates = []
+    for pair in all_pairs:
+        key = retakes.pair_key(pair)
+        if pair["pair_id"] not in active_ids:
+            entry = base_entry(pair)
+            entry.update(
+                {
+                    "status": "excluded",
+                    "excluded_reason": "keep_both",
+                    "beta_pick": None,
+                    "flip": False,
+                }
+            )
+            refreshed[key] = entry
+            counts["excluded"] += 1
+        elif pair["band"] in ("a", "b") and retakes.genuine_choice(pair):
+            candidates.append(pair)
+
+    judged: dict = {}
+    to_judge = [
+        pair
+        for pair in candidates
+        if not retakes.deliveries_identical(pair, timeline)
+    ]
+    if to_judge:
+        provider = None
+        if provider_name == "meta":
+            provider = MetaProvider(config.signin_key())
+        elif provider_name == "mock":
+            provider = MockProvider()
+        if provider is not None:
+            guidance = creator_rules.active_rule_statements(
+                _rules_store(config)
+            )
+            if spoken_direction:
+                guidance = guidance + [spoken_direction]
+            try:
+                judged = provider.judge_shadow(
+                    to_judge, timeline, guidance=guidance
+                ) or {}
+            except ProviderError as exc:
+                _log_raw_error("retake shadow judgment", exc)
+                judged = {}
+    for pair in candidates:
+        answer = judged.get(pair["pair_id"])
+        if answer is None:
+            answer = retakes.shadow_rank(pair, timeline)
+        pick = answer["pick"]
+        entry = base_entry(pair)
+        beta_keep = pair["cut"] if pick == "other" else pair["keep"]
+        entry.update(
+            {
+                "status": "scored",
+                "excluded_reason": None,
+                "beta_pick": pick,
+                "reason": answer["reason"],
+                "flip": pick == "other",
+                "positional_keep": {
+                    "word_start": pair["keep"]["word_start"],
+                    "word_end": pair["keep"]["word_end"],
+                    "text": pair["keep"]["text"],
+                },
+                "beta_keep": {
+                    "word_start": beta_keep["word_start"],
+                    "word_end": beta_keep["word_end"],
+                    "text": beta_keep["text"],
+                },
+            }
+        )
+        refreshed[entry["pair_key"]] = entry
+        pair["shadow"] = {
+            "pick": pick,
+            "reason": answer["reason"],
+            "flip": pick == "other",
+        }
+        counts["scored"] += 1
+        if pick == "other":
+            counts["flips"] += 1
+        elif pick == "tie":
+            counts["ties"] += 1
+    untouched = [
+        entry
+        for entry in record.get("shadow", [])
+        if isinstance(entry, dict)
+        and entry.get("pair_key") not in refreshed
+    ]
+    record["shadow"] = untouched + list(refreshed.values())
+    return counts
+
+
 def _run_retake_pass(
-    config: WebAppConfig, provider_name: str, spoken_direction: str = ""
+    config: WebAppConfig,
+    provider_name: str,
+    spoken_direction: str = "",
+    keep_mode: Optional[str] = None,
 ) -> dict:
     """Measure the edit for retakes and act on what the bands allow.
 
@@ -1517,6 +1789,13 @@ def _run_retake_pass(
     every Band B pair under a provider that cannot judge, becomes a
     scored flag. Policy-flag pairs are flags by construction. Pairs
     the creator already graded as keep-both are never proposed again.
+
+    The keeper mode decides which complete delivery a cluster
+    keeps: the last take (the default), the first clean take, or
+    Best delivery (Beta), which in this version runs in shadow
+    only: the positional last-take rule still applies, and Beta
+    records the keeper it would have chosen on every pair where
+    there is a genuine choice.
     """
     summary = {
         "ran": True,
@@ -1535,11 +1814,27 @@ def _run_retake_pass(
     timeline = Timeline(transcript, base_cuts)
     record = _load_retake_record(config)
     decisions = record.get("decisions") or {}
+    settings = retakes.settings_from_profile(profile)
+    if keep_mode in retakes.KEEP_MODES:
+        settings["keep"] = keep_mode
+    mode = settings["keep"]
+    summary["keep_mode"] = mode
+    all_pairs = retakes.find_pairs(timeline, profile, settings)
     pairs = [
         pair
-        for pair in retakes.find_pairs(timeline, profile)
+        for pair in all_pairs
         if decisions.get(retakes.pair_key(pair), {}).get("keep_both") is not True
     ]
+    shadow = None
+    if mode == "best":
+        shadow = _run_shadow(
+            config, provider_name, all_pairs, pairs, timeline,
+            spoken_direction, record,
+        )
+        summary["shadow"] = {
+            key: shadow[key]
+            for key in ("scored", "flips", "ties", "excluded")
+        }
     summary["pairs"] = len(pairs)
     summary["band_a"] = len(
         [pair for pair in pairs if pair["band"] == "a"]
@@ -1552,7 +1847,9 @@ def _run_retake_pass(
         _save_retake_record(config, record)
         return summary
 
-    operations = retakes.band_a_operations(timeline, profile, pairs=pairs)
+    operations = retakes.band_a_operations(
+        timeline, profile, settings=settings, pairs=pairs
+    )
     outcomes: dict = {}
     for pair in pairs:
         if pair["band"] == "a":
@@ -1654,6 +1951,8 @@ def _run_retake_pass(
                     "keep_text": pair["keep"]["text"],
                     "keep_word_start": pair["keep"]["word_start"],
                     "keep_word_end": pair["keep"]["word_end"],
+                    "keep_mode": mode,
+                    "shadow": pair.get("shadow"),
                 }
                 if outcomes.get(pair["pair_id"]) == "proposed":
                     outcomes[pair["pair_id"]] = (
@@ -1683,7 +1982,11 @@ def _run_retake_pass(
     summary["operations"] = page_operations
     record["runs"].append({**summary, "at": _utc_now(), "operations": []})
     record["pairs"] = [
-        {**pair, "outcome": outcomes.get(pair["pair_id"], "proposed")}
+        {
+            **pair,
+            "outcome": outcomes.get(pair["pair_id"], "proposed"),
+            "keep_mode": mode,
+        }
         for pair in pairs
     ]
     _save_retake_record(config, record)
@@ -1709,12 +2012,21 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         buffer_s = float(body.get("buffer_s", defaults["buffer_s"]))
     except (TypeError, ValueError):
         raise ValueError("The silence buffer must be a number of seconds.")
+    keep_mode = str(
+        body.get("keep_mode", defaults["keep_mode"]) or "last"
+    ).strip().lower()
+    if keep_mode not in retakes.KEEP_MODES:
+        raise ValueError(
+            "Choose the last take, the first clean take, or best "
+            "delivery (Beta)."
+        )
     settings = {
         "remove_retakes": bool(
             body.get("remove_retakes", defaults["remove_retakes"])
         ),
         "cut_silence": bool(body.get("cut_silence", defaults["cut_silence"])),
         "buffer_s": min(BUFFER_MAX_S, max(BUFFER_MIN_S, buffer_s)),
+        "keep_mode": keep_mode,
     }
     scope = str(body.get("format_scope") or "both").strip().lower()
     if scope not in ("both", "vertical", "landscape"):
@@ -1732,11 +2044,19 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
     retake_summary = None
     if settings["remove_retakes"]:
         retake_summary = _run_retake_pass(
-            config, provider_name, spoken_direction=direction_text
+            config,
+            provider_name,
+            spoken_direction=direction_text,
+            keep_mode=settings["keep_mode"],
         )
     extras = []
     if settings["remove_retakes"]:
-        extras.append({"id": "front-door-retakes", "text": RETAKES_GUIDANCE})
+        extras.append(
+            {
+                "id": "front-door-retakes",
+                "text": _retakes_guidance(settings["keep_mode"]),
+            }
+        )
     if direction_text:
         extras.append({"id": "front-door-direction", "text": direction_text})
     formats = ["vertical", "landscape"] if scope == "both" else [scope]
@@ -1782,6 +2102,8 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "ok": True,
         "provider": provider_name,
         "settings": settings,
+        "recap": _keep_mode_recap(settings),
+        "beta": _beta_score(config),
         "format_scope": scope,
         "direction_runs": direction_runs,
         "retakes": retake_summary,
@@ -1971,6 +2293,15 @@ def _edit_action(config: WebAppConfig, edit_id: str, action: str) -> dict:
     checkpoints.begin(config)
     _write_json(session / "revised_cuts.json", revised)
     checkpoints.commit(config, label)
+    if action == "swap":
+        # A swap is the creator naming their real keeper: the other
+        # take. Settle any shadow flip on this pair against it.
+        meta = span.get("retake") or {}
+        pair = _retake_pair_for(config, meta.get("pair_id"))
+        if pair is not None:
+            record = _load_retake_record(config)
+            if _resolve_shadow_match(record, pair, "other", "swap"):
+                _save_retake_record(config, record)
     return {"ok": True, "changed": True, "message": done_message}
 
 

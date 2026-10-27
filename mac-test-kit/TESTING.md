@@ -84,6 +84,10 @@ Press **Make the edit**. That is the whole front door. The app checks retakes, r
 Behind the **More choices** fold, for the days you want them:
 
 - **Format scope:** both formats, vertical only, or landscape only.
+- **When a line is said more than once, keep:** three choices, and the one you pick is remembered.
+  - **The last take.** The usual rule: among complete takes, the last one stays.
+  - **The first clean take.** The first complete delivery stays and the later tries come out, through the same safety checks.
+  - **Best delivery (Beta).** The last take still stays for now. In the background, Beta records the take it would have kept on every pair where there is a genuine choice, using the same flow question the model judges near pairs with: which delivery finishes the sentence and carries the story forward. It changes nothing. Its pick shows as a note on the removed words and in the review rows, and the card keeps its score in plain words: how often its pick matched the take you ended up keeping, once you grade or swap. When two deliveries say the very same words, Beta always calls it a tie; there is nothing in the words to choose between them, so the last take stays. Nothing promotes Beta on its own; the count is there so you can watch it earn the job.
 - **Spoken direction:** anything else this video needs, in your own words. What you say adds to the two choices; it does not replace them. Say **"unless"** when you want one spot treated differently, like "keep the last take, unless the first try has the real laugh in it."
 
 Your choices are remembered in the session, so the card opens the way you left it.

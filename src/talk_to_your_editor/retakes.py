@@ -61,9 +61,26 @@ DEFAULT_SETTINGS = {
     # A pause longer than this also ends a unit, so a reparandum that
     # starts mid-sentence is still a candidate shape.
     "pause_split_s": 1.5,
-    # Which complete delivery a cluster keeps: "last" or "first".
+    # Which complete delivery a cluster keeps: "last", "first", or
+    # "best" (Best delivery (Beta), which runs in shadow: the
+    # positional last-take rule still decides what applies, and Beta
+    # only records the keeper it would have chosen).
     "keep": "last",
 }
+
+KEEP_MODES = ("last", "first", "best")
+
+MODE_LABELS = {
+    "last": "the last take",
+    "first": "the first clean take",
+    "best": "best delivery (Beta)",
+}
+
+# The Beta tie sentence: when the words cannot separate two complete
+# deliveries, the honest answer is a tie, and position decides.
+TIE_REASON = (
+    "The words could not separate these two, so the last take stays."
+)
 
 _CLASS_TEXT = {
     "earlier_take": (
@@ -90,6 +107,45 @@ _FUNCTION_WORDS = {
     "with", "from", "my", "your", "his", "her", "our", "their", "me",
     "him", "them", "us",
 }
+
+_FIRST_CLEAN_REASON = (
+    "Kept the first clean take; the later tries come out."
+)
+_FIRST_CLEAN_FRAGMENT_REASON = (
+    "This try comes after the line was already said in full, and "
+    "it stops early. The first clean take stays."
+)
+_LATER_FRAGMENT_REASON = (
+    "This try comes after the line was already said in full, and "
+    "it stops early, so the complete take before it stays."
+)
+
+
+def _pair_reason(
+    scored: dict,
+    shape: str,
+    cut_is_later: bool,
+    cut_complete: bool,
+    settings: dict,
+) -> str:
+    """The dot's sentence for a pair, naming the decider.
+
+    The flag text always wins. A cut that sits later than the take
+    that stays is the one case the class texts do not describe:
+    either the creator's first-clean setting kept the earlier
+    delivery, or a trailing fragment lost to the complete take
+    before it, and the sentence says which.
+    """
+    if scored.get("flag_reason"):
+        return scored["flag_reason"]
+    if shape == "unit_pair" and cut_is_later:
+        if positional_keep(settings) == "first":
+            if cut_complete:
+                return _FIRST_CLEAN_REASON
+            return _FIRST_CLEAN_FRAGMENT_REASON
+        return _LATER_FRAGMENT_REASON
+    return _CLASS_TEXT[scored["retake_class"]]
+
 
 _FLAG_NEGATION_REASON = (
     "This line and the one after it match closely, and one of them "
@@ -121,9 +177,19 @@ def settings_from_profile(profile: Optional[dict]) -> dict:
                     value, bool
                 ):
                     settings[key] = float(value)
-            if knobs.get("keep") in ("last", "first"):
+            if knobs.get("keep") in KEEP_MODES:
                 settings["keep"] = knobs["keep"]
     return settings
+
+
+def positional_keep(settings: dict) -> str:
+    """The positional rule a mode applies with.
+
+    "first" applies the first clean take; every other mode, "best"
+    included, applies the last take while Best delivery is still
+    earning its place in shadow.
+    """
+    return "first" if settings.get("keep") == "first" else "last"
 
 
 # ---------------------------------------------------------------------------
@@ -391,11 +457,15 @@ def _cluster_units(pairs: list) -> list:
 
 
 def _kept_unit_index(units: list, members: list, settings: dict) -> int:
-    """The delivery a cluster keeps: the last complete one by default."""
+    """The delivery a cluster keeps: the last complete one by default.
+
+    Under Best delivery (Beta) the positional rule still decides:
+    Beta runs in shadow and applies nothing in this version.
+    """
     candidates = [
         i for i in members if not units[i]["settled"] and not units[i]["protected"]
     ]
-    if settings["keep"] == "first":
+    if positional_keep(settings) == "first":
         ordered = candidates
     else:
         ordered = list(reversed(candidates))
@@ -825,8 +895,13 @@ def find_pairs(
                     f"retake:{scored['retake_class']}:"
                     + ("flag" if band == "flag" else f"band_{band}")
                 ),
-                "reason": scored.get("flag_reason")
-                or _CLASS_TEXT[scored["retake_class"]],
+                "reason": _pair_reason(
+                    scored,
+                    shape,
+                    cut_is_later=cut_start > keep_start,
+                    cut_complete=cut_complete,
+                    settings=settings,
+                ),
             }
         )
 
@@ -961,3 +1036,122 @@ def band_b_flag_reason(pair: dict) -> str:
         "story forward better, or was the line said twice on "
         "purpose? A person decides."
     )
+
+
+# ---------------------------------------------------------------------------
+# Best delivery (Beta), in shadow
+#
+# Beta is a keeper-choice layer, not a detector: detection, bands,
+# protections, and the verifier do not change, and in this version
+# Beta applies nothing. On every pair where there is a genuine
+# choice (both deliveries complete), it records the keeper it would
+# have chosen, so its disagreements with the positional pick can be
+# graded against the creator's own keeps. The local ranking below is
+# the deterministic half of that judgment, and the offline answer
+# when no model judge is available: evidence only, in plain words.
+#
+# The hard gate, with no exceptions: two word-identical deliveries
+# are a tie by definition. A version that "picks" between identical
+# twins from text evidence is inventing evidence, so identity is
+# checked before any ranking or any model call.
+# ---------------------------------------------------------------------------
+
+
+def genuine_choice(pair: dict) -> bool:
+    """A real keeper choice exists only when both sides complete."""
+    return bool(pair.get("cut_complete")) and bool(pair.get("keep_complete"))
+
+
+def _span_tokens(timeline: Timeline, span: dict) -> list:
+    return [
+        normalize_word(timeline.words[i].get("word", ""))
+        for i in range(int(span["word_start"]), int(span["word_end"]))
+    ]
+
+
+def deliveries_identical(pair: dict, timeline: Timeline) -> bool:
+    """True when the two deliveries are the same words, word for word."""
+    return _span_tokens(timeline, pair["cut"]) == _span_tokens(
+        timeline, pair["keep"]
+    )
+
+
+def _delivery_evidence(tokens: list, words: list) -> dict:
+    """What the words alone can say about one delivery.
+
+    A restart inside the delivery counts against it (the speaker
+    started over mid-line); a long dead gap inside it counts
+    against it (pause structure is the one delivery signal the
+    timing in the transcript can honestly carry); and the share of
+    the pair's combined words the delivery itself says.
+    """
+    restart = bool(_repeated_runs(tokens)) if len(tokens) >= 4 else False
+    max_gap = 0.0
+    for first, second in zip(words, words[1:]):
+        gap = float(second["start"]) - float(first["end"])
+        if gap > max_gap:
+            max_gap = gap
+    return {"restart": restart, "max_gap_s": round(max_gap, 3)}
+
+
+def shadow_rank(pair: dict, timeline: Timeline) -> dict:
+    """Beta's local pick for one genuine-choice pair.
+
+    Returns {"pick": "positional" | "other" | "tie", "reason": str}.
+    "positional" names the delivery the active positional rule
+    kept (the pair's keep side); "other" names the delivery it
+    cut. Timing counts only as a tiebreaker, after a restart and
+    after how much of the line each delivery actually says.
+    """
+    if deliveries_identical(pair, timeline):
+        return {"pick": "tie", "reason": TIE_REASON}
+    cut_tokens = _span_tokens(timeline, pair["cut"])
+    keep_tokens = _span_tokens(timeline, pair["keep"])
+    cut_ev = _delivery_evidence(
+        cut_tokens,
+        timeline.words[pair["cut"]["word_start"] : pair["cut"]["word_end"]],
+    )
+    keep_ev = _delivery_evidence(
+        keep_tokens,
+        timeline.words[
+            pair["keep"]["word_start"] : pair["keep"]["word_end"]
+        ],
+    )
+    union = Counter(cut_tokens) | Counter(keep_tokens)
+    total = sum(union.values()) or 1
+    cut_share = sum((Counter(cut_tokens) & union).values()) / total
+    keep_share = sum((Counter(keep_tokens) & union).values()) / total
+
+    def score(ev: dict, share: float) -> tuple:
+        return (
+            0 if ev["restart"] else 1,
+            round(share, 3),
+            -round(ev["max_gap_s"], 2),
+        )
+
+    cut_score = score(cut_ev, cut_share)
+    keep_score = score(keep_ev, keep_share)
+    if cut_score == keep_score:
+        return {"pick": "tie", "reason": TIE_REASON}
+    if keep_score > cut_score:
+        pick, winner_ev, loser_ev = "positional", keep_ev, cut_ev
+        winner_share, loser_share = keep_share, cut_share
+    else:
+        pick, winner_ev, loser_ev = "other", cut_ev, keep_ev
+        winner_share, loser_share = cut_share, keep_share
+    if winner_ev["restart"] != loser_ev["restart"]:
+        reason = (
+            "The other try restarts inside the line; this one says "
+            "it in one clean run, so the story keeps moving."
+        )
+    elif round(winner_share, 3) != round(loser_share, 3):
+        reason = (
+            "This try says the whole line; the other leaves part "
+            "of it out, so this one carries the story."
+        )
+    else:
+        reason = (
+            "This try runs clean through; the other has a long "
+            "dead pause inside it, which pulls attention away."
+        )
+    return {"pick": pick, "reason": reason}
