@@ -22,6 +22,10 @@ Creators do not think in timelines and cut points. They think in sentences: "tha
 
 The local test app now opens on the whole workflow in two choices: **Remove retakes** and **Cut silence**, both on by default, with one silence buffer (0.1 seconds to start) and one button. Everything else, format scope and a spoken-direction box, sits behind a single More choices fold. Comment times are treated as estimates and resolved to the nearest words within a few seconds. The transcript itself explains every removal: a dot on each removed span opens the plain reason, and a note left there is stored against that edit and carried into the next run labeled with what was removed. When graded changes repeat a pattern, the app offers it once as a rule in a Your style card; a saved rule rides into every later run as standing direction, and nothing is adopted without the creator's tap.
 
+## The first edit, from a dropped video (0.6.0)
+
+The app can also start from nothing but a raw video. Drop one video file and the card offers **Make the first edit**, with a box for direction up front ("remove retakes, last take is the best take" sets that run's switches, and the recap names what the words set). The app transcribes the video with word timings, measures speech and silence from the waveform itself, builds a first plan with every word kept, and runs the same deterministic front door a runner job gets. The review video is a fresh, simple splice of the kept ranges, rendered by the app. Transcription route, picked on measured evidence: ElevenLabs Scribe when a key is set (verbatim fillers and restarts, word timings, about a cent per 3-minute video), otherwise a local open-source Whisper model at no cost. Meta's Muse Voice Transcribe returns no word timings, so it serves the Dictate buttons instead: speak a note in any feedback box and the text lands in the box to read and fix before it counts. Intake jobs also get clean captions: a WebVTT file built from the kept words with filler words left out of the caption text only.
+
 ## The operation language
 
 Version one allows exactly five operation types:
@@ -38,7 +42,7 @@ Risk tiers: short exact cuts and bounded pause changes apply after deterministic
 
 ## Quickstart
 
-Requirements: Python 3.11 or newer. No third-party packages; the package is standard library only.
+Requirements: Python 3.11 or newer. The core package is standard library only. One optional extra, `.[speech]`, adds faster-whisper so a dropped video can be transcribed on the machine itself; without it, intake transcription uses an ElevenLabs key when one is set, and the rest of the app is unchanged.
 
 ```bash
 git clone https://github.com/rosalesrecommendations/talk-to-your-editor.git
@@ -123,6 +127,8 @@ The full loop was rehearsed end to end before this README was finalized:
 This repository was built during the Meta Global AI Developer Hackathon (October 26 to November 4, 2026), Startup track, theme Build for Your World, by team Rosales Recommendations (Practice Your Passion LLC).
 
 Disclosure, plainly: the direction layer in this repository is new work from the event window. It plugs into a local editing runner that existed before the event: that runner transcribes a raw talking-head video, makes the first-pass edit under the creator's learned rules, renders the finished formats, and generates the review page that exports the feedback file. The runner, its rule set, its test fixtures from real videos, and the creator's footage are pre-existing Practice Your Passion LLC work. They are not in this repository, they are not claimed as event work, and the demo focuses on the new layer: feedback becoming verified, applied edits. Interfaces between the two are the file formats documented above.
+
+One more disclosure, just as plainly: the creator also maintains a separate, pre-existing personal editing system of his own. That system is not part of this project, none of its code is in this repository, and nothing in this repository was taken from it. The intake in this project, the part that takes a dropped raw video and makes its first edit (version 0.6.0), was designed and written fresh for this project, inside the event window, from the file formats documented above.
 
 ## Safety and data notes
 

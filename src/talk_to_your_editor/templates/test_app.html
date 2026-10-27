@@ -508,7 +508,7 @@
 
   <div class="card" id="dropCard">
     <h2>Bring in a job</h2>
-    <p class="note">Drop a runner job folder anywhere on this page and the app takes it in and runs on it. No path typing, no Terminal. The app works on the copy it takes in; your original folder is never changed. A single video can be dropped too: it plays here, and the page says what a full edit still needs.</p>
+    <p class="note">Drop a runner job folder anywhere on this page and the app takes it in and runs on it. No path typing, no Terminal. The app works on the copy it takes in; your original folder is never changed. A single video can be dropped too: it plays here, and the app can make its first edit itself.</p>
     <div class="drop-area" id="dropArea">
       <p class="drop-big">Drop the job folder or a video here</p>
       <p class="note">or <button id="dropPickFolder" type="button">choose a folder</button> <button id="dropPickFiles" type="button">choose files</button></p>
@@ -518,6 +518,18 @@
     <p class="status-line" id="dropStatus"></p>
     <div id="dropVideoWrap" hidden>
       <video id="dropVideo" controls playsinline preload="metadata"></video>
+    </div>
+    <div id="firstEditBlock" hidden>
+      <p class="note">Direction for the first edit, if you have any. Plain words are fine: "remove retakes, last take is the best take," or "keep the first clean take and leave 0.2 seconds of silence." What you say here outranks the saved choices for this video. Anything that is not one of the app's choices is saved as overall guidance for the model.</p>
+      <textarea id="intakeDirection" rows="2" placeholder="Direction for the first edit (you can leave this empty)"></textarea>
+      <div class="row">
+        <button id="intakeDictate" type="button">Dictate</button>
+        <label class="switch"><input type="checkbox" id="intakeCaptions" checked> Clean captions</label>
+        <button id="firstEditBtn" class="primary" type="button">Make the first edit</button>
+      </div>
+      <p class="note">Clean captions are a caption file for the finished first edit with filler words (um, uh, and the like) left out of the text. The sound and the transcript keep them; only the captions are cleaned.</p>
+      <p class="status-line" id="firstEditStatus"></p>
+      <div id="firstEditRecap"></div>
     </div>
     <p class="note" id="sampleRow">Just looking around? <button id="loadSample" type="button">Try the built-in sample</button> <span id="sampleStatus"></span></p>
   </div>
@@ -588,6 +600,10 @@
       </div>
       <p class="note" id="fdBetaLine"></p>
       <textarea id="fdDirection" rows="3" placeholder="Anything else for this video? What you say adds to the two choices above. Say unless when one spot should be treated differently."></textarea>
+      <div class="row">
+        <button id="fdDictate" type="button">Dictate</button>
+        <span class="note" id="fdDictateStatus"></span>
+      </div>
       <p class="note" id="fdProviderNote"></p>
     </details>
   </div>
@@ -598,7 +614,11 @@
       <button id="pin" class="primary" type="button">Comment at current time</button>
       <label class="note">or at <input id="manualTs" type="number" step="0.1" min="0" placeholder="sec"> seconds</label>
     </div>
-    <textarea id="draft" rows="3" placeholder="What did you notice here? On your phone, tap the microphone on the keyboard to dictate instead of typing."></textarea>
+    <textarea id="draft" rows="3" placeholder="What did you notice here? Type it, or dictate it with the button below."></textarea>
+    <div class="row">
+      <button id="draftDictate" type="button">Dictate</button>
+      <span class="note" id="draftDictateStatus"></span>
+    </div>
     <p class="pin-note" id="pinNote"></p>
     <div class="row">
       <button id="save" class="primary" type="button">Save comment</button>
@@ -620,6 +640,8 @@
     <textarea id="overallDraft" rows="2" placeholder="What applies to the whole video?"></textarea>
     <div class="row">
       <button id="saveOverall" class="primary" type="button">Save overall note</button>
+      <button id="overallDictate" type="button">Dictate</button>
+      <span class="note" id="overallDictateStatus"></span>
     </div>
     <p class="status-line" id="overallStatus"></p>
     <section id="overallList"></section>
@@ -656,9 +678,12 @@
       <div id="editNotesList"></div>
       <textarea id="editNoteText" rows="2" placeholder="Leave a note on this edit. It travels with the removed words into the next run."></textarea>
       <div class="row">
-        <button id="editNoteSpeak" type="button">Speak the note</button>
+        <button id="editNoteSpeak" type="button">Dictate the note</button>
         <button id="editNoteSave" class="primary" type="button">Save note</button>
         <button id="editPopupClose" type="button">Close</button>
+      </div>
+      <div class="row">
+        <button id="editNoteSpeakBrowser" type="button" hidden>Use the browser's voice typing instead</button>
       </div>
       <p class="status-line" id="editNoteStatus"></p>
     </div>
@@ -711,6 +736,7 @@
     </div>
     <p class="note">Opens the review page, where you grade each change the program made.</p>
     <p class="status-line" id="renderStatus"></p>
+    <p class="note" id="captionsRow" hidden>Clean captions are ready for this job: <a href="/api/captions">download the caption file (WebVTT)</a>. Filler words are left out of the caption text only; the sound and the transcript keep them.</p>
     <details class="note downloads">
       <summary>Advanced: session files</summary>
       <a href="/api/download/feedback.json">feedback.json</a>
@@ -1605,6 +1631,97 @@
 
   refreshSignin();
 
+  // -- dictation ---------------------------------------------------------
+  // The Dictate button on every feedback box records the note and
+  // sends the clip to the app, which writes it down through Meta's
+  // voice service and puts the words in the box to read and fix
+  // before they count. Typing always works. With no Meta sign-in
+  // the app answers with one plain sentence and nothing else
+  // changes; the browser's own voice typing stays available on the
+  // edit popup as a clearly separate second choice.
+  function appendDictated(area, text) {
+    if (!area || !text) { return; }
+    if (area.value && !/\s$/.test(area.value)) { area.value += " "; }
+    area.value += text;
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  function wireDictation(btnId, areaId, statusId) {
+    var btn = document.getElementById(btnId);
+    var area = document.getElementById(areaId);
+    var status = document.getElementById(statusId);
+    if (!btn || !area) { return; }
+    var label = btn.textContent;
+    var recorder = null;
+    var chunks = [];
+    var stream = null;
+    function say(text) { if (status) { status.textContent = text; } }
+    function stopTracks() {
+      if (stream) {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        stream = null;
+      }
+    }
+    btn.addEventListener("click", function () {
+      if (recorder && recorder.state === "recording") {
+        recorder.stop();
+        btn.textContent = label;
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+        say("This browser cannot record here. Typing works, and the microphone on the keyboard works too.");
+        return;
+      }
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (s) {
+        stream = s;
+        chunks = [];
+        try {
+          recorder = new MediaRecorder(s);
+        } catch (err) {
+          stopTracks();
+          say("This browser cannot record here. Typing works, and the microphone on the keyboard works too.");
+          return;
+        }
+        recorder.ondataavailable = function (e) {
+          if (e.data && e.data.size) { chunks.push(e.data); }
+        };
+        recorder.onstop = function () {
+          stopTracks();
+          if (!chunks.length) {
+            say("Nothing was recorded. Try again, or type the note.");
+            return;
+          }
+          var blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+          say("Writing down what you said…");
+          fetch("/api/dictate", {
+            method: "POST",
+            body: blob,
+            headers: { "Content-Type": blob.type }
+          }).then(function (r) { return r.json(); }).then(function (data) {
+            if (data && data.ok) {
+              appendDictated(area, data.text || "");
+              say("Your words are in the box. Read them over and fix anything before you save.");
+            } else {
+              say((data && data.message) || "The note could not be written down. Typing works as always.");
+            }
+          }).catch(function () {
+            say("The note could not be written down. Typing works as always.");
+          });
+        };
+        recorder.start();
+        btn.textContent = "Stop and write it down";
+        say("Listening. Speak the note, then press the button again.");
+      }).catch(function () {
+        say("The microphone was not allowed. Typing works, and the microphone on the keyboard works too.");
+      });
+    });
+  }
+
+  wireDictation("fdDictate", "fdDirection", "fdDictateStatus");
+  wireDictation("draftDictate", "draft", "draftDictateStatus");
+  wireDictation("overallDictate", "overallDraft", "overallDictateStatus");
+  wireDictation("intakeDictate", "intakeDirection", "firstEditStatus");
+
   // -- edit popup -------------------------------------------------------
   var editPopup = document.getElementById("editPopup");
   var editPopupTitle = document.getElementById("editPopupTitle");
@@ -1623,10 +1740,6 @@
   var editBringBack = document.getElementById("editBringBack");
   var editSwapTakes = document.getElementById("editSwapTakes");
   var editActionStatus = document.getElementById("editActionStatus");
-
-  if (editNoteSpeak) {
-    editNoteSpeak.hidden = !(window.SpeechRecognition || window.webkitSpeechRecognition);
-  }
 
   function renderEditNotes(span) {
     if (!editNotesList) { return; }
@@ -1733,36 +1846,40 @@
     });
   }
 
-  if (editNoteSpeak) {
-    editNoteSpeak.addEventListener("click", function () {
-      var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!Rec) {
-        editNoteStatus.textContent = "Voice typing is not available in this browser. Typing works, and the microphone on the keyboard works too.";
-        return;
-      }
-      try {
-        var rec = new Rec();
-        rec.lang = "en-US";
-        rec.interimResults = false;
-        rec.onresult = function (e) {
-          var transcript = "";
-          if (e.results && e.results[0] && e.results[0][0]) {
-            transcript = e.results[0][0].transcript || "";
-          }
-          if (!transcript) { return; }
-          if (editNoteText.value && !/\s$/.test(editNoteText.value)) {
-            editNoteText.value += " ";
-          }
-          editNoteText.value += transcript;
-        };
-        rec.onerror = function () {
-          editNoteStatus.textContent = "Voice typing is not available in this browser. Typing works, and the microphone on the keyboard works too.";
-        };
-        rec.start();
-      } catch (err) {
-        editNoteStatus.textContent = "Voice typing is not available in this browser. Typing works, and the microphone on the keyboard works too.";
-      }
-    });
+  // The note popup's Dictate button uses the Meta voice route, like
+  // every other box. The browser's own voice typing remains here,
+  // clearly labeled as the second choice it is.
+  wireDictation("editNoteSpeak", "editNoteText", "editNoteStatus");
+  var editNoteSpeakBrowser = document.getElementById("editNoteSpeakBrowser");
+  if (editNoteSpeakBrowser) {
+    var BrowserRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    editNoteSpeakBrowser.hidden = !BrowserRec;
+    if (BrowserRec) {
+      editNoteSpeakBrowser.addEventListener("click", function () {
+        try {
+          var rec = new BrowserRec();
+          rec.lang = "en-US";
+          rec.interimResults = false;
+          rec.onresult = function (e) {
+            var transcript = "";
+            if (e.results && e.results[0] && e.results[0][0]) {
+              transcript = e.results[0][0].transcript || "";
+            }
+            if (!transcript) { return; }
+            if (editNoteText.value && !/\s$/.test(editNoteText.value)) {
+              editNoteText.value += " ";
+            }
+            editNoteText.value += transcript;
+          };
+          rec.onerror = function () {
+            editNoteStatus.textContent = "The browser's voice typing did not work here. The Dictate button and typing both work.";
+          };
+          rec.start();
+        } catch (err) {
+          editNoteStatus.textContent = "The browser's voice typing did not work here. The Dictate button and typing both work.";
+        }
+      });
+    }
   }
 
   if (editNoteSave) {
@@ -2179,8 +2296,90 @@
   var dropVideoWrap = document.getElementById("dropVideoWrap");
   var dropVideo = document.getElementById("dropVideo");
   var dropBusy = false;
+  var dropIntakeId = null;
 
   function dropSay(text) { dropStatus.textContent = text; }
+
+  // -- the first edit ------------------------------------------------------
+  // A lone video can become a job right here: the app writes down
+  // the words, lays out a first plan, runs the front door's own
+  // engines once with any direction given up front, and builds the
+  // review video. Progress arrives in plain words on this card.
+  var firstEditBlock = document.getElementById("firstEditBlock");
+  var firstEditBtn = document.getElementById("firstEditBtn");
+  var firstEditStatus = document.getElementById("firstEditStatus");
+  var firstEditRecap = document.getElementById("firstEditRecap");
+  var intakeDirectionEl = document.getElementById("intakeDirection");
+  var intakeCaptionsEl = document.getElementById("intakeCaptions");
+  var currentIntakeId = null;
+  var firstEditTimer = null;
+
+  function firstEditSay(text) {
+    if (firstEditStatus) { firstEditStatus.textContent = text; }
+  }
+
+  function firstEditLine(text) {
+    if (!firstEditRecap) { return; }
+    var p = document.createElement("p");
+    p.className = "note";
+    p.textContent = text;
+    firstEditRecap.appendChild(p);
+  }
+
+  function pollFirstEdit() {
+    fetch("/api/intake/status?intake=" + encodeURIComponent(currentIntakeId))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || data.status === "idle") { return; }
+        if (data.status === "working") {
+          firstEditSay(data.stage || "Working…");
+          firstEditTimer = setTimeout(pollFirstEdit, 2000);
+          return;
+        }
+        if (data.status === "done") {
+          firstEditSay(data.stage || "The first edit is ready.");
+          if (firstEditRecap) { firstEditRecap.innerHTML = ""; }
+          (data.recap || []).forEach(firstEditLine);
+          if (data.render_note) { firstEditLine(data.render_note); }
+          if (data.captions) {
+            firstEditLine("Clean captions are ready too. After the page reloads, the download is under Revised edit.");
+          }
+          if (firstEditBtn) { firstEditBtn.disabled = false; }
+          setTimeout(function () { window.location.reload(); }, 5000);
+          return;
+        }
+        firstEditSay(data.message || "The first edit could not be made.");
+        if (firstEditBtn) { firstEditBtn.disabled = false; }
+      })
+      .catch(function () {
+        firstEditTimer = setTimeout(pollFirstEdit, 3000);
+      });
+  }
+
+  if (firstEditBtn) {
+    firstEditBtn.addEventListener("click", function () {
+      if (!currentIntakeId) { return; }
+      firstEditBtn.disabled = true;
+      if (firstEditRecap) { firstEditRecap.innerHTML = ""; }
+      firstEditSay("Starting…");
+      postJson("/api/intake/first-edit", {
+        intake_id: currentIntakeId,
+        direction: intakeDirectionEl ? intakeDirectionEl.value : "",
+        clean_captions: intakeCaptionsEl ? intakeCaptionsEl.checked : true
+      }).then(function (res) {
+        var data = (res && res.data) || {};
+        if (!data.ok) {
+          firstEditSay(data.error || "The first edit could not be started.");
+          firstEditBtn.disabled = false;
+          return;
+        }
+        pollFirstEdit();
+      }).catch(function () {
+        firstEditSay("The first edit could not be started. Check the connection and try again.");
+        firstEditBtn.disabled = false;
+      });
+    });
+  }
 
   function dropJunk(path) {
     var parts = path.split("/");
@@ -2249,6 +2448,9 @@
     }
     dropBusy = true;
     dropVideoWrap.hidden = true;
+    if (firstEditBlock) { firstEditBlock.hidden = true; }
+    if (firstEditTimer) { clearTimeout(firstEditTimer); firstEditTimer = null; }
+    currentIntakeId = null;
     var firstSegment = files[0].path.split("/")[0] || "dropped-files";
     var rootName = files[0].path.indexOf("/") >= 0
       ? firstSegment
@@ -2260,6 +2462,7 @@
         throw new Error("begin");
       }
       var intakeId = begun.data.intake_id;
+      dropIntakeId = intakeId;
       var chain = Promise.resolve();
       files.forEach(function (item, index) {
         chain = chain.then(function () {
@@ -2293,6 +2496,10 @@
       } else if (data.kind === "video" && data.video_url) {
         dropVideo.src = data.video_url;
         dropVideoWrap.hidden = false;
+        currentIntakeId = dropIntakeId;
+        if (firstEditBlock && data.can_first_edit) {
+          firstEditBlock.hidden = false;
+        }
       }
     }).catch(function () {
       dropBusy = false;
@@ -2352,6 +2559,8 @@
       opt.disabled = true;
       opt.textContent = "Meta (needs MODEL_API_KEY on the server)";
     }
+    var captionsRow = document.getElementById("captionsRow");
+    if (captionsRow) { captionsRow.hidden = !job.captions_available; }
     if (videos.length) {
       showLoading();
       vid.src = "/video/" + (videoFor("vertical") || videos[0]);

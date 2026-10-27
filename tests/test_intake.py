@@ -198,9 +198,10 @@ class IntakeTests(unittest.TestCase):
         )
         self.assertEqual(finished["kind"], "video")
         self.assertEqual(finished["video_name"], "clip.mp4")
-        # The one plain sentence: what a full edit still needs.
-        self.assertIn("word-by-word transcript", finished["message"])
-        self.assertIn("part 1, the runner", finished["message"])
+        # The one plain offer: the app can make the first edit
+        # itself now (v0.6.0), with any direction given up front.
+        self.assertIn("make the first edit itself", finished["message"])
+        self.assertIn("Give any direction you have", finished["message"])
         # The staged video serves back over HTTP, ranges included.
         status, headers, body = self.request(finished["video_url"])
         self.assertEqual(status, 200)

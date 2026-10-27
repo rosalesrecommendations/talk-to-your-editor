@@ -273,7 +273,7 @@ class NoJobServerTests(unittest.TestCase):
             "clip", [("clip.mp4", VIDEO_BYTES)]
         )
         self.assertEqual(finished["kind"], "video")
-        self.assertIn("word-by-word transcript", finished["message"])
+        self.assertIn("make the first edit itself", finished["message"])
         status, _, body = self.request(finished["video_url"])
         self.assertEqual(status, 200)
         self.assertGreater(len(body), 0)

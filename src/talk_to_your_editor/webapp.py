@@ -51,7 +51,10 @@ from types import SimpleNamespace
 from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
+from . import captions as clean_captions
 from . import checkpoints, creator_rules, retakes
+from . import direction_parse, intake_build
+from . import transcribe as speech
 from .after_review import generate_after_review
 from .applier import ApplyError, apply_verdicts
 from .checkpoints import (
@@ -418,7 +421,28 @@ class WebAppConfig:
             return "server"
         return None
 
+    @property
+    def is_intake_job(self) -> bool:
+        """Whether the loaded job was born in this app from a raw
+        video (it carries the intake marker). Intake jobs render
+        with the app's own splice; runner jobs keep theirs."""
+        return intake_build.is_intake_job(self.job_dir)
+
+    def elevenlabs_key(self) -> Optional[str]:
+        """The creator's ElevenLabs key, when the server has one.
+
+        Used only by the intake's word route (Scribe). Read from
+        the environment the server started with, the way the Meta
+        key is; never saved by the app.
+        """
+        return os.environ.get("ELEVENLABS_API_KEY") or None
+
     def render_missing(self) -> list[str]:
+        if self.is_intake_job:
+            source = intake_build.intake_source_video(self.job_dir)
+            if source and (self.job_dir / source).is_file():
+                return []
+            return ["source_video"]
         missing = []
         if not self.render_py:
             missing.append("render_py")
@@ -439,6 +463,11 @@ class WebAppConfig:
         """
         missing = self.render_missing()
         if not missing:
+            if self.is_intake_job:
+                return (
+                    "Rendering is built into the app for a video "
+                    "it took in."
+                )
             if self.render_autowired:
                 return "Rendering is set up from this job folder."
             return "Rendering is set up."
@@ -1109,6 +1138,7 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "render_missing": ["render_py", "source_video", "cleaned_wav"],
         "render_ready": False,
         "render_message": NO_JOB_MESSAGE,
+        "captions_available": False,
     }
 
 
@@ -1175,6 +1205,9 @@ def _job_summary(config: WebAppConfig) -> dict:
         "render_missing": config.render_missing(),
         "render_ready": not config.render_missing(),
         "render_message": config.render_message(),
+        "captions_available": (
+            config.session_dir / clean_captions.CAPTIONS_FILENAME
+        ).is_file(),
     }
 
 
@@ -2214,6 +2247,279 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# The first edit (v0.6.0): a dropped raw video becomes a job
+#
+# The lone-video drop used to stop at "you can watch it here." Now
+# the creator can ask for the first edit: the app writes down the
+# words (ElevenLabs Scribe when a key is set, else the speech pack
+# on this computer), measures the silences from the sound itself,
+# lays out a baseline plan that keeps every word, and then runs the
+# front door's own deterministic engines once, with any direction
+# given up front mapped onto the run's settings first. The result
+# is rendered with the intake's own splice, and clean captions are
+# written when the toggle is on. The dropped file is only ever read.
+# ---------------------------------------------------------------------------
+
+FIRST_EDIT_WORK_NAME = "intake-work"
+NO_WORDS_MESSAGE = (
+    "No words were found in that video, so there is nothing to "
+    "edit yet. If someone is speaking, a video where the voice "
+    "is clearer will work better."
+)
+NO_ROUTE_MESSAGE = (
+    "Writing down the words needs the speech pack on this "
+    "computer or an ElevenLabs key the app can use, and neither "
+    "is set up in this copy. The video is still here to watch."
+)
+DICTATE_NO_KEY_MESSAGE = (
+    "Voice dictation needs the Meta sign-in first, and typing "
+    "works as always."
+)
+
+
+def _intake_word_route(config: WebAppConfig) -> Optional[str]:
+    """Which word route intake can use: "scribe", "local", or None.
+
+    Scribe wins when the creator's ElevenLabs key is set: it is
+    verbatim and word-timed, and it keeps the kit light. The local
+    speech pack is the zero-cost route and needs no key at all.
+    Meta's speech-to-text is never a word route: it returns turn
+    timings only, and no edit can be measured from a turn.
+    """
+    if config.elevenlabs_key():
+        return "scribe"
+    if speech.local_available():
+        return "local"
+    return None
+
+
+def _adopt_job(httpd, job_root: Path) -> WebAppConfig:
+    """Make a staged folder the server's current job.
+
+    Mirrors the drop handler's own swap: the session sign-in and
+    the launch home carry over, and the intake root stays anchored
+    where the server started it.
+    """
+    current = httpd.config  # type: ignore[attr-defined]
+    config = WebAppConfig(job_root, launch_home=current.launch_home)
+    setattr(config, "session_api_key", getattr(current, "session_api_key"))
+    httpd.config = config  # type: ignore[attr-defined]
+    return config
+
+
+def _run_first_edit(httpd, intake_id: str, direction_text: str,
+                    captions_on: bool) -> None:
+    """Build a job from one staged video and make its first edit.
+
+    Runs in its own thread; progress lands in the first-edit state
+    the status endpoint serves, in plain words at every stage. The
+    job becomes the server's job only once its files exist, so a
+    failure leaves the app exactly as it was.
+    """
+    registry = httpd.intakes  # type: ignore[attr-defined]
+    states = httpd.first_edit_jobs  # type: ignore[attr-defined]
+    state = states[intake_id]
+    record = registry[intake_id]
+    base = Path(record["dir"])
+    video_path = base / record["video_rel"]
+    job_root = video_path.parent
+
+    def stage(text: str) -> None:
+        state["stage"] = text
+
+    try:
+        stage("Taking the sound out of the video…")
+        media = speech.probe_media(video_path)
+        work = job_root / FIRST_EDIT_WORK_NAME
+        wav_path = work / "audio.wav"
+        duration = speech.extract_audio(video_path, wav_path)
+        if media.get("duration") is None:
+            media["duration"] = duration
+        route = _intake_word_route(httpd.config)  # type: ignore[attr-defined]
+        if route is None:
+            raise speech.TranscribeError(NO_ROUTE_MESSAGE)
+        minutes = duration / 60.0
+        long_note = ""
+        if minutes >= 5:
+            long_note = (
+                f" This video is about {minutes:.0f} minutes long, "
+                "so this step takes a while. Leave this page open."
+            )
+        if route == "scribe":
+            stage("Writing down the words with ElevenLabs Scribe…"
+                  + long_note)
+            result = speech.scribe_transcribe_wav(
+                wav_path,
+                httpd.config.elevenlabs_key(),  # type: ignore[attr-defined]
+                duration_s=duration,
+                work_dir=work,
+            )
+        else:
+            stage(
+                "Writing down the words on this computer. The "
+                "first time, the speech model downloads once "
+                "(about 150 MB), so this can take a few minutes."
+                + long_note
+            )
+            result = speech.local_transcribe_wav(
+                wav_path, duration_s=duration
+            )
+        words = result["words"]
+        if not words:
+            state.update(
+                {"status": "no_words", "message": NO_WORDS_MESSAGE}
+            )
+            shutil.rmtree(work, ignore_errors=True)
+            return
+        stage("Measuring the silences from the sound itself…")
+        spans = speech.measure_speech_spans(wav_path)
+        stage("Laying out the first plan…")
+        intake_build.build_job_files(
+            job_root,
+            video_path.name,
+            result,
+            spans,
+            media,
+            captions_on=captions_on,
+        )
+        config = _adopt_job(httpd, job_root)
+        parsed = direction_parse.parse_direction(direction_text)
+        settings = _front_door_settings(config)
+        settings.update(parsed["overrides"])
+        _save_front_door_settings(config, settings)
+        session = config.session_dir
+        session.mkdir(parents=True, exist_ok=True)
+        _write_json(
+            session / "intake_direction.json",
+            {
+                "text": direction_text,
+                "overrides": parsed["overrides"],
+                "recap": parsed["recap"],
+                "remainder": parsed["remainder"],
+            },
+        )
+        if parsed["remainder"]:
+            feedback_path = session / "feedback.json"
+            payload = {
+                "video": job_root.name,
+                "feedback_done": False,
+                "comments": [],
+                "overall_feedback": [],
+            }
+            if feedback_path.is_file():
+                existing = _load_json(str(feedback_path))
+                if isinstance(existing, dict):
+                    payload = existing
+            payload.setdefault("overall_feedback", []).append(
+                {"id": "intake-direction", "text": parsed["remainder"]}
+            )
+            _write_json(feedback_path, payload)
+        kept_before = len(words)
+        stage("Making the first edit…")
+        checkpoints.begin(config)
+        retake_summary = None
+        if settings["remove_retakes"]:
+            retake_summary = _run_retake_pass(
+                config,
+                "mock",
+                spoken_direction=direction_text,
+                keep_mode=settings["keep_mode"],
+            )
+            retake_audit = retake_summary.pop("audit", None)
+            if retake_audit is not None:
+                audit_path = session / "operations_audit.json"
+                if audit_path.is_file():
+                    existing = _load_json(str(audit_path))
+                    existing.setdefault("operations", []).extend(
+                        retake_summary["operations"]
+                    )
+                    existing["after"] = retake_audit["after"]
+                    _write_json(audit_path, existing)
+                else:
+                    _write_json(audit_path, retake_audit)
+        silence_summary = None
+        if settings["cut_silence"]:
+            silence_summary = _run_silence_pass(
+                config, settings["buffer_s"]
+            )
+        checkpoints.commit(config, "First edit")
+        transcript = _load_json(str(job_root / "transcript.json"))
+        timeline = Timeline(transcript, _effective_cuts(config))
+        kept_after = len(timeline.kept_word_indices())
+        stage("Building the review video…")
+        render_note = None
+        try:
+            intake_build.render_splice(
+                video_path,
+                _effective_cuts(config),
+                session / SESSION_VIDEO_NAME,
+                has_audio=bool(media.get("has_audio", True)),
+            )
+        except speech.TranscribeError as exc:
+            render_note = str(exc)
+        caption_info = None
+        if captions_on:
+            try:
+                caption_info = clean_captions.build_captions(
+                    job_root,
+                    _effective_cuts(config),
+                    session / clean_captions.CAPTIONS_FILENAME,
+                )
+            except Exception as exc:  # captions never fail the edit
+                _log_raw_error("clean captions", exc)
+                caption_info = None
+        shutil.rmtree(work, ignore_errors=True)
+        recap = list(parsed["recap"])
+        if retake_summary is not None:
+            recap.append(
+                "Retakes: "
+                f"{retake_summary.get('applied', 0)} removed, "
+                f"{retake_summary.get('flagged', 0)} set aside for "
+                "your call."
+            )
+        if silence_summary is not None:
+            recap.append(
+                "Silence: "
+                f"{silence_summary.get('joins_trimmed', 0)} joins "
+                f"trimmed toward {settings['buffer_s']:g} seconds."
+            )
+        if parsed["remainder"]:
+            recap.append(
+                "The rest of your direction was saved as overall "
+                "guidance for the model."
+            )
+        state.update(
+            {
+                "status": "done",
+                "stage": "The first edit is ready.",
+                "job_name": job_root.name,
+                "engine": result["engine"],
+                "words": kept_before,
+                "kept_before": kept_before,
+                "kept_after": kept_after,
+                "settings": settings,
+                "recap": recap,
+                "render_note": render_note,
+                "captions": caption_info,
+            }
+        )
+    except speech.TranscribeError as exc:
+        state.update({"status": "failed", "message": str(exc)})
+    except Exception as exc:  # the page still gets one plain sentence
+        _log_raw_error("first edit", exc)
+        state.update(
+            {
+                "status": "failed",
+                "message": (
+                    "The first edit could not be made. The video "
+                    "itself is unchanged, and dropping it again "
+                    "is safe."
+                ),
+            }
+        )
+
+
 def _plain_toggle_message(verdict) -> str:
     """One plain sentence for a transcript word the verifier would not move.
 
@@ -2420,11 +2726,11 @@ def _edit_action(config: WebAppConfig, edit_id: str, action: str) -> dict:
 # ---------------------------------------------------------------------------
 
 VIDEO_ONLY_MESSAGE = (
-    "Your video is in, and you can watch it below. A full edit "
-    "needs more than the video: it needs the word-by-word "
-    "transcript and the edit plan, which part 1, the runner, "
-    "makes from the original recording. Drop the finished-edit "
-    "job folder and the app can work on it."
+    "Your video is in, and you can watch it below. This app can "
+    "also make the first edit itself: it writes down the words, "
+    "lays out a first plan, and runs the same choices the front "
+    "door offers. Give any direction you have, then choose Make "
+    "the first edit."
 )
 NOT_A_JOB_MESSAGE = (
     "That folder is not a finished-edit job. A job folder carries "
@@ -2712,6 +3018,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(200, _job_summary(self.config))
             elif path == "/api/signin":
                 self._send_json(200, _signin_state(self.config))
+            elif path == "/api/intake/status":
+                self._get_intake_status()
+            elif path == "/api/captions":
+                self._serve_captions()
             elif path == "/api/history":
                 self._send_json(
                     200, {"ok": True, **checkpoints.state(self.config)}
@@ -2760,6 +3070,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_intake_file()
         elif path == "/api/intake/finish":
             self._post_intake_finish()
+        elif path == "/api/intake/first-edit":
+            self._post_intake_first_edit()
+        elif path == "/api/dictate":
+            self._post_dictate()
         elif path == "/api/comments":
             self._post_comments()
         elif path == "/api/signin":
@@ -2927,6 +3241,14 @@ class _Handler(BaseHTTPRequestHandler):
         if registry is None:
             registry = {}
             self.server.intakes = registry  # type: ignore[attr-defined]
+        return registry
+
+    def _first_edits(self) -> dict:
+        """First-edit runs in flight or finished, by intake id."""
+        registry = getattr(self.server, "first_edit_jobs", None)
+        if registry is None:
+            registry = {}
+            self.server.first_edit_jobs = registry  # type: ignore[attr-defined]
         return registry
 
     def _serve_intake_video(self, rest: str) -> None:
@@ -3146,6 +3468,7 @@ class _Handler(BaseHTTPRequestHandler):
         if kind == "video":
             video_path = detected["video_path"]
             relative = video_path.relative_to(base).as_posix()
+            record["video_rel"] = relative
             self._send_json(
                 200,
                 {
@@ -3156,6 +3479,7 @@ class _Handler(BaseHTTPRequestHandler):
                         f"/api/intake/video/{intake_id}/"
                         + quote(relative)
                     ),
+                    "can_first_edit": True,
                     "message": VIDEO_ONLY_MESSAGE,
                 },
             )
@@ -3168,6 +3492,171 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(
             200,
             {"ok": True, "kind": "not_a_job", "message": NOT_A_JOB_MESSAGE},
+        )
+
+    def _post_intake_first_edit(self) -> None:
+        """Start the first edit for one staged lone video.
+
+        The build runs in its own thread (writing down the words
+        can take a while) and reports through the status endpoint.
+        Direction given with the request is mapped onto the run's
+        settings by the deterministic parser, and spoken direction
+        outranks the saved settings, as the front door settled.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        intake_id = str(body.get("intake_id") or "")
+        record = self._intakes().get(intake_id)
+        if record is None or not record.get("video_rel"):
+            self._error(
+                400,
+                "That video is not on record anymore. Drop it again.",
+            )
+            return
+        states = self._first_edits()
+        existing = states.get(intake_id)
+        if existing and existing.get("status") == "working":
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "started": False,
+                    "message": "The first edit is already being made.",
+                },
+            )
+            return
+        states[intake_id] = {"status": "working", "stage": "Starting…"}
+        thread = threading.Thread(
+            target=_run_first_edit,
+            args=(
+                self.server,
+                intake_id,
+                str(body.get("direction") or ""),
+                bool(body.get("clean_captions", True)),
+            ),
+            daemon=True,
+        )
+        thread.start()
+        self._send_json(200, {"ok": True, "started": True})
+
+    def _get_intake_status(self) -> None:
+        query = parse_qs(urlsplit(self.path).query)
+        intake_id = (query.get("intake") or [""])[0]
+        state = self._first_edits().get(intake_id)
+        if state is None:
+            self._send_json(200, {"ok": True, "status": "idle"})
+            return
+        self._send_json(200, {"ok": True, **state})
+
+    def _serve_captions(self) -> None:
+        if not self.config.has_job:
+            self._error(404, "no job is loaded yet")
+            return
+        target = (
+            self.config.session_dir / clean_captions.CAPTIONS_FILENAME
+        )
+        if not target.is_file():
+            self._error(
+                404,
+                "No caption file has been made for this job yet.",
+            )
+            return
+        self._send_bytes(
+            200,
+            target.read_bytes(),
+            "text/vtt; charset=utf-8",
+            {
+                "Content-Disposition": (
+                    'attachment; filename="clean-captions.vtt"'
+                )
+            },
+        )
+
+    def _post_dictate(self) -> None:
+        """Turn one recorded note into text, through Meta's voice.
+
+        The browser records the note and sends the clip; the server
+        takes its sound, hands it to Muse Voice Transcribe, and
+        sends back the words for the box they were spoken into, so
+        the creator reads and fixes them before anything counts.
+        Typing never depends on this working.
+        """
+        key = self.config.signin_key()
+        if not key:
+            self._send_json(
+                200, {"ok": False, "message": DICTATE_NO_KEY_MESSAGE}
+            )
+            return
+        length = self.headers.get("Content-Length")
+        try:
+            size = int(length) if length else 0
+        except ValueError:
+            size = 0
+        if size <= 0 or size > 32 * 1024 * 1024:
+            self._send_json(
+                200,
+                {
+                    "ok": False,
+                    "message": (
+                        "That recording did not arrive whole. Try "
+                        "again, or type the note."
+                    ),
+                },
+            )
+            return
+        raw = self.rfile.read(size)
+        ctype = (
+            (self.headers.get("Content-Type") or "")
+            .split(";")[0]
+            .strip()
+            .lower()
+        )
+        ext = {
+            "audio/webm": ".webm",
+            "video/webm": ".webm",
+            "audio/mp4": ".mp4",
+            "audio/x-m4a": ".m4a",
+            "audio/ogg": ".ogg",
+            "audio/wav": ".wav",
+            "audio/x-wav": ".wav",
+        }.get(ctype, ".webm")
+        session = self.config.session_dir
+        session.mkdir(parents=True, exist_ok=True)
+        token = uuid.uuid4().hex[:12]
+        raw_path = session / f"dictation-{token}{ext}"
+        wav_path = session / f"dictation-{token}-16k.wav"
+        try:
+            raw_path.write_bytes(raw)
+            speech.extract_audio(raw_path, wav_path)
+            result = speech.meta_transcribe_wav(wav_path, key)
+        except speech.TranscribeError as exc:
+            self._send_json(200, {"ok": False, "message": str(exc)})
+            return
+        finally:
+            raw_path.unlink(missing_ok=True)
+            wav_path.unlink(missing_ok=True)
+        if not result["text"]:
+            self._send_json(
+                200,
+                {
+                    "ok": False,
+                    "message": (
+                        "Nothing was heard in that recording. Try "
+                        "again a little closer to the microphone, "
+                        "or type the note."
+                    ),
+                },
+            )
+            return
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "text": result["text"],
+                "duration_s": result["duration_s"],
+            },
         )
 
     def _post_signin(self) -> None:
@@ -3765,6 +4254,81 @@ class _Handler(BaseHTTPRequestHandler):
         _refresh_after_review(self.config)
         self._send_json(200, {"ok": True, **moved})
 
+    def _post_render_intake(self) -> None:
+        """Render an intake job with the app's own splice.
+
+        Runner jobs render through the runner's script, untouched.
+        A job born here from a raw video has no runner pieces, so
+        its kept ranges are spliced from the dropped video itself.
+        Clean captions are rebuilt from the same plan when the job
+        was born with them on.
+        """
+        session = self.config.session_dir
+        revised = session / "revised_cuts.json"
+        if not revised.is_file():
+            self._send_json(
+                200,
+                {
+                    "ok": False,
+                    "missing": [],
+                    "error": "Run the first edit or direction "
+                    "first, so there is a revised plan to render.",
+                },
+            )
+            return
+        source_name = intake_build.intake_source_video(
+            self.config.job_dir
+        )
+        source = (
+            self.config.job_dir / source_name if source_name else None
+        )
+        if source is None or not source.is_file():
+            self._send_json(
+                200,
+                {
+                    "ok": False,
+                    "missing": ["source_video"],
+                    "error": "The video this job came from is not "
+                    "in the folder anymore, so the fixed video "
+                    "cannot be built.",
+                },
+            )
+            return
+        try:
+            media = speech.probe_media(source)
+            has_audio = bool(media.get("has_audio", True))
+        except speech.TranscribeError:
+            has_audio = True
+        try:
+            intake_build.render_splice(
+                source,
+                _effective_cuts(self.config),
+                session / SESSION_VIDEO_NAME,
+                has_audio=has_audio,
+            )
+        except speech.TranscribeError as exc:
+            self._send_json(200, {"ok": False, "error": str(exc)})
+            return
+        marker_path = self.config.job_dir / intake_build.INTAKE_MARKER
+        try:
+            marker = _load_json(str(marker_path))
+        except (OSError, ValueError):
+            marker = {}
+        if marker.get("captions"):
+            try:
+                clean_captions.build_captions(
+                    self.config.job_dir,
+                    _effective_cuts(self.config),
+                    session / clean_captions.CAPTIONS_FILENAME,
+                )
+            except Exception as exc:
+                _log_raw_error("clean captions", exc)
+        try:
+            _regenerate_after_review(self.config)
+        except Exception:
+            pass
+        self._send_json(200, {"ok": True})
+
     def _post_render(self) -> None:
         body = self._read_json_body()
         if body is None:
@@ -3780,6 +4344,9 @@ class _Handler(BaseHTTPRequestHandler):
                     "message": self.config.render_message(),
                 },
             )
+            return
+        if self.config.is_intake_job:
+            self._post_render_intake()
             return
         session = self.config.session_dir
         revised = session / "revised_cuts.json"
@@ -3902,6 +4469,7 @@ def create_server(
     # config is swapped for the staged copy's.
     httpd.intake_root = config.session_dir / INTAKE_DIR_NAME  # type: ignore[attr-defined]
     httpd.intakes = {}  # type: ignore[attr-defined]
+    httpd.first_edit_jobs = {}  # type: ignore[attr-defined]
     return httpd
 
 

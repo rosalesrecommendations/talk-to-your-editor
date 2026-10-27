@@ -53,7 +53,7 @@ The front door holds three things: the **Bring in a job** card, one quiet line o
 
 Two more drop shapes to try:
 
-- **Drop a single video file** (an .mp4 or .mov on its own). It stages and plays right in the Bring in a job card. The card says what a full edit still needs: the word-by-word transcript and the edit plan that part 1, the runner, makes. A video alone cannot be directed, and the app says so instead of failing.
+- **Drop a single video file** (an .mp4 or .mov on its own). It stages and plays right in the Bring in a job card, and the card offers **Make the first edit**: the app can now write down the words and make that first edit itself, no runner needed. Step 2b below walks it.
 - **Drop a folder that is not a job** (a folder of photos, say). The card says plainly that it is not a finished-edit job, names the two files a job folder carries, and confirms nothing was loaded. Your current job, if you have one, keeps running untouched.
 
 If dragging is awkward, the card's **choose a folder** and **choose files** buttons bring in the same things the picking way.
@@ -61,6 +61,20 @@ If dragging is awkward, the card's **choose a folder** and **choose files** butt
 You can change jobs at any time: drop a different folder and the app reloads on it. No restart, no path.
 
 Things worth noticing while you test this: whether the progress wording keeps up with a big folder, whether the reload lands you where you expect, and whether the staged copy behaving like a launched job feels seamless or surprising anywhere.
+
+### 2b. Or drop one video and make its first edit
+
+New in 0.6.0. A single raw video can become a job by itself.
+
+1. Drop one video file (or pick it with **choose files**). It plays in the card, and below it a small block appears: a direction box, a **Clean captions** switch (leave it on), and the **Make the first edit** button.
+2. **Give direction first, if you have any.** Type it in plain words, or press **Dictate** and speak it (see "Dictating" below). Try: "remove retakes, keep the first clean take." Words that name a control the app has (retakes on or off, which take stays, silence on or off, a buffer like 0.2 seconds) set that run's switches, and what you say wins over the saved settings for this video. Anything else rides along as overall guidance.
+3. Press **Make the first edit**. The status line narrates in plain words: taking the sound out, writing down the words, measuring the silences from the sound itself, laying out the first plan, making the first edit, building the review video.
+   - **First run on this Mac, and it can take a while:** with no ElevenLabs key saved, the words are written down on this Mac by a speech model the app downloads the first time (about 150 MB). The status line says so. Later runs skip the download; the writing-down itself still takes some minutes for a long video on a laptop, and a video of 5 minutes or more says to expect that.
+   - **A video with no speech** (music only, say) ends with a plain "no words were found" note and no job. That is the honest answer, not an error.
+4. When it lands, a short recap names what the direction set, how many retakes came out and how many were set aside for your call, and how many silence joins were trimmed. A few seconds later the page reloads on the new job: video, transcript, dots, counts, exactly like a runner job. Steps 3 to 7 below all apply from here.
+5. **Clean captions:** under **Revised edit**, a **Download the clean captions** link appears. The captions are built from the words that stayed in the edit, on the edit's own timing, with the fillers (um, uh, and friends) left out of the caption text only. Your video's sound and the written-down words keep everything.
+
+**Dictating.** Every feedback box now has a **Dictate** button: the front-door direction box, a pinned comment, the overall feedback box, the note on an edit, and the direction box above. Press it, speak, press **Stop and write it down**. Meta's voice transcription writes your words into the box; read them over and fix anything before you save, because the box is what counts. With no Meta key saved on this Mac and none pasted on the page, the button answers with one plain sentence saying dictation needs the Meta sign-in, and typing carries on as always. In the note on an edit, a second button, **Use the browser's voice typing instead**, appears when your browser offers it; it is the fallback, never the default.
 
 ### 3. Make the edit: the front door
 

@@ -32,10 +32,21 @@ fi
 
 printf 'Installing or refreshing Talk to Your Editor...\n'
 pip install --quiet -e . || fail "The app could not be installed into its private environment. Read the error above, fix that problem, and try again."
+# The speech pack lets a dropped video be written down on this Mac
+# itself, with no key and no cost. It is a bigger download (about
+# 400 MB with its helpers), so it is best-effort: if it cannot be
+# installed, the app still starts, and dropped videos can still be
+# written down with a saved ElevenLabs key instead.
+if ! pip install --quiet -e '.[speech]'; then
+  printf 'The on-this-Mac speech pack could not be installed, so a dropped\n'
+  printf 'video cannot be written down on this Mac itself. The app still\n'
+  printf 'starts; a saved ElevenLabs key covers dropped videos instead.\n'
+fi
 printf '\n'
 
 printf 'Quick map: the runner is part 1. It makes the first edit and gives you a job folder.\n'
-printf 'This app is part 2: you watch that edit here and direct the fixes.\n\n'
+printf 'This app is part 2: you watch that edit here and direct the fixes. It can also\n'
+printf 'take a single raw video by itself and make that first edit right here.\n\n'
 
 # Optional: a job folder path as the launcher's first argument starts
 # the app on that job, the way it always has. With no argument the
@@ -64,7 +75,8 @@ if [ -n "$JOB_DIR" ]; then
   printf 'Starting on this job folder: %s\n\n' "$JOB_DIR"
 else
   printf 'The app opens with no job loaded. Drop a runner job folder on the page,\n'
-  printf 'or try the built-in sample. Nothing to paste here.\n\n'
+  printf 'drop a single video to make its first edit here, or try the built-in\n'
+  printf 'sample. Nothing to paste here.\n\n'
 fi
 
 # A Meta key saved on this Mac is used without asking, as before.
@@ -79,6 +91,18 @@ if [ -s "$KEY_FILE" ]; then
     printf 'Using the saved Meta Model API key from this Mac. Live Muse direction is on.\n\n'
   fi
   unset SAVED_KEY
+fi
+# An ElevenLabs key saved on this Mac the same way is used for
+# writing down dropped videos (the spoken-words route for the first
+# edit). With no key saved, the on-this-Mac speech pack covers it.
+EL_KEY_FILE="$KEY_DIR/elevenlabs_key"
+if [ -s "$EL_KEY_FILE" ]; then
+  IFS= read -r SAVED_EL_KEY < "$EL_KEY_FILE" || true
+  if [ -n "$SAVED_EL_KEY" ]; then
+    export ELEVENLABS_API_KEY="$SAVED_EL_KEY"
+    printf 'Using the saved ElevenLabs key from this Mac. Spoken words for dropped videos are on.\n\n'
+  fi
+  unset SAVED_EL_KEY
 fi
 if [ -z "${MODEL_API_KEY:-}" ]; then
   printf 'Offline mock direction is on. To use live Muse direction, paste your\n'

@@ -4,10 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "talk-to-your-editor"
-version = "0.5.2"
+version = "0.6.0"
 description = "Plain-language feedback becomes strict, verified edit operations for a finished video edit."
 requires-python = ">=3.10"
 dependencies = []
+
+# Optional: on-this-machine transcription for dropped videos
+# (Whisper, local, no key, no per-video cost). The base install
+# stays standard-library only; without this extra, intake uses an
+# ElevenLabs key when one is set.
+[project.optional-dependencies]
+speech = ["faster-whisper>=1.0"]
 
 [project.scripts]
 tye = "talk_to_your_editor.cli:main"
