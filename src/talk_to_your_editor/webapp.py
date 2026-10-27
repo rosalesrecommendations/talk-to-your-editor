@@ -44,7 +44,7 @@ from types import SimpleNamespace
 from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from . import checkpoints, creator_rules
+from . import checkpoints, creator_rules, retakes
 from .after_review import generate_after_review
 from .applier import ApplyError, apply_verdicts
 from .checkpoints import (
@@ -52,6 +52,7 @@ from .checkpoints import (
     EDIT_NOTES_FILENAME,
     FRONT_DOOR_FILENAME,
     GRADES_FILENAME,
+    RETAKE_PASS_FILENAME,
 )
 from .cli import _load_json, _verify_and_apply, _write_json
 from .meta_provider import MetaProvider, MockProvider, ProviderError
@@ -750,6 +751,17 @@ def _edit_spans(config: WebAppConfig) -> list:
                 for n in record.get("notes", [])
                 if isinstance(n, dict) and n.get("text")
             ]
+        retake_meta = None
+        if op is not None and isinstance(op.get("retake"), dict):
+            meta = op["retake"]
+            retake_meta = {
+                "pair_id": meta.get("pair_id"),
+                "band": meta.get("band"),
+                "retake_class": meta.get("retake_class"),
+                "keep_text": meta.get("keep_text"),
+                "keep_word_start": meta.get("keep_word_start"),
+                "keep_word_end": meta.get("keep_word_end"),
+            }
         spans.append(
             {
                 "edit_id": edit_id,
@@ -763,6 +775,7 @@ def _edit_spans(config: WebAppConfig) -> list:
                 "comment_id": comment_id,
                 "comment_text": comment_text,
                 "notes": notes,
+                "retake": retake_meta,
             }
         )
     return spans
@@ -776,8 +789,112 @@ def _video_name_for_review(config: WebAppConfig) -> Optional[str]:
     return videos[0] if videos else None
 
 
+def _output_time_for_word(config: WebAppConfig, word_index: int) -> float:
+    """Finished-edit time at (or just after) one transcript word.
+
+    A retake pair's removed words are cut in the current plan, so
+    the time is taken from the first kept word at or after them:
+    the moment the listener reaches that point of the edit.
+    """
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    timeline = Timeline(transcript, _effective_cuts(config))
+    words = timeline.words
+    if not words:
+        return 0.0
+    target = None
+    for index in range(min(word_index, len(words) - 1), len(words)):
+        if timeline.word_status(index) in ("kept", "special"):
+            target = index
+            break
+    if target is None:
+        return round(timeline.output_duration, 3)
+    word = words[target]
+    mid = (float(word["start"]) + float(word["end"])) / 2.0
+    for segment in timeline.segments:
+        rng = segment["range"]
+        if float(rng["start"]) - 1e-6 <= mid <= float(rng["end"]) + 1e-6:
+            return round(
+                segment["output_start"] + (mid - float(rng["start"])), 3
+            )
+    return round(timeline.output_duration, 3)
+
+
+def _augmented_review_feedback(config: WebAppConfig) -> Optional[Path]:
+    """Feedback for the review page, with the retake pairs as rows.
+
+    The review page renders one row per feedback comment, and a
+    retake found by the front door has no comment behind it. Rather
+    than bend the renderer, the pass's pairs that produced a
+    recorded change (a cut or a flag) are written as plain synthetic
+    comments in a session copy of the feedback, so each pair gets
+    its row, its grade, and its place in the learning loop. Returns
+    None when there is nothing to add.
+    """
+    record = _load_retake_record(config)
+    pairs = [
+        pair for pair in record.get("pairs", []) if isinstance(pair, dict)
+    ]
+    if not pairs:
+        return None
+    audit_path = config.session_dir / "operations_audit.json"
+    if not audit_path.is_file():
+        return None
+    try:
+        audit = _load_json(str(audit_path))
+    except (OSError, ValueError):
+        return None
+    op_ids = {
+        op.get("comment_id")
+        for op in audit.get("operations", [])
+        if isinstance(op, dict)
+    }
+    base_comments: list = []
+    feedback_path = _feedback_path(config)
+    if feedback_path is not None:
+        try:
+            payload = _load_json(str(feedback_path))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            base_comments = [
+                comment
+                for comment in payload.get("comments", [])
+                if isinstance(comment, dict)
+            ]
+    synthetic = []
+    for pair in pairs:
+        if pair.get("pair_id") not in op_ids:
+            continue
+        cut = pair.get("cut") or {}
+        keep = pair.get("keep") or {}
+        cut_text = str(cut.get("text") or "")
+        keep_text = str(keep.get("text") or "")
+        if len(cut_text) > 110:
+            cut_text = cut_text[:107].rstrip() + "..."
+        if len(keep_text) > 110:
+            keep_text = keep_text[:107].rstrip() + "..."
+        synthetic.append(
+            {
+                "id": pair["pair_id"],
+                "ts": _output_time_for_word(
+                    config, int(cut.get("word_start") or 0)
+                ),
+                "text": (
+                    "Retake found by the front door. "
+                    f"Earlier: \"{cut_text}\" "
+                    f"The take that stayed: \"{keep_text}\""
+                ),
+            }
+        )
+    if not synthetic:
+        return None
+    out_path = config.session_dir / "review_feedback.json"
+    _write_json(out_path, {"comments": base_comments + synthetic})
+    return out_path
+
+
 def _regenerate_after_review(config: WebAppConfig) -> Path:
-    feedback = _feedback_path(config)
+    feedback = _augmented_review_feedback(config) or _feedback_path(config)
     audit = config.session_dir / "operations_audit.json"
     return generate_after_review(
         feedback,
@@ -1280,15 +1397,312 @@ def _record_silence_pass(config: WebAppConfig, summary: dict) -> None:
     _write_json(path, {"runs": runs})
 
 
+# ---------------------------------------------------------------------------
+# The retake pass (v0.5.0)
+#
+# The front door's Remove retakes choice used to be one guidance
+# sentence handed to the direction model; with no comments pinned it
+# measured nothing. Now the local detector in ``retakes.py`` measures
+# the transcript itself: clear pairs (Band A) become ordinary
+# cut_words operations through the same verify-and-apply path the
+# silence pass uses, policy holds (a negation in either copy, a short
+# emphasis double) become flags, and borderline pairs (Band B) go to
+# one model judgment call when a provider is configured, or degrade
+# to scored flags when there is none. The pass runs against the
+# session's current plan before any direction run, so it works with
+# zero comments pinned, and every outcome is recorded in
+# ``retake_pass.json`` and merged into the session audit with the
+# pair it came from, which is what puts both takes in the transcript
+# dots and the pair's rows on the review page.
+# ---------------------------------------------------------------------------
+
+_RETAKE_PATTERN_DESCRIPTIONS = {
+    "a": (
+        "Taking out the earlier take of a repeated line when the "
+        "local check was sure about it"
+    ),
+    "b": (
+        "Taking out the earlier take of a repeated line when a "
+        "model judged the pair"
+    ),
+    "flag": "Leaving a repeated line for the creator to decide",
+}
+
+
+def _load_retake_record(config: WebAppConfig) -> dict:
+    payload = _load_session_json(
+        config, RETAKE_PASS_FILENAME, {"runs": [], "pairs": [], "decisions": {}}
+    )
+    if not isinstance(payload, dict):
+        payload = {"runs": [], "pairs": [], "decisions": {}}
+    payload.setdefault("runs", [])
+    payload.setdefault("pairs", [])
+    payload.setdefault("decisions", {})
+    return payload
+
+
+def _save_retake_record(config: WebAppConfig, record: dict) -> None:
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(config.session_dir / RETAKE_PASS_FILENAME, record)
+
+
+def _retake_pair_for(config: WebAppConfig, pair_id: Optional[str]) -> Optional[dict]:
+    """The recorded pair behind one review row or grade, if any."""
+    if not pair_id:
+        return None
+    for pair in _load_retake_record(config).get("pairs", []):
+        if isinstance(pair, dict) and pair.get("pair_id") == pair_id:
+            return pair
+    return None
+
+
+def _enrich_retake_grades(config: WebAppConfig, raw_entries: list) -> list:
+    """Give graded retake rows their per-band pattern key.
+
+    A grade from a retake pair's review row carries the pair id as
+    its comment id. Looking the pair up in the pass record attaches
+    the explicit pattern key and a plain description (no machine
+    tokens, so it can be shown), which is what lets grades tune the
+    bands through the rule suggestions instead of dissolving into
+    the operation type. A "did not work" grade on a pair also
+    records the creator's decision about it: that pair is never
+    proposed again.
+    """
+    record = _load_retake_record(config)
+    pairs_by_id = {
+        pair.get("pair_id"): pair
+        for pair in record.get("pairs", [])
+        if isinstance(pair, dict) and pair.get("pair_id")
+    }
+    if not pairs_by_id:
+        return raw_entries
+    decisions_changed = False
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        pair = pairs_by_id.get(
+            entry.get("comment_id") or entry.get("record_id")
+        )
+        if pair is None:
+            continue
+        if not entry.get("pattern_key"):
+            entry["pattern_key"] = pair["pattern_key"]
+            entry.setdefault(
+                "pattern_description",
+                _RETAKE_PATTERN_DESCRIPTIONS.get(
+                    pair.get("band"),
+                    _RETAKE_PATTERN_DESCRIPTIONS["flag"],
+                ),
+            )
+        if entry.get("verdict") == "did_not_work":
+            key = retakes.pair_key(pair)
+            decisions = record.setdefault("decisions", {})
+            if not (decisions.get(key) or {}).get("keep_both"):
+                decisions[key] = {"keep_both": True, "at": _utc_now()}
+                decisions_changed = True
+    if decisions_changed:
+        _save_retake_record(config, record)
+    return raw_entries
+
+
+def _run_retake_pass(
+    config: WebAppConfig, provider_name: str, spoken_direction: str = ""
+) -> dict:
+    """Measure the edit for retakes and act on what the bands allow.
+
+    Band A pairs are cut through the verifier like any other change.
+    Band B pairs are judged in one provider call when the provider
+    can judge; a keep-both or not-a-pair verdict is recorded and no
+    operation is made, and any pair the model did not answer, plus
+    every Band B pair under a provider that cannot judge, becomes a
+    scored flag. Policy-flag pairs are flags by construction. Pairs
+    the creator already graded as keep-both are never proposed again.
+    """
+    summary = {
+        "ran": True,
+        "provider": provider_name,
+        "pairs": 0,
+        "band_a": 0,
+        "band_b": 0,
+        "flags": 0,
+        "applied": 0,
+        "flagged": 0,
+        "kept_both": 0,
+    }
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    base_cuts = _effective_cuts(config)
+    timeline = Timeline(transcript, base_cuts)
+    record = _load_retake_record(config)
+    decisions = record.get("decisions") or {}
+    pairs = [
+        pair
+        for pair in retakes.find_pairs(timeline, profile)
+        if decisions.get(retakes.pair_key(pair), {}).get("keep_both") is not True
+    ]
+    summary["pairs"] = len(pairs)
+    summary["band_a"] = len(
+        [pair for pair in pairs if pair["band"] == "a"]
+    )
+    summary["band_b"] = len(retakes.borderline_pairs(pairs))
+    summary["flags"] = len(retakes.flag_pairs(pairs))
+    if not pairs:
+        record["runs"].append({**summary, "at": _utc_now()})
+        record["pairs"] = []
+        _save_retake_record(config, record)
+        return summary
+
+    operations = retakes.band_a_operations(timeline, profile, pairs=pairs)
+    outcomes: dict = {}
+    for pair in pairs:
+        if pair["band"] == "a":
+            outcomes[pair["pair_id"]] = "proposed"
+    for pair in retakes.flag_pairs(pairs):
+        operations.append(retakes.flag_operation(pair))
+        outcomes[pair["pair_id"]] = "flagged"
+
+    borderline = retakes.borderline_pairs(pairs)
+    judged_ops: list = []
+    verdicts: dict = {}
+    if borderline:
+        provider = None
+        if provider_name == "meta":
+            provider = MetaProvider(config.signin_key())
+        elif provider_name == "mock":
+            provider = MockProvider()
+        judged = None
+        if provider is not None:
+            guidance = creator_rules.active_rule_statements(
+                _rules_store(config)
+            )
+            if spoken_direction:
+                guidance = guidance + [spoken_direction]
+            try:
+                judged = provider.judge_retakes(
+                    borderline, timeline, guidance=guidance
+                )
+            except ProviderError as exc:
+                # A failed judgment call never fails the pass: the
+                # pairs degrade to scored flags, like having no
+                # provider at all.
+                _log_raw_error("retake judgment", exc)
+                judged = None
+        if judged is not None:
+            judged_ops, verdicts = judged
+        for pair in borderline:
+            verdict = verdicts.get(pair["pair_id"])
+            if verdict in ("keep_both", "not_a_pair"):
+                outcomes[pair["pair_id"]] = (
+                    "kept_both" if verdict == "keep_both" else "not_a_pair"
+                )
+                summary["kept_both"] += 1
+            elif verdict in ("cut_earlier", "cut_later"):
+                outcomes[pair["pair_id"]] = "judged_cut"
+            else:
+                operations.append(
+                    retakes.flag_operation(
+                        pair, reason=retakes.band_b_flag_reason(pair)
+                    )
+                )
+                outcomes[pair["pair_id"]] = "flagged"
+    operations.extend(judged_ops)
+
+    page_operations: list = []
+    if operations:
+        session = config.session_dir
+        session.mkdir(parents=True, exist_ok=True)
+        revised_path = session / "revised_cuts.json"
+        base_cuts_path = (
+            revised_path
+            if revised_path.is_file()
+            else config.job_dir / "cuts.json"
+        )
+        profile_path = config.job_dir / "profile.json"
+        tmp = session / ".retake-tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        args = SimpleNamespace(
+            transcript=str(config.job_dir / "transcript.json"),
+            cuts=str(base_cuts_path),
+            profile=str(profile_path) if profile_path.is_file() else None,
+        )
+        try:
+            audit = _verify_and_apply(
+                args, {"operations": operations}, tmp
+            )
+        except (SchemaError, ApplyError) as exc:
+            _log_raw_error("retake pass", exc)
+            shutil.rmtree(tmp, ignore_errors=True)
+            audit = None
+        if audit is not None:
+            shutil.copyfile(tmp / "revised_cuts.json", revised_path)
+            page_operations = audit.get("operations", [])
+            pairs_by_id = {pair["pair_id"]: pair for pair in pairs}
+            for entry in page_operations:
+                pair = pairs_by_id.get(entry.get("comment_id"))
+                if pair is None:
+                    continue
+                entry["pattern_key"] = pair["pattern_key"]
+                entry["retake"] = {
+                    "pair_id": pair["pair_id"],
+                    "band": pair["band"],
+                    "retake_class": pair["retake_class"],
+                    "pattern_key": pair["pattern_key"],
+                    "coverage": pair.get("coverage"),
+                    "ratio": pair.get("ratio"),
+                    "cut_text": pair["cut"]["text"],
+                    "keep_text": pair["keep"]["text"],
+                    "keep_word_start": pair["keep"]["word_start"],
+                    "keep_word_end": pair["keep"]["word_end"],
+                }
+                if outcomes.get(pair["pair_id"]) == "proposed":
+                    outcomes[pair["pair_id"]] = (
+                        "applied"
+                        if entry.get("status") == "applied"
+                        else "held"
+                    )
+                elif outcomes.get(pair["pair_id"]) == "judged_cut":
+                    outcomes[pair["pair_id"]] = (
+                        "applied"
+                        if entry.get("status") == "applied"
+                        else "held"
+                    )
+            # The pass's audit is handed to the caller, not merged
+            # here: the front door runs direction next, and a
+            # direction run replaces the session audit with its own,
+            # so the merge has to happen after those runs (the
+            # silence pass, which runs last, merges its own inline).
+            summary["audit"] = audit
+            shutil.rmtree(tmp, ignore_errors=True)
+    summary["applied"] = sum(
+        1 for op in page_operations if op.get("status") == "applied"
+    )
+    summary["flagged"] = sum(
+        1 for op in page_operations if op.get("status") == "flagged"
+    )
+    summary["operations"] = page_operations
+    record["runs"].append({**summary, "at": _utc_now(), "operations": []})
+    record["pairs"] = [
+        {**pair, "outcome": outcomes.get(pair["pair_id"], "proposed")}
+        for pair in pairs
+    ]
+    _save_retake_record(config, record)
+    return summary
+
+
 def _run_front_door(config: WebAppConfig, body: dict) -> dict:
     """The simplified front door: two choices, one buffer, one button.
 
     Remove retakes and Cut silence are on unless the creator turned
-    them off. Firing runs direction for the chosen formats with the
-    retakes guidance riding along (plus anything typed in the spoken
-    direction box, which adds to the choices rather than replacing
-    them), then trims the plan's long silences toward the buffer.
-    Saved rules ride into the run inside ``_run_direction`` itself.
+    them off. Firing first runs the local retake pass (which measures
+    the transcript itself, so it works with no comments pinned; its
+    page operations are merged into the session audit after the
+    direction runs, which replace that file with their own), then
+    runs direction for the chosen formats with the retakes guidance
+    riding along (plus anything typed in the spoken direction box,
+    which adds to the choices rather than replacing them), then
+    trims the plan's long silences toward the buffer. Saved rules
+    ride into the run inside ``_run_direction`` itself.
     """
     defaults = _front_door_settings(config)
     try:
@@ -1315,6 +1729,11 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
             "so direction cannot run with it."
         )
     _save_front_door_settings(config, settings)
+    retake_summary = None
+    if settings["remove_retakes"]:
+        retake_summary = _run_retake_pass(
+            config, provider_name, spoken_direction=direction_text
+        )
     extras = []
     if settings["remove_retakes"]:
         extras.append({"id": "front-door-retakes", "text": RETAKES_GUIDANCE})
@@ -1343,6 +1762,19 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
                 "flagged_comment_ids": audit["flagged_comment_ids"],
             }
         )
+    if retake_summary is not None:
+        retake_audit = retake_summary.pop("audit", None)
+        if retake_audit is not None:
+            session_audit_path = config.session_dir / "operations_audit.json"
+            if session_audit_path.is_file():
+                existing = _load_json(str(session_audit_path))
+                existing.setdefault("operations", []).extend(
+                    retake_summary["operations"]
+                )
+                existing["after"] = retake_audit["after"]
+                _write_json(session_audit_path, existing)
+            else:
+                _write_json(session_audit_path, retake_audit)
     silence = None
     if settings["cut_silence"]:
         silence = _run_silence_pass(config, settings["buffer_s"])
@@ -1352,6 +1784,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "settings": settings,
         "format_scope": scope,
         "direction_runs": direction_runs,
+        "retakes": retake_summary,
         "silence": silence,
         "saved_rules": creator_rules.active_rule_statements(
             _rules_store(config)
@@ -1454,6 +1887,91 @@ def _toggle_word(config: WebAppConfig, word_index: int) -> dict:
         "changed": new_status != status,
         "message": None,
     }
+
+
+def _edit_action(config: WebAppConfig, edit_id: str, action: str) -> dict:
+    """Bring a removed span back, or swap it with the take that stayed.
+
+    Both actions are the transcript click's bigger siblings: one
+    operation, built here, checked by the same verifier against the
+    session's current plan, applied by the same applier. Bring back
+    is a ``restore_words`` over the removed span. Swap takes is a
+    ``replace_take``: the take that stayed is cut and the removed
+    take is restored, in one checked step. As with a word click, a
+    lone ``wonder_review_required`` hold is forgiven, because the
+    creator is looking at the exact words and the click is the
+    review; every other safety rule holds exactly as written.
+    """
+    if action not in ("restore", "swap"):
+        raise ValueError("That action is not one this page can do.")
+    span = next(
+        (s for s in _edit_spans(config) if s.get("edit_id") == edit_id),
+        None,
+    )
+    if span is None:
+        raise ValueError("That edit is not in the transcript any more.")
+    start, end = span["word_start"], span["word_end"]
+    if action == "restore":
+        operation = {
+            "type": "restore_words",
+            "comment_id": "transcript-restore",
+            "word_start": start,
+            "word_end": end,
+            "reason": "You brought these words back from the transcript.",
+            "confidence": 1.0,
+            "model": "mock",
+            "risk_tier": 2,
+            "wonder_reviewed": False,
+        }
+        label = "Edit brought back"
+        done_message = "Those words are back in the edit."
+    else:
+        meta = span.get("retake")
+        if not isinstance(meta, dict) or meta.get("keep_word_start") is None:
+            return {
+                "ok": True,
+                "changed": False,
+                "message": (
+                    "That edit does not name the take that stayed, so "
+                    "the takes cannot be swapped from here."
+                ),
+            }
+        operation = {
+            "type": "replace_take",
+            "comment_id": "transcript-swap",
+            "cut_word_start": meta["keep_word_start"],
+            "cut_word_end": meta["keep_word_end"],
+            "restore_word_start": start,
+            "restore_word_end": end,
+            "reason": "You swapped the takes from the transcript.",
+            "confidence": 1.0,
+            "model": "mock",
+            "risk_tier": 2,
+            "wonder_reviewed": False,
+        }
+        label = "Takes swapped"
+        done_message = "The takes are swapped."
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    base_cuts = _effective_cuts(config)
+    timeline = Timeline(transcript, base_cuts)
+    ops = validate_operations([operation])
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    verdict = verify_operations(ops, timeline, profile)[0]
+    if verdict.status == "flag" and verdict.reasons == ["wonder_review_required"]:
+        verdict.status = "apply"
+    if verdict.status != "apply":
+        return {
+            "ok": True,
+            "changed": False,
+            "message": _plain_toggle_message(verdict),
+        }
+    revised, _audit = apply_verdicts(base_cuts, timeline, [verdict])
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    checkpoints.begin(config)
+    _write_json(session / "revised_cuts.json", revised)
+    checkpoints.commit(config, label)
+    return {"ok": True, "changed": True, "message": done_message}
 
 
 # ---------------------------------------------------------------------------
@@ -1796,6 +2314,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_rule_remove()
         elif path == "/api/word-toggle":
             self._post_word_toggle()
+        elif path == "/api/edit-action":
+            self._post_edit_action()
         elif path == "/api/word-correct":
             self._post_word_correct()
         elif path == "/api/word-correct-remove":
@@ -2336,7 +2856,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(404, "a job file is missing")
             return
         after_review = False
-        if result["direction_runs"]:
+        if result["direction_runs"] or (result.get("retakes") or {}).get(
+            "pairs"
+        ):
             try:
                 _regenerate_after_review(self.config)
                 after_review = True
@@ -2431,6 +2953,7 @@ class _Handler(BaseHTTPRequestHandler):
         ):
             self._error(400, "entries must be a list of graded changes")
             return
+        raw = _enrich_retake_grades(self.config, raw)
         entries = creator_rules.merge_grade_entries(
             _load_grades(self.config), raw
         )
@@ -2556,6 +3079,39 @@ class _Handler(BaseHTTPRequestHandler):
                     "message": (
                         "The safety check would not move that word, "
                         "so it was left as it is."
+                    ),
+                },
+            )
+            return
+        self._send_json(200, result)
+
+    def _post_edit_action(self) -> None:
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        edit_id = str(body.get("edit_id") or "")
+        action = str(body.get("action") or "")
+        if not edit_id or action not in ("restore", "swap"):
+            self._error(
+                400, "edit_id and an action of restore or swap are required"
+            )
+            return
+        try:
+            result = _edit_action(self.config, edit_id, action)
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        except (SchemaError, ApplyError) as exc:
+            _log_raw_error("edit-action", exc)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "changed": False,
+                    "message": (
+                        "The safety check would not move those words, "
+                        "so they were left as they are."
                     ),
                 },
             )

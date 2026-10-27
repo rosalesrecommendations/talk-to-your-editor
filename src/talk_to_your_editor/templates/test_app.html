@@ -632,6 +632,15 @@
       <p class="comment-text" id="editPopupRemoved"></p>
       <p class="action" id="editPopupReason"></p>
       <p id="editPopupComment" hidden></p>
+      <div id="editPopupKept" hidden>
+        <p class="note">The take that stayed:</p>
+        <p class="comment-text" id="editPopupKeptText"></p>
+      </div>
+      <div class="row" id="editPopupActions">
+        <button id="editBringBack" type="button">Bring these words back</button>
+        <button id="editSwapTakes" type="button" hidden>Swap takes</button>
+      </div>
+      <p class="status-line" id="editActionStatus"></p>
       <div id="editNotesList"></div>
       <textarea id="editNoteText" rows="2" placeholder="Leave a note on this edit. It travels with the removed words into the next run."></textarea>
       <div class="row">
@@ -1566,6 +1575,11 @@
   var editNoteSpeak = document.getElementById("editNoteSpeak");
   var editNoteSave = document.getElementById("editNoteSave");
   var editPopupClose = document.getElementById("editPopupClose");
+  var editPopupKept = document.getElementById("editPopupKept");
+  var editPopupKeptText = document.getElementById("editPopupKeptText");
+  var editBringBack = document.getElementById("editBringBack");
+  var editSwapTakes = document.getElementById("editSwapTakes");
+  var editActionStatus = document.getElementById("editActionStatus");
 
   if (editNoteSpeak) {
     editNoteSpeak.hidden = !(window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -1605,10 +1619,56 @@
         editPopupComment.textContent = "";
       }
     }
+    if (editPopupKept) {
+      if (span.retake && span.retake.keep_text) {
+        editPopupKept.hidden = false;
+        if (editPopupKeptText) { editPopupKeptText.textContent = '"' + span.retake.keep_text + '"'; }
+      } else {
+        editPopupKept.hidden = true;
+        if (editPopupKeptText) { editPopupKeptText.textContent = ""; }
+      }
+    }
+    if (editSwapTakes) { editSwapTakes.hidden = !(span.retake && span.retake.keep_text); }
+    if (editActionStatus) { editActionStatus.textContent = ""; }
     renderEditNotes(span);
     if (editNoteStatus) { editNoteStatus.textContent = ""; }
     editPopup.hidden = false;
     editPopup.scrollIntoView({ block: "nearest" });
+  }
+
+  function runEditAction(action) {
+    if (currentEditId === null || currentEditId === undefined) { return; }
+    if (editBringBack) { editBringBack.disabled = true; }
+    if (editSwapTakes) { editSwapTakes.disabled = true; }
+    postJson("/api/edit-action", { edit_id: currentEditId, action: action }).then(function (res) {
+      var data = res.data || {};
+      if (editBringBack) { editBringBack.disabled = false; }
+      if (editSwapTakes) { editSwapTakes.disabled = false; }
+      if (!data.ok) {
+        if (editActionStatus) { editActionStatus.textContent = data.error || "That change could not be made."; }
+        return;
+      }
+      if (data.changed) {
+        editPopup.hidden = true;
+        var ts = document.getElementById("transcriptStatus");
+        if (ts) { ts.textContent = data.message || "Done."; }
+        refreshHistory();
+        reloadJobState();
+      } else if (editActionStatus) {
+        editActionStatus.textContent = data.message || "Nothing changed.";
+      }
+    }).catch(function () {
+      if (editBringBack) { editBringBack.disabled = false; }
+      if (editSwapTakes) { editSwapTakes.disabled = false; }
+      if (editActionStatus) { editActionStatus.textContent = "That change could not be made."; }
+    });
+  }
+
+  if (editBringBack) {
+    editBringBack.addEventListener("click", function () { runEditAction("restore"); });
+  }
+  if (editSwapTakes) {
+    editSwapTakes.addEventListener("click", function () { runEditAction("swap"); });
   }
 
   if (editPopupClose) {
@@ -1835,6 +1895,21 @@
               ". Length: " + first.before.output_duration_s.toFixed(1) + "s to " +
               last.after.output_duration_s.toFixed(1) + "s.";
             fdResults.appendChild(counts);
+          }
+          if (data.retakes && data.retakes.ran) {
+            var retakeLine = document.createElement("p");
+            retakeLine.className = "counts";
+            var rt = data.retakes;
+            if (!rt.pairs) {
+              retakeLine.textContent = "Retakes: none found in this edit.";
+            } else {
+              var parts = [];
+              if (rt.applied) { parts.push(rt.applied + (rt.applied === 1 ? " retake" : " retakes") + " taken out"); }
+              if (rt.flagged) { parts.push(rt.flagged + " left for you to decide in the transcript"); }
+              if (rt.kept_both) { parts.push(rt.kept_both + " judged as said on purpose, and left in"); }
+              retakeLine.textContent = "Retakes: " + (parts.length ? parts.join("; ") : "checked, nothing changed") + ".";
+            }
+            fdResults.appendChild(retakeLine);
           }
           if (data.silence && data.silence.joins_trimmed) {
             var silenceLine = document.createElement("p");

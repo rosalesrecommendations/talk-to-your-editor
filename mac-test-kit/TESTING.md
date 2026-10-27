@@ -72,12 +72,14 @@ Under the video is the card that matters most: **Make the edit**.
 
 Two choices sit there, both on:
 
-- **Remove retakes.** When a line is said more than once, the last take stays and the earlier tries come out.
+- **Remove retakes.** When a line is said more than once, the earlier tries come out. The app now measures this itself, on your own computer, before any model is asked: clear retakes (the same line said again right after, the later take complete) are taken out through the same safety checks as every other change, even when you have pinned no comments at all. The take that completes its sentence cleanly beats a broken or trailing one; among complete takes, the last one stays.
 - **Cut silence.** Long silences are trimmed down toward the buffer.
+
+Pairs that are close but not clear are judged by the model in one call, flow first: which delivery finishes the sentence, which one carries the story forward, and whether keeping both would pull attention away from it. Pairs carrying a "not", and short lines said twice that could be emphasis, are never cut by the machine; they are left in the transcript for you to decide, with the reason in plain words. With no model available, the near pairs become flags with the match explained, never silence. A line is never cut just for failing to serve the direction; story questions become flags, not cuts.
 
 The **silence buffer** is how much silence stays between one word and the next. Slide it or type the number. It starts at **0.1 seconds**. Cutting silence only ever trims; it never adds quiet back, and it goes through the same safety checks as every other change.
 
-Press **Make the edit**. That is the whole front door. The app runs direction with those two choices, trims the silences, and tells you the result: words kept before and after, and how many pauses were trimmed.
+Press **Make the edit**. That is the whole front door. The app checks retakes, runs direction with those two choices, trims the silences, and tells you the result: words kept before and after, how many retakes came out, how many were left for you to decide, and how many pauses were trimmed.
 
 Behind the **More choices** fold, for the days you want them:
 
@@ -123,6 +125,7 @@ Open the **Transcript** section. Kept words read normally; cut words are struck 
 Every span this app has taken out carries a small **dot** after it. Click the dot:
 
 - A panel names the words that were removed and **why**, in one plain sentence, with the note that asked for it when there is one.
+- When the removed words were a retake, the panel also shows **the take that stayed**, and two buttons: **Bring these words back** and **Swap takes**. Swap takes puts the removed take back and takes the stayed one out instead, in one checked step.
 - You can **leave a note on that edit** right there. Type it, or press **Speak the note** where the browser offers voice typing (Chrome does; on an iPhone, the keyboard's own microphone works in the typing box). The note is stored against the edit itself, not against a timestamp, so it keeps meaning the same thing even after the timing shifts. It is listed under that edit from then on, and the next direction run receives it labeled with what was removed. No note is ever lost.
 
 Clicking a word still cuts it or brings it back, through the same safety checks, and **Fix words** still repairs words the transcript heard wrong. Fixing words changes the transcript text only; the sound and the timing never change.
@@ -133,7 +136,7 @@ Rendering sets itself up when it can. If the job folder already carries the piec
 
 1. Press **Build the fixed video**.
 2. Press **Grade the changes** to open the review page.
-3. Watch the changed moments and grade each one: **Worked**, **Partly**, or **Did not work**.
+3. Watch the changed moments and grade each one: **Worked**, **Partly**, or **Did not work**. Retakes get their own rows, showing both takes. Grading a retake **Did not work** retires that pair: it is never proposed again.
 4. On any change that is simply how you edit, check **This is my style**.
 5. Press **Send grades to the app**. Your grades go straight back into the app. (The export button still works too; keep the file if you want a copy.)
 

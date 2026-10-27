@@ -201,6 +201,10 @@ class MockProvider:
             "confidence": 0.85, "risk_tier": 2,
         }
 
+    def judge_retakes(self, pairs, timeline, guidance=None):
+        """The mock provider judges nothing: Band B degrades to flags."""
+        return None
+
 
 def _comments(feedback: dict) -> list[dict]:
     if isinstance(feedback, list):
@@ -393,6 +397,183 @@ class MetaProvider:
                 route = self._route(op, comment, evidence, operations, routing)
                 routing.append(route)
         return operations, routing
+
+    def judge_retakes(
+        self,
+        pairs: list[dict],
+        timeline: Timeline,
+        guidance: Optional[list] = None,
+    ) -> Optional[tuple[list[dict], dict]]:
+        """Judge the borderline retake pairs in one Spark call.
+
+        The local detector has already measured every pair; the model
+        only picks a verdict per pair id and never draws a span, so a
+        judged cut always lands on the measured words. Returns
+        ``(operations, verdicts)`` where verdicts maps every answered
+        pair id to its verdict string, or None when no judgment could
+        be made at all, so the caller degrades the pairs to scored
+        flags instead of losing them. Raises ProviderError on a
+        failed call, like every other provider path.
+        """
+        if not pairs:
+            return [], {}
+        words = timeline.words
+        packet = []
+        for pair in pairs:
+            spans = sorted(
+                (pair["cut"], pair["keep"]),
+                key=lambda span: span["word_start"],
+            )
+            first, second = spans[0], spans[1]
+            lo = max(0, first["word_start"] - 10)
+            hi = min(len(words), second["word_end"] + 10)
+            first_is_cut = first is pair["cut"]
+            packet.append(
+                {
+                    "pair_id": pair["pair_id"],
+                    "first_delivery": first["text"],
+                    "second_delivery": second["text"],
+                    "first_completes_the_sentence": (
+                        pair.get("cut_complete")
+                        if first_is_cut
+                        else pair.get("keep_complete")
+                    ),
+                    "second_completes_the_sentence": (
+                        pair.get("keep_complete")
+                        if first_is_cut
+                        else pair.get("cut_complete")
+                    ),
+                    "surrounding_words": " ".join(
+                        str(words[i].get("word", "")) for i in range(lo, hi)
+                    ),
+                    "measured": {
+                        "coverage": pair.get("coverage"),
+                        "ratio": pair.get("ratio"),
+                        "shape": pair.get("shape"),
+                    },
+                }
+            )
+        system = (
+            "You judge pairs of lines from one video transcript. A local "
+            "checker measured each pair and found the two deliveries "
+            "similar; it cannot tell a retake from a line said twice on "
+            "purpose. Judge by storytelling flow, not similarity alone. "
+            "Ask of each pair: which delivery completes its sentence "
+            "cleanly, and which one is broken or trailing? Does the "
+            "line carry the story forward? Does it serve the direction "
+            "the creator gave for this video (in the guidance, when any "
+            "is given)? Would keeping both copies break the flow, one "
+            "of them pulling attention away from the story? For each "
+            "pair answer one verdict: cut_earlier (the first delivery "
+            "is a failed try at the second; the second stays), "
+            "cut_later (the first delivery is the complete one and the "
+            "second is the failed restart), keep_both (the repetition "
+            "is intentional: a refrain, an emphasis, a deliberate "
+            "callback), or not_a_pair (the two are simply different "
+            "lines). The creator's standing rule is that the last "
+            "complete take wins unless the words say otherwise. One "
+            "hard rule: a cut verdict requires a genuine retake, two "
+            "tries at the same line. A line that merely fails to "
+            "serve the direction is never cut on story grounds alone; "
+            "answer keep_both for it, so a person reviews it instead. "
+            "Return JSON "
+            'only: {"verdicts": [{"pair_id": "...", "verdict": '
+            '"cut_earlier" | "cut_later" | "keep_both" | "not_a_pair", '
+            '"confidence": 0.0 to 1.0, "reason": "one short plain '
+            'sentence"}]}. Answer every pair exactly once.'
+        )
+        user = json.dumps(
+            {"pairs": packet, "guidance": guidance or []}
+        )
+        content = self._chat(
+            SPARK_MODEL,
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        parsed = extract_json(content)
+        raw_verdicts = (
+            parsed.get("verdicts") if isinstance(parsed, dict) else None
+        )
+        if not isinstance(raw_verdicts, list):
+            return None
+        by_id = {pair["pair_id"]: pair for pair in pairs}
+        verdicts: dict = {}
+        operations: list[dict] = []
+        routing: list[dict] = []
+        for item in raw_verdicts:
+            if not isinstance(item, dict):
+                continue
+            pair_id = item.get("pair_id")
+            verdict = item.get("verdict")
+            pair = by_id.get(pair_id)
+            if pair is None or verdict not in (
+                "cut_earlier",
+                "cut_later",
+                "keep_both",
+                "not_a_pair",
+            ):
+                continue
+            verdicts[pair_id] = verdict
+            if verdict not in ("cut_earlier", "cut_later"):
+                continue
+            spans = sorted(
+                (pair["cut"], pair["keep"]),
+                key=lambda span: span["word_start"],
+            )
+            target = spans[0] if verdict == "cut_earlier" else spans[1]
+            try:
+                confidence = float(item.get("confidence", 0.7))
+            except (TypeError, ValueError):
+                confidence = 0.7
+            confidence = min(0.99, max(0.5, confidence))
+            reason = str(item.get("reason") or "").strip()
+            if not reason:
+                reason = (
+                    "A model judged this pair a retake and kept the "
+                    "other delivery."
+                )
+            try:
+                proposed = validate_operations(
+                    [
+                        {
+                            "type": "cut_words",
+                            "word_start": target["word_start"],
+                            "word_end": target["word_end"],
+                            "comment_id": pair_id,
+                            "reason": reason,
+                            "confidence": confidence,
+                            "model": SPARK_MODEL,
+                            "risk_tier": 1,
+                            "wonder_reviewed": False,
+                        }
+                    ]
+                )
+            except SchemaError:
+                continue
+            comment = {
+                "id": pair_id,
+                "text": (
+                    "Retake check. First delivery: "
+                    f"\"{spans[0]['text']}\" Second delivery: "
+                    f"\"{spans[1]['text']}\""
+                ),
+            }
+            evidence = {
+                "_timeline": timeline,
+                "pair": {
+                    "first_delivery": spans[0]["text"],
+                    "second_delivery": spans[1]["text"],
+                    "measured": packet[
+                        [p["pair_id"] for p in packet].index(pair_id)
+                    ]["measured"],
+                },
+            }
+            for op in proposed:
+                route = self._route(op, comment, evidence, operations, routing)
+                routing.append(route)
+        return operations, verdicts
 
     def _route(
         self,
