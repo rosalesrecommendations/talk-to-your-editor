@@ -7,132 +7,325 @@
 <style>
   :root {
     color-scheme: dark;
-    --bg: #0b0b0f;
-    --panel: #17171d;
-    --panel-2: #1f1f27;
-    --text: #f5f5f7;
-    --muted: #a1a1aa;
-    --line: #2c2c35;
+    --bg: #000000;
+    --panel: rgba(28, 28, 30, 0.94);
+    --panel-2: #2c2c2e;
+    --panel-3: #3a3a3c;
+    --fill: rgba(120, 120, 128, 0.24);
+    --text: rgba(255, 255, 255, 0.94);
+    --muted: rgba(235, 235, 245, 0.62);
+    --faint: rgba(235, 235, 245, 0.38);
+    --line: rgba(255, 255, 255, 0.11);
     --accent: #0a84ff;
+    --accent-soft: #69b7ff;
+    --meta-blue: #2e89ff;
+    --messenger-blue: #0082fb;
+    --sent-gradient: linear-gradient(180deg, #2e9bff 0%, #007aff 55%, #0062d6 100%);
     --green: #30d158;
-    --amber: #ffd60a;
+    --amber: #ff9f0a;
     --red: #ff453a;
-    --radius: 16px;
+    --radius: 24px;
+    --radius-sm: 16px;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.18), 0 12px 32px rgba(0, 0, 0, 0.16);
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.35;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
-  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
-  h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin: 8px 0 4px; }
-  h2 { font-size: 18px; font-weight: 700; margin: 0 0 6px; }
-  .subtitle { color: var(--muted); font-size: 15px; margin: 0 0 20px; line-height: 1.45; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 34px; line-height: 1.12; font-weight: 700; letter-spacing: -0.025em; margin: 8px 0 8px; }
+  h2 { font-size: 22px; line-height: 1.2; font-weight: 700; letter-spacing: -0.015em; margin: 0 0 8px; }
+  .subtitle { color: var(--muted); font-size: 16px; margin: 0 0 24px; line-height: 1.5; }
   .card {
     background: var(--panel);
-    border: 1px solid var(--line);
+    border: 0.5px solid var(--line);
     border-radius: var(--radius);
-    padding: 16px;
-    margin: 0 0 14px;
+    box-shadow: var(--shadow-card);
+    padding: 20px;
+    margin: 0 0 16px;
   }
-  .note { color: var(--muted); font-size: 14px; line-height: 1.45; margin: 6px 0 0; }
+  .note { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 8px 0 0; }
   video {
     width: 100%;
-    border-radius: var(--radius);
+    border-radius: 20px;
     background: #000;
     margin: 0 0 12px;
     display: block;
+    object-fit: contain;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
   }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  .vid-wrap { position: relative; }
+  .vid-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 15px;
+    background: #000;
+    border-radius: 20px;
+    margin: 0 0 12px;
+    pointer-events: none;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0; }
   button {
     appearance: none;
-    border: 0;
     border-radius: 999px;
-    padding: 12px 18px;
-    font-size: 15px;
+    padding: 12px 20px;
+    font-size: 16px;
     font-weight: 600;
     cursor: pointer;
     min-height: 48px;
-    background: var(--panel-2);
+    background: var(--fill);
     color: var(--text);
-    border: 1px solid var(--line);
+    border: 0.5px solid transparent;
+    transition: transform 140ms ease, filter 140ms ease, background 140ms ease;
   }
-  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
-  button:disabled { opacity: 0.45; cursor: default; }
-  .clock { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+  button:hover { filter: brightness(1.12); }
+  button:active { transform: scale(0.98); }
+  button.primary {
+    background: var(--sent-gradient);
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 6px 18px rgba(0, 122, 255, 0.22);
+  }
+  button.on {
+    background: var(--sent-gradient);
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 6px 18px rgba(0, 122, 255, 0.2);
+  }
+  button:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+  button:focus-visible, a:focus-visible, summary:focus-visible {
+    outline: 3px solid rgba(10, 132, 255, 0.55);
+    outline-offset: 3px;
+  }
+  .clock { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .tl-wrap { margin: 4px 0 14px; }
+  .tl-track {
+    position: relative;
+    height: 36px;
+    background: rgba(120, 120, 128, 0.22);
+    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    cursor: pointer;
+    touch-action: none;
+  }
+  .tl-playhead {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 3px;
+    margin-left: -1.5px;
+    background: rgba(255, 255, 255, 0.96);
+    border-radius: 999px;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.28);
+    pointer-events: none;
+  }
+  .tl-dot {
+    position: absolute;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    min-height: 0;
+    margin: -8px 0 0 -8px;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--sent-gradient);
+    border: 2px solid #fff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    z-index: 2;
+  }
+  .tl-tip {
+    position: absolute;
+    bottom: 26px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 240px;
+    background: rgba(28, 28, 30, 0.88);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    color: var(--text);
+    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.45;
+    white-space: normal;
+    text-align: left;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    z-index: 5;
+  }
+  .tl-dot:hover .tl-tip, .tl-dot:focus .tl-tip { opacity: 1; }
+  .switch { display: inline-flex; align-items: center; gap: 9px; font-size: 14px; color: var(--muted); cursor: pointer; min-height: 44px; }
+  .switch input { width: 19px; height: 19px; accent-color: var(--accent); }
+  #shortcutLine { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+  #shortcutLine .switch { min-height: 0; }
+  .pin-note { font-size: 14px; color: var(--accent-soft); min-height: 21px; margin: 8px 2px 0; }
+  .card:has(#draft) {
+    background: rgba(28, 28, 30, 0.78);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    border-radius: 28px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16), 0 16px 40px rgba(0, 0, 0, 0.2);
+  }
   textarea {
     width: 100%;
-    margin-top: 8px;
+    margin-top: 10px;
     background: var(--panel-2);
     color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 10px;
+    border: 0.5px solid rgba(255, 255, 255, 0.09);
+    border-radius: 18px;
+    padding: 13px 15px;
     font: inherit;
-    font-size: 15px;
+    font-size: 16px;
+    line-height: 1.45;
     resize: vertical;
+    transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+  }
+  #draft {
+    min-height: 88px;
+    border-radius: 24px;
+    background: rgba(44, 44, 46, 0.92);
+    padding: 16px 18px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  textarea::placeholder, input::placeholder { color: var(--faint); }
+  textarea:focus, input:focus, select:focus {
+    border-color: rgba(10, 132, 255, 0.72);
+    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.18);
+    outline: none;
   }
   input[type="number"] {
-    width: 90px;
+    width: 96px;
     background: var(--panel-2);
     color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 10px;
+    border: 0.5px solid rgba(255, 255, 255, 0.09);
+    border-radius: 999px;
+    padding: 11px 14px;
     font: inherit;
-    font-size: 15px;
+    font-size: 16px;
+  }
+  input[type="password"] {
+    flex: 1;
+    min-width: 220px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 0.5px solid rgba(255, 255, 255, 0.09);
+    border-radius: 999px;
+    padding: 12px 16px;
+    font: inherit;
+    font-size: 16px;
   }
   select {
     background: var(--panel-2);
     color: var(--text);
-    border: 1px solid var(--line);
+    border: 0.5px solid rgba(255, 255, 255, 0.09);
     border-radius: 999px;
-    padding: 12px 16px;
+    padding: 12px 18px;
     font: inherit;
-    font-size: 15px;
+    font-size: 16px;
     min-height: 48px;
   }
   .comment {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 14px 16px;
-    margin: 0 0 10px;
+    background: rgba(38, 38, 40, 0.88);
+    border: 0.5px solid rgba(255, 255, 255, 0.07);
+    border-radius: 22px 22px 22px 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    padding: 16px 18px;
+    margin: 0 0 12px;
   }
-  .comment header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .comment header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   .ts {
     font-variant-numeric: tabular-nums;
     font-weight: 600;
     font-size: 14px;
-    color: var(--accent);
+    color: var(--accent-soft);
     background: none;
     border: 0;
     padding: 0;
     min-height: 0;
     cursor: pointer;
+    box-shadow: none;
   }
+  button.ts:hover { filter: none; color: #8fc7ff; }
+  button.ts:active { transform: none; }
   .badge {
     font-size: 12px;
     font-weight: 600;
-    padding: 3px 9px;
+    padding: 5px 10px;
     border-radius: 999px;
-    border: 1px solid var(--line);
+    border: 0;
+    background: rgba(120, 120, 128, 0.2);
     color: var(--muted);
   }
-  .badge.applied { color: var(--green); border-color: var(--green); }
-  .badge.flagged { color: var(--amber); border-color: var(--amber); }
-  .badge.rejected { color: var(--red); border-color: var(--red); }
-  .comment-text { font-size: 16px; line-height: 1.45; margin: 4px 0 6px; }
-  .action { font-size: 14px; line-height: 1.45; color: var(--muted); margin: 0; }
-  .del { margin-left: auto; min-height: 36px; padding: 6px 12px; font-size: 13px; }
-  .downloads a { color: var(--accent); font-size: 14px; margin-right: 14px; line-height: 2; }
-  .status-line { font-size: 14px; color: var(--muted); min-height: 20px; margin: 8px 0 0; }
-  .counts { font-size: 15px; line-height: 1.5; margin: 8px 0; }
-  .empty { color: var(--muted); font-size: 14px; padding: 8px 0; }
+  .badge.applied { color: #63e681; background: rgba(48, 209, 88, 0.13); }
+  .badge.flagged { color: #ffb340; background: rgba(255, 159, 10, 0.13); }
+  .badge.rejected { color: #ff6961; background: rgba(255, 69, 58, 0.13); }
+  .comment-text { font-size: 17px; line-height: 1.5; margin: 5px 0 7px; }
+  .action { font-size: 14px; line-height: 1.5; color: var(--muted); margin: 0; }
+  .del {
+    margin-left: auto;
+    min-height: 44px;
+    padding: 8px 14px;
+    font-size: 14px;
+    background: rgba(120, 120, 128, 0.16);
+    box-shadow: none;
+  }
+  .downloads a { color: var(--accent-soft); font-size: 14px; margin-right: 16px; line-height: 2; }
+  .downloads summary { cursor: pointer; line-height: 2; color: var(--muted); }
+  .status-line { font-size: 14px; line-height: 1.45; color: var(--muted); min-height: 21px; margin: 9px 0 0; }
+  .counts { font-size: 16px; line-height: 1.55; margin: 10px 0; }
+  .empty { color: var(--muted); font-size: 14px; line-height: 1.5; padding: 10px 2px; }
+  .transcript { font-size: 17px; line-height: 1.85; margin: 12px 0 0; }
+  .tw { cursor: pointer; border-radius: 6px; padding: 1px 2px; transition: background 120ms ease, opacity 120ms ease; }
+  .tw:hover { background: var(--panel-3); }
+  .tw-cut { text-decoration: line-through; opacity: 0.42; }
+  .tw-corrected { background: rgba(10, 132, 255, 0.16); box-shadow: inset 0 -2px 0 var(--accent); }
+  .tw-selected { outline: 2px solid var(--accent); outline-offset: 1px; background: var(--panel-2); }
+  #fixText {
+    width: 100%;
+    margin-top: 10px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 0.5px solid rgba(255, 255, 255, 0.09);
+    border-radius: 999px;
+    padding: 12px 16px;
+    font-size: 16px;
+    font-family: inherit;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
+    button:active { transform: none; }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .card:has(#draft), .tl-tip { background: var(--panel-2); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  }
+  @media (max-width: 560px) {
+    main { padding: 24px 14px 64px; }
+    h1 { font-size: 30px; }
+    .card { padding: 18px 16px; border-radius: 22px; }
+    .card:has(#draft) { border-radius: 26px; }
+    button { padding-left: 17px; padding-right: 17px; }
+  }
 </style>
 </head>
 <body>
@@ -145,12 +338,23 @@
     <p class="note">There is no review.mp4, final.mp4, or final-long.mp4 here, so there is nothing to play. You can still pin comments by typing a time in seconds.</p>
   </div>
 
-  <video id="vid" controls playsinline preload="metadata"></video>
+  <div class="vid-wrap" id="vidWrap">
+    <video id="vid" controls playsinline preload="metadata"></video>
+    <div class="vid-loading" id="vidLoading" hidden>Loading the video…</div>
+  </div>
+  <div class="tl-wrap" id="tlbar">
+    <div class="tl-track" id="tlTrack">
+      <div id="tlDots"></div>
+      <div class="tl-playhead" id="tlPlayhead" style="left: 0%"></div>
+    </div>
+  </div>
   <div class="row">
     <button id="btnV" class="on" type="button">Vertical (9:16)</button>
     <button id="btnL" type="button">Landscape (16:9)</button>
     <span class="clock">Now at <b id="clock">0:00.0</b></span>
   </div>
+  <p class="note" id="fmtNote" hidden></p>
+  <p class="note" id="shortcutLine"><span>Shortcuts: Space play or pause · K pause · J back 5 seconds · L forward 5 seconds · ←/→ step 1 second · Shift+←/→ step 5 seconds · M pin a note here.</span><label class="switch"><input type="checkbox" id="shortcutToggle" checked> Keyboard shortcuts</label></p>
 
   <div class="card">
     <h2>Pin a comment</h2>
@@ -159,13 +363,50 @@
       <label class="note">or at <input id="manualTs" type="number" step="0.1" min="0" placeholder="sec"> seconds</label>
     </div>
     <textarea id="draft" rows="3" placeholder="What did you notice here? On your phone, tap the microphone on the keyboard to dictate instead of typing."></textarea>
+    <p class="pin-note" id="pinNote"></p>
     <div class="row">
       <button id="save" class="primary" type="button">Save comment</button>
+      <select id="scope" aria-label="This comment applies to">
+        <option value="both" selected>Both formats</option>
+        <option value="vertical">Vertical only</option>
+        <option value="landscape">Landscape only</option>
+      </select>
+      <label class="switch"><input type="checkbox" id="keepPlaying"> Keep playing while I type</label>
     </div>
     <p class="status-line" id="saveStatus"></p>
   </div>
 
   <section id="list"></section>
+
+  <div class="card">
+    <h2>Overall feedback</h2>
+    <p class="note">Notes about the whole video, not tied to a moment, like "too many retakes in this one." Overall notes go along with every direction run, for both formats.</p>
+    <textarea id="overallDraft" rows="2" placeholder="What applies to the whole video?"></textarea>
+    <div class="row">
+      <button id="saveOverall" class="primary" type="button">Save overall note</button>
+    </div>
+    <p class="status-line" id="overallStatus"></p>
+    <section id="overallList"></section>
+  </div>
+
+  <div class="card" id="transcriptCard">
+    <h2>Transcript</h2>
+    <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Click a word to cut it, or click a struck word to bring it back. Every click passes the same safety check as a direction change.</p>
+    <p class="transcript" id="transcriptWords"></p>
+    <p class="status-line" id="transcriptStatus"></p>
+    <div class="row">
+      <button id="fixWordsBtn" type="button">Fix words</button>
+    </div>
+    <div id="fixPanel" hidden>
+      <p class="note">Click the first word of the part to fix, then the last word, and retype the words exactly as they should read. One word can become two or three, or a few fragments can become one. Fixing words changes the text, and the captions built from it, only. The sound and the timing never change.</p>
+      <input id="fixText" type="text" placeholder="The corrected words">
+      <div class="row">
+        <button id="fixSave" class="primary" type="button">Save correction</button>
+        <button id="fixRemove" type="button" hidden>Remove correction</button>
+        <button id="fixDone" type="button">Done</button>
+      </div>
+    </div>
+  </div>
 
   <div class="card">
     <h2>Run direction</h2>
@@ -177,6 +418,16 @@
       </select>
       <button id="runDirect" class="primary" type="button">Run direction</button>
     </div>
+    <p class="note" id="signinState"></p>
+    <div class="row">
+      <button id="checkSignin" type="button">Check the Meta sign-in</button>
+    </div>
+    <div class="row">
+      <input id="signinKey" type="password" placeholder="Paste a Meta API key for this session" autocomplete="off">
+      <button id="saveSignin" type="button">Use this key for this session</button>
+    </div>
+    <p class="note">A pasted key is kept in memory only. It is never saved to a file, never shown back, and it is gone when the server stops.</p>
+    <p class="status-line" id="signinStatus"></p>
     <p class="status-line" id="directStatus"></p>
     <div id="results"></div>
   </div>
@@ -184,16 +435,21 @@
   <div class="card">
     <h2>Revised edit</h2>
     <div class="row">
-      <button id="runRender" type="button">Render revised review</button>
-      <a href="/after-review"><button type="button">Open after-review</button></a>
+      <button id="runRender" type="button">Build the fixed video</button>
     </div>
+    <p class="note">Turns the revised plan into a watchable video of the fixed edit.</p>
+    <div class="row">
+      <a href="/after-review"><button type="button">Grade the changes</button></a>
+    </div>
+    <p class="note">Opens the review page, where you grade each change the program made.</p>
     <p class="status-line" id="renderStatus"></p>
-    <p class="note downloads">Session files:
+    <details class="note downloads">
+      <summary>Advanced: session files</summary>
       <a href="/api/download/feedback.json">feedback.json</a>
       <a href="/api/download/operations.json">operations.json</a>
       <a href="/api/download/operations_audit.json">operations_audit.json</a>
       <a href="/api/download/revised_cuts.json">revised_cuts.json</a>
-    </p>
+    </details>
   </div>
 </main>
 
@@ -207,12 +463,39 @@
   var vid = document.getElementById("vid");
   var clockEl = document.getElementById("clock");
   var draft = document.getElementById("draft");
+  var scopeEl = document.getElementById("scope");
+  var overallDraft = document.getElementById("overallDraft");
+  var overallListEl = document.getElementById("overallList");
   var listEl = document.getElementById("list");
-  var state = { comments: [] };
-  var pendingTs = null;
-  var pendingFmt = "vertical";
+  var manualEl = document.getElementById("manualTs");
+  var keepPlayingEl = document.getElementById("keepPlaying");
+  var pinNoteEl = document.getElementById("pinNote");
+  var tlbarEl = document.getElementById("tlbar");
+  var tlTrack = document.getElementById("tlTrack");
+  var tlDots = document.getElementById("tlDots");
+  var tlPlayhead = document.getElementById("tlPlayhead");
+  var transcriptEl = document.getElementById("transcriptWords");
+  var transcriptStatus = document.getElementById("transcriptStatus");
+  var fixPanel = document.getElementById("fixPanel");
+  var fixText = document.getElementById("fixText");
+  var fixRemoveBtn = document.getElementById("fixRemove");
+  var transcriptEntries = [];
+  var corrections = [];
+  var fixMode = false;
+  var fixStart = null;
+  var fixEnd = null;
+  var state = { comments: [], overall: [], outputDuration: 0 };
+  var pinnedTs = null;
+  var pinnedFmt = "vertical";
+  var draftWasEmpty = true;
   var curFmt = "vertical";
   var videos = [];
+  var videoShapes = {};
+  var vidLoading = document.getElementById("vidLoading");
+  function showLoading() { vidLoading.hidden = false; }
+  function hideLoading() { vidLoading.hidden = true; }
+  vid.addEventListener("loadstart", showLoading);
+  vid.addEventListener("canplay", hideLoading);
 
   function fmtTime(t) {
     t = Math.max(0, t || 0);
@@ -221,13 +504,114 @@
     return m + ":" + (s < 10 ? "0" : "") + s.toFixed(1);
   }
 
+  function tlDuration() {
+    if (isFinite(vid.duration) && vid.duration > 0) { return vid.duration; }
+    return state.outputDuration || 0;
+  }
+
+  function seekTo(ts, fmt) {
+    if (fmt && fmt !== curFmt) { setFmt(fmt); }
+    var go = function () {
+      vid.currentTime = ts;
+      vid.play();
+      updatePlayhead();
+    };
+    if (vid.readyState >= 1) { go(); } else {
+      vid.addEventListener("loadedmetadata", function h() {
+        vid.removeEventListener("loadedmetadata", h); go();
+      });
+    }
+  }
+
+  function updatePlayhead() {
+    var d = tlDuration();
+    var pct = d > 0 ? (vid.currentTime / d) * 100 : 0;
+    tlPlayhead.style.left = Math.max(0, Math.min(100, pct)) + "%";
+  }
+
+  function renderDots() {
+    var d = tlDuration();
+    tlDots.innerHTML = "";
+    if (d <= 0) { return; }
+    state.comments.forEach(function (c) {
+      var dot = document.createElement("button");
+      dot.type = "button";
+      dot.className = "tl-dot";
+      dot.style.left = ((c.ts / d) * 100) + "%";
+      dot.setAttribute("aria-label", "Comment at " + fmtTime(c.ts) + ": " + c.text);
+      var tip = document.createElement("span");
+      tip.className = "tl-tip";
+      tip.textContent = fmtTime(c.ts) + " · " + c.text;
+      dot.appendChild(tip);
+      dot.addEventListener("pointerdown", function (e) { e.stopPropagation(); });
+      dot.addEventListener("click", function () { seekTo(c.ts, c.fmt); });
+      tlDots.appendChild(dot);
+    });
+  }
+
+  var tlDragging = false;
+  function tlSeekEvent(e) {
+    var rect = tlTrack.getBoundingClientRect();
+    if (!rect.width) { return; }
+    var frac = (e.clientX - rect.left) / rect.width;
+    frac = Math.max(0, Math.min(1, frac));
+    var d = tlDuration();
+    if (d <= 0) { return; }
+    vid.currentTime = Math.round(frac * d * 10) / 10;
+    updatePlayhead();
+  }
+  tlTrack.addEventListener("pointerdown", function (e) {
+    tlDragging = true;
+    try { tlTrack.setPointerCapture(e.pointerId); } catch (err) {}
+    tlSeekEvent(e);
+  });
+  tlTrack.addEventListener("pointermove", function (e) {
+    if (tlDragging) { tlSeekEvent(e); }
+  });
+  tlTrack.addEventListener("pointerup", function () { tlDragging = false; });
+  tlTrack.addEventListener("pointercancel", function () { tlDragging = false; });
+  vid.addEventListener("loadedmetadata", function () {
+    renderDots();
+    updatePlayhead();
+  });
+
   function videoFor(fmt) {
+    // Honest by shape: the server measures each file's real width and
+    // height, and a format button only ever loads a file whose shape
+    // matches. The filename is only a fallback for a file whose shape
+    // could not be read.
+    var i, name, shape;
+    for (i = 0; i < videos.length; i++) {
+      name = videos[i];
+      shape = videoShapes[name];
+      if (!shape) { continue; }
+      if (fmt === "landscape" && shape.width > shape.height) { return name; }
+      if (fmt === "vertical" && shape.height >= shape.width) { return name; }
+    }
     if (fmt === "landscape") {
       return videos.indexOf("final-long.mp4") >= 0 ? "final-long.mp4" : null;
     }
     if (videos.indexOf("review.mp4") >= 0) { return "review.mp4"; }
     if (videos.indexOf("final.mp4") >= 0) { return "final.mp4"; }
     return null;
+  }
+
+  function noteMissingFormats() {
+    var missing = [];
+    if (!videoFor("vertical")) {
+      document.getElementById("btnV").disabled = true;
+      missing.push("The vertical cut");
+    }
+    if (!videoFor("landscape")) {
+      document.getElementById("btnL").disabled = true;
+      missing.push("The landscape cut");
+    }
+    if (missing.length) {
+      var note = document.getElementById("fmtNote");
+      note.textContent = missing.join(" and ") +
+        (missing.length > 1 ? " are" : " is") + " not in this job.";
+      note.hidden = false;
+    }
   }
 
   function setFmt(f) {
@@ -238,6 +622,7 @@
     if (!name) { return; }
     var t = vid.currentTime || 0;
     var wasPlaying = !vid.paused;
+    showLoading();
     vid.src = "/video/" + name;
     vid.addEventListener("loadedmetadata", function h() {
       vid.removeEventListener("loadedmetadata", h);
@@ -257,10 +642,57 @@
   }
 
   function persist() {
-    return postJson("/api/comments", { video: JOB_NAME, comments: state.comments });
+    return postJson("/api/comments", {
+      video: JOB_NAME,
+      comments: state.comments,
+      overall_feedback: state.overall
+    });
+  }
+
+  var SCOPE_LABELS = {
+    both: "both formats",
+    vertical: "vertical only",
+    landscape: "landscape only"
+  };
+
+  function renderOverall() {
+    overallListEl.innerHTML = "";
+    if (!state.overall.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No overall notes yet.";
+      overallListEl.appendChild(empty);
+      return;
+    }
+    state.overall.forEach(function (n) {
+      var card = document.createElement("div");
+      card.className = "comment";
+      var header = document.createElement("header");
+      var tag = document.createElement("span");
+      tag.className = "badge";
+      tag.textContent = "overall";
+      var del = document.createElement("button");
+      del.className = "del";
+      del.type = "button";
+      del.textContent = "Delete";
+      del.addEventListener("click", function () {
+        state.overall = state.overall.filter(function (x) { return x.id !== n.id; });
+        persist();
+        renderOverall();
+      });
+      header.appendChild(tag);
+      header.appendChild(del);
+      var p = document.createElement("p");
+      p.className = "comment-text";
+      p.textContent = n.text;
+      card.appendChild(header);
+      card.appendChild(p);
+      overallListEl.appendChild(card);
+    });
   }
 
   function renderList() {
+    renderDots();
     listEl.innerHTML = "";
     if (!state.comments.length) {
       var empty = document.createElement("div");
@@ -277,18 +709,13 @@
       ts.className = "ts";
       ts.type = "button";
       ts.textContent = fmtTime(c.ts);
-      ts.addEventListener("click", function () {
-        if (c.fmt && c.fmt !== curFmt) { setFmt(c.fmt); }
-        var go = function () { vid.currentTime = c.ts; vid.play(); };
-        if (vid.readyState >= 1) { go(); } else {
-          vid.addEventListener("loadedmetadata", function h() {
-            vid.removeEventListener("loadedmetadata", h); go();
-          });
-        }
-      });
+      ts.addEventListener("click", function () { seekTo(c.ts, c.fmt); });
       var tag = document.createElement("span");
       tag.className = "badge";
       tag.textContent = c.fmt || "vertical";
+      var scopeTag = document.createElement("span");
+      scopeTag.className = "badge";
+      scopeTag.textContent = SCOPE_LABELS[c.scope] || SCOPE_LABELS.both;
       var del = document.createElement("button");
       del.className = "del";
       del.type = "button";
@@ -300,6 +727,7 @@
       });
       header.appendChild(ts);
       header.appendChild(tag);
+      header.appendChild(scopeTag);
       header.appendChild(del);
       var p = document.createElement("p");
       p.className = "comment-text";
@@ -310,38 +738,351 @@
     });
   }
 
+  function renderTranscript(words) {
+    transcriptEntries = words || [];
+    transcriptEl.innerHTML = "";
+    transcriptEntries.forEach(function (w) {
+      var span = document.createElement("span");
+      span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "");
+      span.dataset.index = w.index;
+      span.dataset.end = w.word_end || (w.index + 1);
+      span.textContent = w.word;
+      span.title = w.corrected
+        ? "Corrected from: " + (w.original || "") + ". Click to change or remove this correction."
+        : (w.status === "cut"
+          ? "Cut. Click to bring this word back."
+          : "Click to cut this word.");
+      transcriptEl.appendChild(span);
+      transcriptEl.appendChild(document.createTextNode(" "));
+    });
+    refreshFixSelection();
+  }
+
+  function reloadTranscript() {
+    return fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
+      corrections = job.word_corrections || [];
+      renderTranscript(job.transcript_words);
+    }).catch(function () {});
+  }
+
+  // -- word corrections -------------------------------------------------
+  // In fix mode, clicks pick a run of neighboring words instead of
+  // toggling them. The viewer retypes the whole run and saves; the
+  // server stores it as a text-only correction in the session, and
+  // the transcript re-renders with the corrected text in place.
+
+  function exactCorrection() {
+    if (fixStart === null) { return null; }
+    for (var i = 0; i < corrections.length; i++) {
+      if (corrections[i].word_start === fixStart && corrections[i].word_end === fixEnd) {
+        return corrections[i];
+      }
+    }
+    return null;
+  }
+
+  function refreshFixSelection() {
+    transcriptEl.querySelectorAll(".tw").forEach(function (span) {
+      var start = parseInt(span.dataset.index, 10);
+      var end = parseInt(span.dataset.end, 10);
+      var selected = fixMode && fixStart !== null && start < fixEnd && fixStart < end;
+      span.classList.toggle("tw-selected", !!selected);
+    });
+    fixRemoveBtn.hidden = !exactCorrection();
+  }
+
+  function selectSpan(start, end) {
+    if (fixStart === null) {
+      fixStart = start;
+      fixEnd = end;
+    } else {
+      fixStart = Math.min(fixStart, start);
+      fixEnd = Math.max(fixEnd, end);
+    }
+    var exact = exactCorrection();
+    if (exact) {
+      fixText.value = exact.text;
+    } else {
+      var parts = [];
+      transcriptEntries.forEach(function (w) {
+        var end2 = w.word_end || (w.index + 1);
+        if (end2 <= fixStart || w.index >= fixEnd) { return; }
+        parts.push(w.corrected ? (w.original || w.word) : w.word);
+      });
+      fixText.value = parts.join(" ");
+    }
+    refreshFixSelection();
+  }
+
+  function enterFixMode() {
+    fixMode = true;
+    fixPanel.hidden = false;
+    fixStart = null;
+    fixEnd = null;
+    refreshFixSelection();
+    transcriptStatus.textContent = "Click the first word of the part to fix, then the last word.";
+  }
+
+  function exitFixMode() {
+    fixMode = false;
+    fixPanel.hidden = true;
+    fixStart = null;
+    fixEnd = null;
+    refreshFixSelection();
+  }
+
+  document.getElementById("fixWordsBtn").addEventListener("click", function () {
+    if (fixMode) { exitFixMode(); } else { enterFixMode(); }
+  });
+  document.getElementById("fixDone").addEventListener("click", exitFixMode);
+
+  document.getElementById("fixSave").addEventListener("click", function () {
+    if (fixStart === null) {
+      transcriptStatus.textContent = "Click the words to fix first.";
+      return;
+    }
+    postJson("/api/word-correct", {
+      word_start: fixStart, word_end: fixEnd, text: fixText.value
+    }).then(function (res) {
+      var data = res.data || {};
+      if (!data.ok) {
+        transcriptStatus.textContent = data.error || "That correction could not be saved.";
+        return;
+      }
+      exitFixMode();
+      corrections = data.corrections || corrections;
+      renderTranscript(data.transcript_words);
+      transcriptStatus.textContent = "Correction saved. The original sound and timing are unchanged.";
+    }).catch(function () {
+      transcriptStatus.textContent = "That correction could not be saved.";
+    });
+  });
+
+  fixRemoveBtn.addEventListener("click", function () {
+    if (!exactCorrection()) { return; }
+    postJson("/api/word-correct-remove", {
+      word_start: fixStart, word_end: fixEnd
+    }).then(function (res) {
+      var data = res.data || {};
+      if (!data.ok) {
+        transcriptStatus.textContent = data.error || "That correction could not be removed.";
+        return;
+      }
+      exitFixMode();
+      corrections = data.corrections || corrections;
+      renderTranscript(data.transcript_words);
+      transcriptStatus.textContent = "Correction removed. The original words are back.";
+    }).catch(function () {
+      transcriptStatus.textContent = "That correction could not be removed.";
+    });
+  });
+
+  // Clicking a word asks the server to cut or restore exactly that
+  // word. The server runs the safety check; the span restyles only to
+  // the state the server reports back, and a word the check would not
+  // move stays put with one plain sentence about why. In fix mode, or
+  // on a word that already carries a correction, the click instead
+  // picks the words for the correction editor.
+  transcriptEl.addEventListener("click", function (e) {
+    var span = e.target && e.target.closest ? e.target.closest(".tw") : null;
+    if (!span) { return; }
+    var index = parseInt(span.dataset.index, 10);
+    if (isNaN(index)) { return; }
+    var spanEnd = parseInt(span.dataset.end, 10) || (index + 1);
+    if (fixMode) {
+      selectSpan(index, spanEnd);
+      return;
+    }
+    if (span.classList.contains("tw-corrected")) {
+      enterFixMode();
+      selectSpan(index, spanEnd);
+      return;
+    }
+    transcriptStatus.textContent = "";
+    postJson("/api/word-toggle", { word_index: index }).then(function (res) {
+      var data = res.data || {};
+      if (!data.ok) {
+        transcriptStatus.textContent = data.error || "That word could not be changed.";
+        return;
+      }
+      if (typeof data.status === "string") {
+        span.className = "tw tw-" + data.status;
+        span.title = data.status === "cut"
+          ? "Cut. Click to bring this word back."
+          : "Click to cut this word.";
+      }
+      transcriptStatus.textContent = data.changed
+        ? (data.status === "cut" ? "Word cut." : "Word restored.")
+        : (data.message || "");
+    }).catch(function () {
+      transcriptStatus.textContent = "That word could not be changed.";
+    });
+  });
+
   document.getElementById("btnV").addEventListener("click", function () { setFmt("vertical"); });
   document.getElementById("btnL").addEventListener("click", function () { setFmt("landscape"); });
-  vid.addEventListener("timeupdate", function () { clockEl.textContent = fmtTime(vid.currentTime); });
+  vid.addEventListener("timeupdate", function () {
+    clockEl.textContent = fmtTime(vid.currentTime);
+    updatePlayhead();
+  });
+
+  function updatePinNote() {
+    pinNoteEl.textContent = pinnedTs !== null
+      ? "Pinned at " + fmtTime(pinnedTs) + " (" + pinnedFmt + "). This note stays at that moment."
+      : "";
+  }
+
+  function pinDraft(ts) {
+    pinnedTs = Math.round(ts * 10) / 10;
+    pinnedFmt = curFmt;
+    updatePinNote();
+  }
+
+  // Typing starts a note: pin it to the playhead at that exact moment
+  // and pause, unless the keep-playing switch is on. Clearing the draft
+  // ends the note, so the next note re-pins fresh and can never inherit
+  // a stale time from this one.
+  draft.addEventListener("input", function () {
+    var empty = draft.value === "";
+    if (empty) {
+      pinnedTs = null;
+      updatePinNote();
+    } else if (draftWasEmpty) {
+      if (pinnedTs === null) { pinDraft(vid.currentTime || 0); }
+      if (!keepPlayingEl.checked) { vid.pause(); }
+    }
+    draftWasEmpty = empty;
+  });
 
   document.getElementById("pin").addEventListener("click", function () {
-    var manual = document.getElementById("manualTs").value;
-    if (manual !== "") {
-      pendingTs = parseFloat(manual);
+    if (manualEl.value !== "" && !isNaN(parseFloat(manualEl.value))) {
+      pinDraft(parseFloat(manualEl.value));
     } else {
-      pendingTs = vid.currentTime || 0;
+      pinDraft(vid.currentTime || 0);
     }
-    pendingFmt = curFmt;
     draft.focus();
-    draft.placeholder = "Comment pinned at " + fmtTime(pendingTs) + " (" + pendingFmt + "). Type or dictate, then Save comment.";
+    draft.placeholder = "Comment pinned at " + fmtTime(pinnedTs) + " (" + pinnedFmt + "). Type or dictate, then Save comment.";
+  });
+
+  // A manual time is an explicit override for the note being written
+  // right now. It is cleared on save, so it cannot leak into a later note.
+  manualEl.addEventListener("change", function () {
+    if (manualEl.value !== "" && !isNaN(parseFloat(manualEl.value))) {
+      pinDraft(parseFloat(manualEl.value));
+    }
   });
 
   document.getElementById("save").addEventListener("click", function () {
     var text = draft.value.trim();
     var status = document.getElementById("saveStatus");
     if (!text) { draft.focus(); return; }
-    var manual = document.getElementById("manualTs").value;
-    var ts = pendingTs !== null ? pendingTs : (manual !== "" ? parseFloat(manual) : (vid.currentTime || 0));
-    var f = pendingTs !== null ? pendingFmt : curFmt;
-    state.comments.push({ id: Date.now(), ts: Math.round(ts * 10) / 10, fmt: f, text: text, done: false });
+    if (pinnedTs === null) { pinDraft(vid.currentTime || 0); }
+    state.comments.push({ id: Date.now(), ts: pinnedTs, fmt: pinnedFmt, scope: scopeEl.value || "both", text: text, done: false });
     state.comments.sort(function (a, b) { return a.ts - b.ts; });
     draft.value = "";
-    pendingTs = null;
+    draftWasEmpty = true;
+    pinnedTs = null;
+    scopeEl.value = "both";
+    manualEl.value = "";
+    updatePinNote();
     draft.placeholder = "What did you notice here?";
     renderList();
     persist().then(function (res) {
       status.textContent = res.data && res.data.ok
         ? "Saved. " + state.comments.length + " comment(s) in this session."
+        : "Could not save: " + ((res.data && res.data.error) || res.status);
+    });
+  });
+
+  // -- keyboard shortcuts ---------------------------------------------
+  // The set the major editors share. They act only when the viewer is
+  // not typing in a field, and never while the timeline is being
+  // dragged, so the two ways of moving through the video never fight.
+  // The switch on the shortcut line is remembered in session storage,
+  // so the choice lasts for the rest of this browser session.
+  var shortcutToggle = document.getElementById("shortcutToggle");
+  var shortcutsOn = true;
+  try { shortcutsOn = sessionStorage.getItem("tyeShortcuts") !== "off"; } catch (err) {}
+  shortcutToggle.checked = shortcutsOn;
+  shortcutToggle.addEventListener("change", function () {
+    shortcutsOn = shortcutToggle.checked;
+    try {
+      sessionStorage.setItem("tyeShortcuts", shortcutsOn ? "on" : "off");
+    } catch (err) {}
+  });
+
+  function typingInField(el) {
+    if (!el) { return false; }
+    var tag = (el.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || !!el.isContentEditable;
+  }
+
+  function stepBy(seconds) {
+    var d = tlDuration();
+    var t = Math.max(0, (vid.currentTime || 0) + seconds);
+    if (d > 0) { t = Math.min(d, t); }
+    vid.currentTime = t;
+    updatePlayhead();
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (!shortcutsOn || tlDragging || vid.hidden) { return; }
+    if (e.metaKey || e.ctrlKey || e.altKey) { return; }
+    if (typingInField(e.target)) { return; }
+    var tag = (e.target && e.target.tagName || "").toLowerCase();
+    switch (e.key) {
+      case " ":
+      case "Spacebar":
+        // A focused button or link keeps its own Space. Everywhere
+        // else Space is play or pause, and never a page scroll.
+        if (tag === "button" || tag === "a") { return; }
+        e.preventDefault();
+        if (vid.paused) { vid.play(); } else { vid.pause(); }
+        break;
+      case "k":
+      case "K":
+        e.preventDefault();
+        vid.pause();
+        break;
+      case "j":
+      case "J":
+        e.preventDefault();
+        stepBy(-5);
+        break;
+      case "l":
+      case "L":
+        e.preventDefault();
+        stepBy(5);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        stepBy(e.shiftKey ? -5 : -1);
+        break;
+      case "ArrowRight":
+        e.preventDefault();
+        stepBy(e.shiftKey ? 5 : 1);
+        break;
+      case "m":
+      case "M":
+        // Start a note at the playhead: pin it there and put the
+        // typing in the comment box, where the note takes shape.
+        e.preventDefault();
+        pinDraft(vid.currentTime || 0);
+        draft.focus();
+        break;
+    }
+  });
+
+  document.getElementById("saveOverall").addEventListener("click", function () {
+    var text = overallDraft.value.trim();
+    var status = document.getElementById("overallStatus");
+    if (!text) { overallDraft.focus(); return; }
+    state.overall.push({ id: Date.now(), text: text });
+    overallDraft.value = "";
+    renderOverall();
+    persist().then(function (res) {
+      status.textContent = res.data && res.data.ok
+        ? "Saved. Overall notes go with every direction run."
         : "Could not save: " + ((res.data && res.data.error) || res.status);
     });
   });
@@ -358,10 +1099,10 @@
     var status = document.getElementById("directStatus");
     var results = document.getElementById("results");
     var provider = document.getElementById("provider").value;
-    status.textContent = "Running direction with the " + provider + " provider...";
+    status.textContent = "Running direction for the " + curFmt + " cut with the " + provider + " provider...";
     results.innerHTML = "";
     persist().then(function () {
-      return postJson("/api/direct", { provider: provider });
+      return postJson("/api/direct", { provider: provider, format: curFmt });
     }).then(function (res) {
       var data = res.data || {};
       if (!data.ok) {
@@ -369,6 +1110,9 @@
         return;
       }
       status.textContent = "Direction finished.";
+      // The run rewrote the session's revised cuts, so the
+      // transcript's kept and cut words may have changed too.
+      reloadTranscript();
       var counts = document.createElement("p");
       counts.className = "counts";
       counts.textContent =
@@ -419,7 +1163,7 @@
     postJson("/api/render", {}).then(function (res) {
       var data = res.data || {};
       if (data.ok) {
-        status.textContent = "Rendered. Open the after-review to watch the revised edit and grade the changes.";
+        status.textContent = "Rendered. Use Grade the changes to watch the revised edit and mark each change.";
       } else if (data.missing && data.missing.length) {
         status.textContent = "Render is not set up on this server yet. Missing: " +
           data.missing.join(", ") +
@@ -432,10 +1176,71 @@
     });
   });
 
+  var signinStateEl = document.getElementById("signinState");
+  var signinStatusEl = document.getElementById("signinStatus");
+
+  function enableMetaOption() {
+    var opt = document.getElementById("metaOption");
+    opt.disabled = false;
+    opt.textContent = "Meta (Muse Spark / Wonder)";
+  }
+
+  function refreshSignin() {
+    return fetch("/api/signin").then(function (r) { return r.json(); }).then(function (s) {
+      if (s.meta_signin_set) {
+        signinStateEl.textContent = s.source === "session"
+          ? "A Meta sign-in is set for this session."
+          : "A Meta sign-in is set on this server.";
+        enableMetaOption();
+      } else {
+        signinStateEl.textContent = "No Meta sign-in is set on this server yet. Paste one below to use Meta direction.";
+      }
+    }).catch(function () {
+      signinStateEl.textContent = "";
+    });
+  }
+
+  document.getElementById("checkSignin").addEventListener("click", function () {
+    signinStatusEl.textContent = "Checking the Meta sign-in...";
+    postJson("/api/signin/check", {}).then(function (res) {
+      var data = res.data || {};
+      signinStatusEl.textContent = data.ok
+        ? data.message
+        : "The check did not finish: " + (data.error || res.status);
+    }).catch(function (err) {
+      signinStatusEl.textContent = "The check did not finish: " + err;
+    });
+  });
+
+  document.getElementById("saveSignin").addEventListener("click", function () {
+    var input = document.getElementById("signinKey");
+    var key = input.value.trim();
+    if (!key) { input.focus(); return; }
+    postJson("/api/signin", { api_key: key }).then(function (res) {
+      var data = res.data || {};
+      if (data.ok) {
+        input.value = "";
+        signinStatusEl.textContent = "Saved for this session. Checks and direction runs will use this sign-in until the server stops.";
+        refreshSignin();
+      } else {
+        signinStatusEl.textContent = "Could not save the sign-in: " + (data.error || res.status);
+      }
+    }).catch(function (err) {
+      signinStatusEl.textContent = "Could not save the sign-in: " + err;
+    });
+  });
+
+  refreshSignin();
+
   fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
     videos = job.videos || [];
+    videoShapes = job.video_shapes || {};
+    state.outputDuration = job.output_duration_s || 0;
     state.comments = (job.comments || []).map(function (c) {
-      return { id: c.id, ts: c.ts, fmt: c.fmt || "vertical", text: c.text, done: !!c.done };
+      return { id: c.id, ts: c.ts, fmt: c.fmt || "vertical", scope: c.scope || "both", text: c.text, done: !!c.done };
+    });
+    state.overall = (job.overall_feedback || []).map(function (n) {
+      return { id: n.id, text: n.text };
     });
     if (!META_AVAILABLE) {
       var opt = document.getElementById("metaOption");
@@ -443,12 +1248,20 @@
       opt.textContent = "Meta (needs MODEL_API_KEY on the server)";
     }
     if (videos.length) {
+      showLoading();
       vid.src = "/video/" + (videoFor("vertical") || videos[0]);
+      noteMissingFormats();
     } else {
       document.getElementById("novid").hidden = false;
       vid.hidden = true;
+      tlbarEl.hidden = true;
     }
     renderList();
+    renderOverall();
+    renderDots();
+    corrections = job.word_corrections || [];
+    renderTranscript(job.transcript_words);
+    updatePlayhead();
   });
 })();
 </script>

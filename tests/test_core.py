@@ -298,6 +298,32 @@ class ApplyTests(FixtureCase):
         for i in range(16, 24):
             self.assertEqual(new_timeline.word_status(i), "cut")
 
+    def test_overlapping_edits_first_applies_second_flagged(self):
+        # Regression: two notes whose edits share words used to take
+        # the whole run down. Now the first edit that checks out
+        # applies and the conflicting one is flagged on its own note
+        # with a plain reason.
+        ops = validate_operations(
+            [make_op(comment_id="first")]
+        ) + validate_operations(
+            [make_op(comment_id="second", word_start=18, word_end=22)]
+        )
+        verdicts = verify_operations(ops, self.timeline, self.profile)
+        by_comment = {v.operation.comment_id: v for v in verdicts}
+        self.assertEqual(by_comment["first"].status, "apply")
+        self.assertEqual(by_comment["second"].status, "flag")
+        self.assertTrue(
+            any(
+                "overlaps another note" in r
+                for r in by_comment["second"].reasons
+            ),
+            by_comment["second"].reasons,
+        )
+        revised, audit = apply_verdicts(self.cuts, self.timeline, verdicts)
+        self.assertEqual(audit["applied_comment_ids"], ["first"])
+        self.assertEqual(audit["flagged_comment_ids"], ["second"])
+        self.assertEqual(audit["after"]["kept_words"], 24)
+
     def test_replace_take_invalid_half_rejected_nothing_applied(self):
         raw = make_op(
             type="replace_take",

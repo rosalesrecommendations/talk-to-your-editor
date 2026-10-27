@@ -37,6 +37,7 @@ from .timeline import Timeline
 from .verifier import required_tier
 
 API_URL = "https://api.meta.ai/v1/chat/completions"
+MODELS_URL = "https://api.meta.ai/v1/models"
 SPARK_MODEL = "muse-spark-1.3"
 WONDER_MODEL = "muse-wonder-1.0"
 
@@ -204,6 +205,28 @@ def _comments(feedback: dict) -> list[dict]:
     return feedback.get("comments", [])
 
 
+def _overall_guidance(feedback: dict) -> list[str]:
+    """The feedback's overall notes as plain guidance texts.
+
+    Overall notes are about the whole video rather than one moment,
+    so they are handed to the model with every comment it directs.
+    """
+    if not isinstance(feedback, dict):
+        return []
+    notes = feedback.get("overall_feedback")
+    if not isinstance(notes, list):
+        return []
+    texts = []
+    for note in notes:
+        if isinstance(note, dict):
+            text = str(note.get("text") or "").strip()
+        else:
+            text = str(note or "").strip()
+        if text:
+            texts.append(text)
+    return texts
+
+
 class MetaProvider:
     """Live provider over the Meta Model API (OpenAI-compatible)."""
 
@@ -218,6 +241,37 @@ class MetaProvider:
         self.api_key = api_key or os.environ.get("MODEL_API_KEY")
         self.allow_wonder = allow_wonder
         self.timeout_s = timeout_s
+
+    def check_signin(self) -> bool:
+        """One harmless list call to prove the sign-in works.
+
+        Returns True when the service answers the models list, False
+        when it refuses the key (401/403). Anything else (no key, an
+        unreachable service, another HTTP error) raises ProviderError
+        with the usual codes, so callers report it the same way they
+        report a failed direction run. No key material is logged.
+        """
+        if not self.api_key:
+            raise ProviderError("MODEL_API_KEY is not set")
+        request = urllib.request.Request(
+            MODELS_URL,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout_s
+            ) as response:
+                response.read()
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                return False
+            raise ProviderError(f"meta_api_http_{exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise ProviderError(
+                f"meta_api_unreachable:{exc.reason}"
+            ) from exc
 
     def _chat(self, model: str, messages: list[dict]) -> str:
         if not self.api_key:
@@ -291,8 +345,9 @@ class MetaProvider:
     ) -> tuple[list[dict], list[dict]]:
         operations: list[dict] = []
         routing: list[dict] = []
+        overall = _overall_guidance(feedback)
         for comment in _comments(feedback):
-            evidence = self._evidence(comment, timeline, profile)
+            evidence = self._evidence(comment, timeline, profile, overall)
             proposed = self._propose(SPARK_MODEL, comment, evidence)
             for op in proposed:
                 route = self._route(op, comment, evidence, operations, routing)
@@ -356,7 +411,12 @@ class MetaProvider:
         return record
 
     @staticmethod
-    def _evidence(comment: dict, timeline: Timeline, profile: Optional[dict]) -> dict:
+    def _evidence(
+        comment: dict,
+        timeline: Timeline,
+        profile: Optional[dict],
+        overall: Optional[list] = None,
+    ) -> dict:
         ts = comment.get("ts")
         mapping = None
         if ts is not None:
@@ -385,4 +445,5 @@ class MetaProvider:
             "joins": timeline.joins(),
             "protected_spans": timeline.protected_spans(profile),
             "profile": profile or {},
+            "overall_guidance": list(overall or []),
         }

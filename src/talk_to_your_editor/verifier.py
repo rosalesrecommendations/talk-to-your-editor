@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .schema import Operation, find_overlaps
+from .schema import Operation
 from .timeline import (
     EPS,
     Timeline,
@@ -38,6 +38,15 @@ MAX_REMOVAL_FRACTION = 0.25
 LONG_CUT_WORDS = 20
 LONG_CUT_SECONDS = 10.0
 WONDER_CONFIDENCE_FLOOR = 0.80
+
+# The one verdict reason written for a person, not a machine: an edit
+# held back only because an earlier note's edit already claimed the
+# same words. It is shown to the creator verbatim, so it is a sentence,
+# not a code.
+OVERLAP_FLAG_REASON = (
+    "this edit overlaps another note's edit, so the first edit was "
+    "applied and this one was held for your review"
+)
 
 NEGATION_WORDS = {
     "no", "not", "never", "nor", "without", "cannot", "can't", "cant",
@@ -115,6 +124,34 @@ def _span_duration(timeline: Timeline, start: int, end: int) -> float:
     return float(timeline.words[end - 1]["end"]) - float(timeline.words[start]["start"])
 
 
+def _edit_targets(op: Operation) -> tuple[list[tuple[int, int]], set[int]]:
+    """The word spans and joins an operation would change.
+
+    ``flag_for_review`` operations change nothing, so they claim no
+    targets and can never conflict with a real edit.
+    """
+    if op.type == "flag_for_review":
+        return [], set()
+    spans = [(start, end) for start, end, _role in op.word_spans()]
+    joins = {op.join_index} if op.type == "set_join_pause" else set()
+    return spans, joins
+
+
+def _targets_conflict(
+    a_spans: list[tuple[int, int]],
+    a_joins: set[int],
+    b_spans: list[tuple[int, int]],
+    b_joins: set[int],
+) -> bool:
+    if a_joins & b_joins:
+        return True
+    return any(
+        a_start < b_end and b_start < a_end
+        for a_start, a_end in a_spans
+        for b_start, b_end in b_spans
+    )
+
+
 def plan_cut_absorption(
     words: list[dict],
     ranges: list[dict],
@@ -188,13 +225,6 @@ def verify_operations(
     total_words = len(timeline.words)
     verdicts: list[Verdict] = []
 
-    overlap_reasons = find_overlaps(ops)
-    overlapped_comments = set()
-    for reason in overlap_reasons:
-        for op in ops:
-            if op.comment_id in reason:
-                overlapped_comments.add(op.comment_id)
-
     for op in ops:
         reasons: list[str] = []
         status = "apply"
@@ -263,10 +293,6 @@ def verify_operations(
                 timeline, start, end
             ):
                 flag("negation_bearing_span")
-
-        # Batch-level rules.
-        if op.comment_id in overlapped_comments:
-            flag("overlapping_operations")
 
         # Word boundaries: operations are word-index based, so the only way
         # to split a word is a quantized edge landing strictly inside some
@@ -407,11 +433,34 @@ def verify_operations(
                 verdict.required_tier = max(verdict.required_tier, 3)
             elif total > limit and verdict.status == "flag":
                 verdict.reasons.append("removes_over_25_percent")
-        applying_total = sum(
-            cut_seconds[i]
-            for i, v in enumerate(verdicts)
-            if v.status == "apply"
-        )
+        # The batch total is what the applying edits would actually
+        # remove: the union of their cut spans. Summing per-edit spans
+        # would double-count words two edits share, so two notes
+        # pointing at the same sentence could together cross the line
+        # for a removal neither one makes on its own.
+        applying_spans = []
+        for i, v in enumerate(verdicts):
+            if v.status != "apply":
+                continue
+            for start, end, role in v.operation.word_spans():
+                if role == "cut" and 0 <= start < end <= total_words:
+                    applying_spans.append((start, end))
+        applying_total = 0.0
+        merged_start = merged_end = None
+        for start, end in sorted(applying_spans):
+            if merged_start is None:
+                merged_start, merged_end = start, end
+            elif start <= merged_end:
+                merged_end = max(merged_end, end)
+            else:
+                applying_total += _span_duration(
+                    timeline, merged_start, merged_end
+                )
+                merged_start, merged_end = start, end
+        if merged_start is not None:
+            applying_total += _span_duration(
+                timeline, merged_start, merged_end
+            )
         if applying_total > limit:
             for index, verdict in enumerate(verdicts):
                 if verdict.status == "apply" and cut_seconds[index] > 0:
@@ -419,4 +468,26 @@ def verify_operations(
                     verdict.reasons.append("removes_over_25_percent")
                     verdict.risk_tier = 3
                     verdict.required_tier = max(verdict.required_tier, 3)
+
+    # Overlap resolution, in the order the operations were proposed:
+    # the first edit that checks out claims its words and joins, and a
+    # later edit that would change the same words is flagged for the
+    # creator instead of applied on top of it. Edits already flagged or
+    # rejected claim nothing, so they cannot block a later edit that
+    # does check out. This replaces flagging every overlapping edit:
+    # one applies, the conflicting one is held, and the run completes.
+    claimed_spans: list[tuple[int, int]] = []
+    claimed_joins: set[int] = set()
+    for verdict in verdicts:
+        if verdict.status != "apply":
+            continue
+        spans, joins = _edit_targets(verdict.operation)
+        if _targets_conflict(claimed_spans, claimed_joins, spans, joins):
+            verdict.status = "flag"
+            verdict.reasons.append(OVERLAP_FLAG_REASON)
+            verdict.risk_tier = 3
+            verdict.required_tier = max(verdict.required_tier, 3)
+        else:
+            claimed_spans.extend(spans)
+            claimed_joins |= joins
     return verdicts

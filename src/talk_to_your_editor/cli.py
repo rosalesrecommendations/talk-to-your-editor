@@ -103,8 +103,40 @@ _STATUS_FOR_PAGE = {"apply": "applied", "flag": "flagged",
                     "reject": "rejected"}
 
 
+def _validate_for_apply(ops_data) -> list:
+    """Validate operations for the verify-and-apply path.
+
+    Each operation is validated on its own, so two operations whose
+    edits overlap are not a batch schema failure here: the verifier
+    resolves overlaps deterministically (the first edit that checks
+    out applies, the conflicting one is flagged for the creator), and
+    the run always completes. Any other schema problem still raises
+    SchemaError with every reason collected. The standalone
+    ``validate_operations`` keeps its strict batch behaviour for
+    validating a submitted operations file.
+    """
+    if isinstance(ops_data, dict):
+        if "operations" not in ops_data:
+            raise SchemaError(["missing_field:operations"])
+        items = ops_data["operations"]
+    else:
+        items = ops_data
+    if not isinstance(items, list):
+        raise SchemaError(["invalid_type:operations"])
+    ops: list = []
+    reasons: list[str] = []
+    for item in items:
+        try:
+            ops.extend(validate_operations([item]))
+        except SchemaError as exc:
+            reasons.extend(exc.reasons)
+    if reasons:
+        raise SchemaError(reasons)
+    return ops
+
+
 def _verify_and_apply(args, ops_data, out_dir: Path) -> dict:
-    ops = validate_operations(ops_data)
+    ops = _validate_for_apply(ops_data)
     timeline = _timeline(args)
     profile = _load_optional(getattr(args, "profile", None))
     verdicts = verify_operations(ops, timeline, profile)

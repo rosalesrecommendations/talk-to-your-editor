@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 - 2026-10-27
+
+The feedback release: the test page learned to work the way a creator actually gives notes. Built piece by piece from a live test session on a real edit.
+
+- Timeline and notes: a timeline bar under the video carries a dot for every note; hover or tap a dot to read it, click to jump there, and drag the playhead to the exact second. A note now pins itself to the playhead the moment typing starts, typing pauses the video (with a keep-playing switch), and a note can never inherit a stale time from the note before it.
+- Direction runs always finish: when two notes collide on the same words, the first edit applies and the later one is held with a plain reason on its own note. Failure messages are written in plain words; internal codes stay in the server log. The action buttons say what they do: "Build the fixed video" and "Grade the changes."
+- Transcript view: the edit's words on screen, kept words normal and cut words struck through and dimmed. Clicking a word cuts it or brings it back, through the same safety checks as any other change.
+- Word corrections: fix a word the transcript heard wrong, split one word into the two or three it should be, or merge pieces back into one word. Corrections change the text and the captions built from it; the sound and the timing never change. Corrected words are marked, every correction can be removed, and direction reads the corrected text.
+- Comment scope and overall feedback: a note applies to both cuts of a video unless it is aimed at Vertical only or Landscape only, and a separate Overall feedback box holds notes about the whole video that are not tied to a moment.
+- Honest formats: the Vertical and Landscape buttons only appear for cuts the job actually has, the player never crops the picture, shows a loading state instead of a black box, and says in one plain sentence when a cut is missing.
+- Sign-in check on the page: the test page shows whether a Meta sign-in is set, checks it with one harmless call so a bad key is caught before a run, and accepts a pasted key for the session only. It is never written to disk or shown back.
+- Visual polish: the page was tightened toward a clean, calm, rounded look in one blue family, with the developer links tucked behind an "Advanced: session files" section.
+
 ## 0.2.1 - 2026-10-26
 
 - Mac launcher: remembered Meta Model API key, on this Mac only. After a one-time paste at the hidden prompt, answering yes to "Remember this key on this Mac only?" saves the key to a private file in the home folder (`~/.talk-to-your-editor/meta_key`, folder 700, file 600); later launches use it without asking and say so. The key never enters the app folder, the kit, the zip, or the repo, and deleting that one file removes it. Declining keeps the old session-only behavior.
