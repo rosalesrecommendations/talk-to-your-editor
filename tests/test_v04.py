@@ -138,7 +138,14 @@ class V04Tests(unittest.TestCase):
         summary = self.summary()
         self.assertEqual(
             summary["front_door"],
-            {"remove_retakes": True, "cut_silence": True, "buffer_s": 0.1},
+            {
+                "remove_retakes": True,
+                "cut_silence": True,
+                "buffer_s": 0.1,
+                # v0.5.1: the keeper mode rides with the front-door
+                # choices; the last take is the default.
+                "keep_mode": "last",
+            },
         )
         self.assertEqual(summary["saved_rules"], [])
         self.assertEqual(summary["rule_suggestions"], [])
