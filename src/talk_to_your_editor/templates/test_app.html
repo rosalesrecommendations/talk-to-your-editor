@@ -690,6 +690,7 @@
         <button id="intakeDictate" type="button">Dictate</button>
         <button id="firstEditBtn" class="primary" type="button">Make the first edit</button>
       </div>
+      <p class="note" id="firstEditCost"></p>
       <p class="note">Captions come with the first edit, with ums and uhs hidden in the caption text only. The sound and the transcript keep them. You can change that where the captions are handed back, under Revised edit.</p>
       <p class="status-line" id="firstEditStatus"></p>
       <div id="firstEditProgress" hidden>
@@ -764,6 +765,7 @@
     <div class="row">
       <button id="fdFire" class="primary" type="button">Make the edit</button>
     </div>
+    <p class="note" id="fdCostEstimate"></p>
     <p class="status-line" id="fdStatus"></p>
     <div id="fdResults"></div>
     <details>
@@ -940,6 +942,17 @@
     </div>
     <p class="note" id="finishCaptionsRow" hidden>Captions for this edit: <a href="/api/captions">download the caption file (WebVTT)</a>.</p>
     <p class="note" id="finishCaptionsSwitchRow" hidden><label class="switch"><input type="checkbox" id="finishCaptionsHideFillers" checked> Hide ums and uhs in captions</label></p>
+    <div id="finishCosts"></div>
+  </div>
+
+  <div class="card" id="moneyCard" hidden>
+    <h2>What the editing has cost</h2>
+    <p class="note">Estimated from what each run actually used, priced at the rates in the app. The work that runs on this computer costs nothing.</p>
+    <div id="moneyBody"></div>
+    <div class="row">
+      <button id="moneyReset" type="button">Reset the running total</button>
+    </div>
+    <p class="status-line" id="moneyStatus"></p>
   </div>
 
   <div class="card job-only" id="historyCard">
@@ -3178,6 +3191,12 @@
             modeLine.textContent = line;
             fdResults.appendChild(modeLine);
           });
+          (data.cost_lines || []).forEach(function (line) {
+            var costLine = document.createElement("p");
+            costLine.className = "counts";
+            costLine.textContent = line;
+            fdResults.appendChild(costLine);
+          });
           if (data.settings && typeof data.settings.remove_fillers === "boolean" && fdFillers) {
             fdFillers.checked = data.settings.remove_fillers;
           }
@@ -3938,6 +3957,160 @@
     }
   }
 
+  // ---- What it costs (v0.7.2) --------------------------------
+  // Every figure on these surfaces comes from the server, which
+  // prices runs in the one costs module; this code only asks and
+  // displays.
+  var moneyCard = document.getElementById("moneyCard");
+  var moneyBody = document.getElementById("moneyBody");
+  var moneyStatus = document.getElementById("moneyStatus");
+  var finishCosts = document.getElementById("finishCosts");
+  var jobSourceDuration = 0;
+  var jobCommentsCount = 0;
+
+  function moneyLine(text) {
+    var p = document.createElement("p");
+    p.className = "counts";
+    p.textContent = text;
+    return p;
+  }
+
+  function renderMoney(money) {
+    if (!money) { return; }
+    var mac = money.mac || { lines: [], total_text: "0 cents" };
+    var jobBlock = money.job || null;
+    if (finishCosts) {
+      finishCosts.innerHTML = "";
+      if (jobBlock) {
+        var head = document.createElement("p");
+        head.className = "note";
+        head.textContent = "What this edit cost:";
+        finishCosts.appendChild(head);
+        (jobBlock.lines || []).forEach(function (row) {
+          finishCosts.appendChild(
+            moneyLine(row.label + ": " + row.text + ".")
+          );
+        });
+        finishCosts.appendChild(
+          moneyLine("This edit cost " + jobBlock.total_text + " in all.")
+        );
+      }
+    }
+    if (!moneyCard || !moneyBody) { return; }
+    var macLines = mac.lines || [];
+    var hasAnything = !!jobBlock || macLines.length > 0;
+    moneyCard.hidden = !hasAnything;
+    if (!hasAnything) { return; }
+    moneyBody.innerHTML = "";
+    if (jobBlock) {
+      moneyBody.appendChild(
+        moneyLine("This job so far: " + jobBlock.total_text + ".")
+      );
+    }
+    if (macLines.length) {
+      var macHead = document.createElement("p");
+      macHead.className = "note";
+      macHead.textContent = "On this Mac, in all:";
+      moneyBody.appendChild(macHead);
+      macLines.forEach(function (row) {
+        moneyBody.appendChild(moneyLine(row.label + ": " + row.text + "."));
+      });
+      moneyBody.appendChild(
+        moneyLine("Running total: " + mac.total_text + ".")
+      );
+    }
+  }
+
+  var moneyResetBtn = document.getElementById("moneyReset");
+  if (moneyResetBtn) {
+    moneyResetBtn.addEventListener("click", function () {
+      postJson("/api/money-reset", {}).then(function (res) {
+        var data = res.data || {};
+        if (data.ok) {
+          renderMoney(data.money);
+          if (moneyStatus) {
+            moneyStatus.textContent =
+              "The running total starts over from here.";
+          }
+        }
+      }).catch(function () {});
+    });
+  }
+
+  function showEstimate(el, payload) {
+    if (!el) { return; }
+    postJson("/api/cost-estimate", payload).then(function (res) {
+      var data = res.data || {};
+      if (data.ok && data.estimate) {
+        el.textContent = data.estimate.sentence;
+      }
+    }).catch(function () {});
+  }
+
+  var firstEditCost = document.getElementById("firstEditCost");
+  function refreshFirstEditCost() {
+    if (!firstEditCost || !firstEditBlock || firstEditBlock.hidden) {
+      return;
+    }
+    var duration = 0;
+    var video = document.getElementById("dropVideo");
+    if (video && isFinite(video.duration) && video.duration > 0) {
+      duration = video.duration;
+    }
+    showEstimate(firstEditCost, {
+      surface: "first_edit",
+      duration_s: duration,
+      settings: collectIntakeSettings(),
+      has_direction: !!(
+        intakeDirectionEl && intakeDirectionEl.value.trim()
+      )
+    });
+  }
+
+  var fdCostEstimate = document.getElementById("fdCostEstimate");
+  function refreshFdCost() {
+    if (!fdCostEstimate || !HAS_JOB) { return; }
+    showEstimate(fdCostEstimate, {
+      surface: "front_door",
+      duration_s: jobSourceDuration,
+      settings: {
+        remove_retakes: fdRetakes ? !!fdRetakes.checked : true,
+        cut_silence: fdSilence ? !!fdSilence.checked : true,
+        remove_fillers: fdFillers ? !!fdFillers.checked : false
+      },
+      has_direction: !!(
+        (fdDirection && fdDirection.value.trim()) ||
+        (fdRetakes && fdRetakes.checked) ||
+        jobCommentsCount > 0
+      )
+    });
+  }
+
+  if (firstEditBlock) {
+    firstEditBlock.addEventListener("change", refreshFirstEditCost);
+    // The drop flow unhides the block; price the run when it appears.
+    if (window.MutationObserver) {
+      new MutationObserver(refreshFirstEditCost).observe(
+        firstEditBlock,
+        { attributes: true, attributeFilter: ["hidden"] }
+      );
+    }
+  }
+  if (intakeDirectionEl) {
+    intakeDirectionEl.addEventListener("input", refreshFirstEditCost);
+  }
+  var dropVideoEl = document.getElementById("dropVideo");
+  if (dropVideoEl) {
+    dropVideoEl.addEventListener("loadedmetadata", refreshFirstEditCost);
+  }
+  ["fdRetakes", "fdSilence", "fdFillers"].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) { el.addEventListener("change", refreshFdCost); }
+  });
+  if (fdDirection) {
+    fdDirection.addEventListener("input", refreshFdCost);
+  }
+
   fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
     videos = job.videos || [];
     videoShapes = job.video_shapes || {};
@@ -3977,6 +4150,10 @@
         );
       }
     }
+    renderMoney(job.money);
+    jobSourceDuration = job.source_duration_s || 0;
+    jobCommentsCount = (job.comments || []).length;
+    refreshFdCost();
     startPlayer(job);
     applyJobState(job);
     updatePlayhead();

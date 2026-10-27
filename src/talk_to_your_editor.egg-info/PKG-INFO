@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: talk-to-your-editor
-Version: 0.7.1
+Version: 0.7.2
 Summary: Plain-language feedback becomes strict, verified edit operations for a finished video edit.
 Requires-Python: >=3.10
 Provides-Extra: speech

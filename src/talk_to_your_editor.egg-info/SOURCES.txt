@@ -6,6 +6,7 @@ src/talk_to_your_editor/applier.py
 src/talk_to_your_editor/captions.py
 src/talk_to_your_editor/checkpoints.py
 src/talk_to_your_editor/cli.py
+src/talk_to_your_editor/costs.py
 src/talk_to_your_editor/creator_rules.py
 src/talk_to_your_editor/direction_parse.py
 src/talk_to_your_editor/intake_build.py
@@ -36,5 +37,6 @@ tests/test_v06.py
 tests/test_v061.py
 tests/test_v07.py
 tests/test_v071.py
+tests/test_v072.py
 tests/test_v07_backend.py
 tests/test_webapp.py

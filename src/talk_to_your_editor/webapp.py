@@ -52,7 +52,7 @@ from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import captions as clean_captions
-from . import checkpoints, creator_rules, retakes, usual
+from . import checkpoints, costs, creator_rules, retakes, usual
 from . import direction_parse, intake_build
 from . import transcribe as speech
 from .after_review import generate_after_review
@@ -1457,6 +1457,19 @@ def _finish_state(config: WebAppConfig) -> dict:
     return state
 
 
+def _money_view(config: WebAppConfig) -> dict:
+    """The money view a summary carries (v0.7.2): the loaded
+    job's own costs when there is a job, and the running total
+    on this Mac either way. With no job there is no job block,
+    and nothing is read from the launch home's session."""
+    session_entries = (
+        costs.load_session_entries(config.session_dir)
+        if config.has_job
+        else []
+    )
+    return costs.money_view(session_entries, costs.load_money_entries())
+
+
 def _no_job_summary(config: WebAppConfig) -> dict:
     """The summary when no job is loaded: every field the page
     reads, at its empty value, so the front door renders cleanly
@@ -1511,6 +1524,7 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "job_whole": False,
         "job_missing": [],
         "finish": _finish_state(config),
+        "money": _money_view(config),
     }
 
 
@@ -1545,6 +1559,9 @@ def _incomplete_job_summary(config: WebAppConfig, missing: list) -> dict:
             "finish": _finish_state(config),
         }
     )
+    # The job is named and loaded, so its own recorded costs (if
+    # any) belong in its money block even while it is incomplete.
+    summary["money"] = _money_view(config)
     return summary
 
 
@@ -1640,6 +1657,7 @@ def _job_summary(config: WebAppConfig) -> dict:
         "job_whole": True,
         "job_missing": [],
         "finish": _finish_state(config),
+        "money": _money_view(config),
     }
 
 
@@ -1950,6 +1968,12 @@ def _run_direction(
     audit_with_routing["overall_feedback"] = run_feedback["overall_feedback"]
     audit_with_routing["saved_rules"] = rule_statements
     audit_with_routing["edit_notes"] = run_feedback["edit_notes"]
+    # What the run's model calls cost rides the audit, so every
+    # caller can account the run the same way (v0.7.2). The drain
+    # covers the Spark direction call and any Wonder reviews the
+    # routing made on this same provider.
+    drain = getattr(provider, "drain_usage", None)
+    audit_with_routing["usage"] = (drain() or []) if callable(drain) else []
     if front_door is not None:
         audit_with_routing["front_door"] = front_door
     # Number the round before the audit is saved, so the saved audit
@@ -1959,6 +1983,88 @@ def _run_direction(
     _write_json(session / "operations_audit.json", audit_with_routing)
     _archive_direction_round(config, round_number)
     return audit_with_routing
+
+
+# ---------------------------------------------------------------------------
+# Cost accounting (v0.7.2): what each run cost, per feature
+#
+# Every figure comes from the costs module, the one place rates
+# live. The writers below only translate a finished run's own
+# records (captured token usage, the transcription route and
+# duration, a dictation's length) into cost entries, and hand
+# them to _account_costs. Accounting never changes what a run
+# does, and it never raises: a lost entry loses a line of
+# bookkeeping, never an edit.
+# ---------------------------------------------------------------------------
+
+
+def _account_costs(config: WebAppConfig, entries: list) -> None:
+    """Record a run's cost entries: the job's own cost record in
+    its session, and the running total on this Mac."""
+    if not entries:
+        return
+    costs.append_session_entries(config.session_dir, entries)
+    costs.append_money_entries(entries, config.job_label())
+
+
+def _direction_cost_entries(usage) -> list:
+    """The cost entries for one direction run's captured usage:
+    the Spark read under Reading your direction, any Wonder
+    escalation under its own line, and the also-noticed flags
+    at $0 (they ride along on the direction read)."""
+    spark_usd, wonder_usd = costs.split_usage_cost(usage)
+    entries = [costs.make_entry("direction", spark_usd, "direction run")]
+    if wonder_usd > 0:
+        entries.append(
+            costs.make_entry("wonder", wonder_usd, "direction run")
+        )
+    entries.append(
+        costs.make_entry("flags", 0.0, "rides along with the direction read")
+    )
+    return entries
+
+
+def _usage_cost_entries(feature: str, usage, detail: str) -> list:
+    """One feature's cost entry from a pass summary's usage."""
+    spark_usd, wonder_usd = costs.split_usage_cost(usage)
+    return [costs.make_entry(feature, spark_usd + wonder_usd, detail)]
+
+
+def _first_edit_cost_entries(
+    route: str,
+    duration_s: float,
+    settings: dict,
+    retake_summary,
+    direction_summary,
+) -> list:
+    """The cost entries for one first edit, from its passes' records."""
+    entries = [
+        costs.make_entry(
+            "transcription",
+            costs.transcription_cost(route, duration_s),
+            "ElevenLabs Scribe" if route == "scribe" else "on this computer",
+            duration_s=duration_s if route == "scribe" else None,
+        )
+    ]
+    if retake_summary is not None:
+        entries.extend(
+            _usage_cost_entries(
+                "retake_judge", retake_summary.get("usage"), "first edit"
+            )
+        )
+    if direction_summary is not None and direction_summary.get("ran"):
+        entries.extend(
+            _direction_cost_entries(direction_summary.get("usage"))
+        )
+    if settings.get("remove_fillers"):
+        entries.append(
+            costs.make_entry("filler", 0.0, "on this computer")
+        )
+    if settings.get("cut_silence"):
+        entries.append(
+            costs.make_entry("silence", 0.0, "on this computer")
+        )
+    return entries
 
 
 def _protected_join_indices(config: WebAppConfig, timeline: Timeline) -> set:
@@ -4001,6 +4107,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
     formats = ["vertical", "landscape"] if scope == "both" else [scope]
     has_feedback = _feedback_path(config) is not None
     direction_runs = []
+    direction_usage: list = []
     for fmt in formats:
         if not has_feedback and not extras:
             continue
@@ -4011,6 +4118,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
             extra_overall=extras,
             front_door=settings,
         )
+        direction_usage.extend(audit.get("usage") or [])
         direction_runs.append(
             {
                 "format": fmt,
@@ -4047,6 +4155,26 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         silence = _run_silence_pass(
             config, settings["buffer_s"], settings["breaths"]
         )
+    # What this run cost, per feature, from the passes' own
+    # records (v0.7.2). The deterministic passes are $0 and say
+    # so; the model work prices from its captured usage.
+    cost_entries: list = []
+    if retake_summary is not None:
+        cost_entries.extend(
+            _usage_cost_entries(
+                "retake_judge", retake_summary.get("usage"), "front door"
+            )
+        )
+    if direction_runs:
+        cost_entries.extend(_direction_cost_entries(direction_usage))
+    if filler is not None:
+        cost_entries.append(costs.make_entry("filler", 0.0, "on this computer"))
+    if silence is not None:
+        cost_entries.append(
+            costs.make_entry("silence", 0.0, "on this computer")
+        )
+    _account_costs(config, cost_entries)
+    cost_block = costs.job_cost_block(cost_entries)
     return {
         "ok": True,
         "provider": provider_name,
@@ -4061,6 +4189,8 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "filler": filler,
         "lines": list(filler["lines"]) if filler else [],
         "mode_lines": _mode_and_gold_lines(config, settings),
+        "cost_lines": cost_block["recap_lines"] if cost_block else [],
+        "costs": cost_block,
         "gold": len(_open_gold_spans(config)),
         "silence": silence,
         "saved_rules": creator_rules.active_rule_statements(
@@ -4467,6 +4597,16 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "The rest of your direction was saved as overall "
                 "guidance for the model."
             )
+        # What the first edit cost, per feature, from the passes'
+        # own records (v0.7.2): one line per feature that ran and
+        # a total, just before the recap's closing lines.
+        cost_entries = _first_edit_cost_entries(
+            route, duration, settings, retake_summary, direction_summary
+        )
+        _account_costs(config, cost_entries)
+        cost_block = costs.job_cost_block(cost_entries)
+        if cost_block is not None:
+            recap.extend(cost_block["recap_lines"])
         # The recap closes by naming the way of working and the
         # spots waiting in gold, so the creator always knows how
         # involved this run was and what is theirs to call.
@@ -4489,6 +4629,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "settings": settings,
                 "recap": recap,
                 "lines": recap,
+                "costs": cost_block,
                 "passes": passes,
                 "flags": (
                     direction_summary.get("flags", [])
@@ -5133,6 +5274,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_intake_finish()
         elif path == "/api/intake/first-edit":
             self._post_intake_first_edit()
+        elif path == "/api/cost-estimate":
+            self._post_cost_estimate()
+        elif path == "/api/money-reset":
+            self._post_money_reset()
         elif path == "/api/dictate":
             self._post_dictate()
         elif path == "/api/comments":
@@ -5750,6 +5895,56 @@ class _Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def _post_cost_estimate(self) -> None:
+        """What one run will probably cost, before it runs (v0.7.2).
+
+        The page asks with the video's length, the surface asking
+        (a dropped video's first edit, or a job's Make the edit),
+        the Remove choices currently set, and whether direction
+        will be read. The estimate comes from the costs module:
+        this Mac's recent-run history where it exists, the
+        documented rates and typicals where it does not. Open at
+        the front door like the intake routes: the first-edit
+        card exists before any job does.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        surface = str(body.get("surface") or "front_door").strip().lower()
+        if surface not in ("first_edit", "front_door"):
+            surface = "front_door"
+        settings = body.get("settings")
+        if not isinstance(settings, dict):
+            settings = {}
+        try:
+            duration_s = float(body.get("duration_s") or 0.0)
+        except (TypeError, ValueError):
+            duration_s = 0.0
+        route = "local"
+        if surface == "first_edit":
+            route = _intake_word_route(self.config) or "local"
+        estimate = costs.estimate_run(
+            duration_s,
+            surface,
+            settings,
+            bool(body.get("has_direction")),
+            route=route,
+            history_entries=costs.load_money_entries(),
+        )
+        self._send_json(200, {"ok": True, "estimate": estimate})
+
+    def _post_money_reset(self) -> None:
+        """Clear the running total on this Mac (v0.7.2).
+
+        The jobs' own cost records are not touched; only the
+        Mac-wide total the money card shows starts over. The
+        response carries the fresh money view so the page can
+        re-render from it directly.
+        """
+        costs.reset_money()
+        self._send_json(200, {"ok": True, "money": _money_view(self.config)})
+
     def _post_dictate(self) -> None:
         """Turn one recorded note into text, through Meta's voice.
 
@@ -5826,6 +6021,17 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        _account_costs(
+            self.config,
+            [
+                costs.make_entry(
+                    "dictation",
+                    costs.dictation_cost(result["duration_s"]),
+                    "one dictated note",
+                    duration_s=result["duration_s"],
+                )
+            ],
+        )
         self._send_json(
             200,
             {
@@ -6068,6 +6274,9 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             after_review = False
         checkpoints.commit(self.config, "Direction run")
+        _account_costs(
+            self.config, _direction_cost_entries(audit.get("usage"))
+        )
         self._send_json(
             200,
             {
