@@ -61,6 +61,7 @@ from .checkpoints import (
     CREATOR_RULES_FILENAME,
     EDIT_NOTES_FILENAME,
     FRONT_DOOR_FILENAME,
+    GOLD_FILENAME,
     GRADES_FILENAME,
     RETAKE_PASS_FILENAME,
 )
@@ -68,7 +69,11 @@ from .cli import _load_json, _verify_and_apply, _write_json
 from .meta_provider import MetaProvider, MockProvider, ProviderError
 from .schema import MAX_JOIN_PAUSE_S, MIN_JOIN_PAUSE_S, SchemaError, validate_operations
 from .timeline import Timeline
-from .verifier import plain_reason_sentence, verify_operations
+from .verifier import (
+    _norm_word,
+    plain_reason_sentence,
+    verify_operations,
+)
 from .word_corrections import (
     CORRECTIONS_FILENAME,
     load_corrections,
@@ -799,6 +804,18 @@ FRONT_DOOR_DEFAULTS = {
     "keep_mode": "last",
     "breaths": "keep",
     "remove_fillers": True,
+    "mode": "cleanest",
+}
+# How involved the creator wants to be (v0.7.1). "cleanest" is the
+# Cleanest cut: the editor finishes what it is sure about and the
+# spots it is unsure about wait in gold. "tailor" is Tailor it with
+# me: every unsure spot is presented as a decision. The mode is one
+# of the front door choices, so it is saved with them, carried in
+# the creator's usual, and named in every recap.
+INVOLVEMENT_MODES = ("cleanest", "tailor")
+MODE_LABELS = {
+    "cleanest": "Cleanest cut",
+    "tailor": "Tailor it with me",
 }
 BUFFER_MIN_S = 0.05
 BUFFER_MAX_S = 0.50
@@ -901,6 +918,8 @@ def _front_door_settings(config: WebAppConfig) -> dict:
             settings["keep_mode"] = saved["keep_mode"]
         if saved.get("breaths") in BREATH_MODES:
             settings["breaths"] = saved["breaths"]
+        if saved.get("mode") in INVOLVEMENT_MODES:
+            settings["mode"] = saved["mode"]
     return settings
 
 
@@ -1472,6 +1491,7 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         # exists.
         "front_door": _front_door_settings(config),
         "flags": [],
+        "gold": [],
         "beta": {
             "flips": 0,
             "settled": 0,
@@ -1604,6 +1624,7 @@ def _job_summary(config: WebAppConfig) -> dict:
         "edit_spans": _edit_spans(config),
         "front_door": _front_door_settings(config),
         "flags": _session_flags(config),
+        "gold": _open_gold_spans(config),
         "beta": _beta_score(config),
         "saved_rules": _saved_rules_view(config),
         "rule_suggestions": _rule_suggestions(config),
@@ -2521,6 +2542,9 @@ def _run_direction_pass(
         "flags": [],
         "lines": [],
         "usage": [],
+        "mode": settings.get("mode", "cleanest"),
+        "negation_applied": 0,
+        "gold": 0,
     }
     if not config.signin_key():
         summary["reason"] = "no_key"
@@ -2606,9 +2630,15 @@ def _run_direction_pass(
             cuts=str(base_cuts_path),
             profile=str(profile_path) if profile_path.is_file() else None,
         )
+        flipped: list = []
         try:
             audit = _verify_and_apply(
-                args, {"operations": operations}, tmp
+                args,
+                {"operations": operations},
+                tmp,
+                adjust_verdicts=_negation_policy(
+                    settings, remainder, flipped
+                ),
             )
         except (SchemaError, ApplyError) as exc:
             # The batch as a whole did not pass the safety check, so
@@ -2621,6 +2651,29 @@ def _run_direction_pass(
         if audit is not None:
             page_operations = _merge_page_operations(config, audit, tmp)
             shutil.rmtree(tmp, ignore_errors=True)
+            if flipped:
+                # The negation policy's settlements are marked in
+                # the session audit, so the record says why a
+                # held-looking cut applied: the words were a
+                # repeat, or the direction named them. (The merge
+                # has already written that file, from the pass's own
+                # audit or by extending the session's, so the marks
+                # land on the file itself.)
+                session_audit_path = (
+                    config.session_dir / "operations_audit.json"
+                )
+                session_audit = _load_json(str(session_audit_path))
+                for flip in flipped:
+                    for entry in session_audit.get("operations", []):
+                        if (
+                            entry.get("type") == "cut_words"
+                            and entry.get("word_start")
+                            == flip["word_start"]
+                            and entry.get("word_end") == flip["word_end"]
+                            and entry.get("status") == "applied"
+                        ):
+                            entry["negation_policy"] = flip["basis"]
+                _write_json(session_audit_path, session_audit)
     summary["applied"] = sum(
         1 for op in page_operations if op.get("status") == "applied"
     )
@@ -2634,6 +2687,16 @@ def _run_direction_pass(
             for op in page_operations
             if op.get("status") in ("flagged", "rejected")
         )
+        # What the pass could not settle waits in gold, recorded
+        # from the same audit the page operations came from.
+        summary["negation_applied"] = len(flipped)
+        _record_gold_spans(
+            config,
+            _gold_candidates_from_direction(
+                page_operations, audit.get("verdicts") or [], words
+            ),
+        )
+        summary["gold"] = len(_open_gold_spans(config))
     drain = getattr(provider, "drain_usage", None)
     if callable(drain):
         summary["usage"] = drain() or []
@@ -2657,6 +2720,9 @@ def _run_direction_pass(
             "flags": flags,
             "usage": summary["usage"],
             "feedback": feedback,
+            "mode": summary["mode"],
+            "negation_applied": summary["negation_applied"],
+            "gold": summary["gold"],
         },
     )
     lines: list = []
@@ -2676,6 +2742,606 @@ def _run_direction_pass(
         lines = ["Read your direction. Nothing to change."]
     summary["lines"] = lines
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Gold opportunities and the negation policy (v0.7.1)
+#
+# The creator chooses how involved to be (the mode, one of the
+# front door choices). Spots a pass was not sure about are no
+# longer just set aside: they wait in gold. A gold span is a run of
+# words still in the edit, washed gold in the transcript, carrying
+# why the editor is unsure. The creator judges it (cut it, or
+# leave it), can attach a note with the context, and the verdict is
+# recorded as a grade, so the verdicts teach the same rule learning
+# the review grades teach, note and all.
+#
+# The mode also settles the standing negation question as product
+# policy. A negation-bearing cut is never applied on a model's say
+# alone; but in the Cleanest cut mode, a directed cut that Muse
+# Wonder has reviewed applies when the words it removes are a
+# repeat of words that stay (a cut of a copy cannot change what the
+# kept copy says), or when the creator's own direction named that
+# span. Every other held negation cut, and every one of them in
+# Tailor it mode, waits in gold for the creator's call. When in
+# doubt, gold: the duplicate and naming checks are exact on
+# purpose, and a miss only means the creator sees the spot.
+# ---------------------------------------------------------------------------
+
+# The verdict holds a gold verdict may settle: the ones whose whole
+# point is "a person should look at this". Every other hold
+# (protected material, a special insert, the 25 percent rule, a
+# structural problem) still refuses, gold or not.
+GOLD_SOFT_HOLDS = {"negation_bearing_span", "wonder_review_required"}
+
+_GOLD_REASON_NEGATION = (
+    "This part includes a negative statement. Changing a negative "
+    "can change the meaning, so the editor leaves this one to you."
+)
+_GOLD_REASON_HELD = (
+    "This is a bigger change, so the editor held it for your eyes "
+    "before it counts."
+)
+_GOLD_REASON_RETAKE_HELD = (
+    "The editor measured this as a retake, and the safety check "
+    "held the cut, so this one is yours to call."
+)
+
+_GOLD_PATTERN_DESCRIPTIONS = {
+    ("negation", "cut"): (
+        "Cutting a passage the editor held back because it "
+        "includes a negative statement, once you have seen it"
+    ),
+    ("negation", "leave"): (
+        "Keeping a passage the editor held back because it "
+        "includes a negative statement, once you have seen it"
+    ),
+    ("retake", "cut"): (
+        "Taking out the earlier take of a repeated line the "
+        "editor was not sure about, once you have seen both takes"
+    ),
+    ("retake", "leave"): (
+        "Keeping both takes of a repeated line the editor was "
+        "not sure about, once you have seen them"
+    ),
+    ("held", "cut"): (
+        "Making a change the editor held back for your decision, "
+        "once you have seen it"
+    ),
+    ("held", "leave"): (
+        "Leaving a change the editor held back for your decision "
+        "unmade, once you have seen it"
+    ),
+}
+
+
+def _gold_id(word_start: int, word_end: int, kind: str) -> str:
+    return f"gold-{word_start}-{word_end}-{kind}"
+
+
+def _load_gold(config: WebAppConfig) -> list:
+    payload = _load_session_json(config, GOLD_FILENAME, {"spans": []})
+    if isinstance(payload, dict) and isinstance(payload.get("spans"), list):
+        return [s for s in payload["spans"] if isinstance(s, dict)]
+    return []
+
+
+def _save_gold(config: WebAppConfig, records: list) -> None:
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(config.session_dir / GOLD_FILENAME, {"spans": records})
+
+
+def _record_gold_spans(config: WebAppConfig, candidates: list) -> None:
+    """Add newly spotted gold spans to the session's store.
+
+    A span is keyed by its words and its kind. A span already in
+    the store keeps its record, above all its settled state: a
+    verdict the creator already gave is never undone by a later
+    pass spotting the same words again.
+    """
+    if not candidates:
+        return
+    records = _load_gold(config)
+    known = {record.get("gold_id") for record in records}
+    changed = False
+    for candidate in candidates:
+        if candidate.get("gold_id") in known:
+            continue
+        records.append(candidate)
+        known.add(candidate.get("gold_id"))
+        changed = True
+    if changed:
+        records.sort(
+            key=lambda r: (r.get("word_start", 0), r.get("word_end", 0))
+        )
+        _save_gold(config, records)
+
+
+def _gold_view(record: dict) -> dict:
+    """One gold span as the page receives it (no stored operation)."""
+    return {
+        "gold_id": record.get("gold_id"),
+        "word_start": record.get("word_start"),
+        "word_end": record.get("word_end"),
+        "kind": record.get("kind"),
+        "reason": record.get("reason"),
+        "text": record.get("text"),
+        "keep_text": record.get("keep_text"),
+        "keep_word_start": record.get("keep_word_start"),
+        "keep_word_end": record.get("keep_word_end"),
+    }
+
+
+def _open_gold_spans(config: WebAppConfig) -> list:
+    """The gold spans still waiting, as the page shows them.
+
+    A span is offered only while its words are all in one state in
+    the current plan (all kept, for a cut that was held; all cut,
+    for a change that would bring words back) and none of them sits
+    inside a special insert. A span another change has already
+    settled simply stops being offered.
+    """
+    records = [
+        record
+        for record in _load_gold(config)
+        if record.get("status") == "open"
+    ]
+    if not records or not config.has_job:
+        return []
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    timeline = Timeline(transcript, _effective_cuts(config))
+    views = []
+    for record in records:
+        start, end = record.get("word_start"), record.get("word_end")
+        if not isinstance(start, int) or not isinstance(end, int):
+            continue
+        if not 0 <= start < end <= len(timeline.words):
+            continue
+        statuses = {timeline.word_status(i) for i in range(start, end)}
+        if statuses == {"kept"} or statuses == {"cut"}:
+            views.append(_gold_view(record))
+    return views
+
+
+def _mode_and_gold_lines(config: WebAppConfig, settings: dict) -> list:
+    """The recap's closing lines: the mode, and the gold count.
+
+    The mode is always named, so a run can never quietly work a
+    different way than the creator thinks it did. In the Cleanest
+    cut mode the gold spots are named as waiting for whenever; in
+    Tailor it mode they are presented as the decisions they are.
+    """
+    mode = settings.get("mode", "cleanest")
+    label = MODE_LABELS.get(mode, MODE_LABELS["cleanest"])
+    lines = [f"Your way of working: {label}."]
+    count = len(_open_gold_spans(config))
+    spots = f"{count} spot{'s' if count != 1 else ''}"
+    if mode == "tailor":
+        if count:
+            lines.append(
+                f"{spots} in gold "
+                f"{'are' if count != 1 else 'is'} waiting for your call."
+            )
+        else:
+            lines.append("No spots are waiting in gold.")
+    elif count:
+        lines.append(
+            f"{spots} in gold for when you want "
+            f"{'them' if count != 1 else 'it'}."
+        )
+    return lines
+
+
+def _normalized_span(timeline: Timeline, start: int, end: int) -> list:
+    return [
+        _norm_word(str(timeline.words[i].get("word") or ""))
+        for i in range(start, end)
+    ]
+
+
+def _contains_run(tokens: list, run: list) -> bool:
+    """Whether ``run`` appears in ``tokens`` as one unbroken stretch."""
+    if not run or len(run) > len(tokens):
+        return False
+    return any(
+        tokens[i:i + len(run)] == run
+        for i in range(len(tokens) - len(run) + 1)
+    )
+
+
+def _span_duplicates_kept(timeline: Timeline, start: int, end: int) -> bool:
+    """Whether the span's words are said again in what stays.
+
+    Exact on purpose: the span's normalized words must appear,
+    word for word, as one unbroken run of kept words somewhere
+    outside the span, at consecutive word positions. Anything less
+    (a near copy, a variant) is not a duplicate, and the span waits
+    in gold instead.
+    """
+    seq = _normalized_span(timeline, start, end)
+    if not seq or any(token == "" for token in seq):
+        return False
+    outside = [
+        index
+        for index in timeline.kept_word_indices()
+        if not start <= index < end
+    ]
+    tokens = [
+        _norm_word(str(timeline.words[index].get("word") or ""))
+        for index in outside
+    ]
+    size = len(seq)
+    for i in range(len(tokens) - size + 1):
+        if tokens[i:i + size] != seq:
+            continue
+        if outside[i:i + size] == list(
+            range(outside[i], outside[i] + size)
+        ):
+            return True
+    return False
+
+
+def _direction_names_span(
+    direction_text: str, timeline: Timeline, start: int, end: int
+) -> bool:
+    """Whether the creator's direction names this span's words.
+
+    The direction names a span when it carries the span's words:
+    the whole normalized span, or, for a span of five words or
+    more, one unbroken run of five of its words. A shorter overlap
+    is a topic, not a naming, and does not count.
+    """
+    seq = _normalized_span(timeline, start, end)
+    if not seq or any(token == "" for token in seq):
+        return False
+    tokens = [
+        token
+        for token in (
+            _norm_word(word) for word in str(direction_text).split()
+        )
+        if token
+    ]
+    if _contains_run(tokens, seq):
+        return True
+    if len(seq) >= 5:
+        return any(
+            _contains_run(tokens, seq[i:i + 5])
+            for i in range(len(seq) - 4)
+        )
+    return False
+
+
+def _negation_policy(settings: dict, direction_text: str, flipped: list):
+    """The verdict adjustment the direction pass runs under.
+
+    In the Cleanest cut mode, a cut verdict held only for its
+    negation, on an operation Muse Wonder has reviewed, is settled
+    here when the span duplicates words that stay, or the
+    direction named the span. In Tailor it mode nothing is settled:
+    every held negation cut waits in gold. A settled cut never
+    overlaps a cut that is applying on its own (first wins, as the
+    verifier itself rules), and anything with another hold reason
+    keeps its hold whatever the mode.
+    """
+    mode = settings.get("mode", "cleanest")
+
+    def adjust(verdicts, timeline, profile):
+        if mode != "cleanest":
+            return verdicts
+        applying = []
+        for verdict in verdicts:
+            if verdict.status == "apply":
+                applying.extend(
+                    (s, e)
+                    for s, e, _role in verdict.operation.word_spans()
+                )
+        for verdict in verdicts:
+            if verdict.status != "flag":
+                continue
+            if set(verdict.reasons) != {"negation_bearing_span"}:
+                continue
+            op = verdict.operation
+            if op.type != "cut_words" or not op.wonder_reviewed:
+                continue
+            start, end = op.word_start, op.word_end
+            if any(
+                start < other_end and other_start < end
+                for other_start, other_end in applying
+            ):
+                continue
+            if _span_duplicates_kept(timeline, start, end):
+                basis = "duplicate"
+            elif _direction_names_span(
+                direction_text, timeline, start, end
+            ):
+                basis = "named"
+            else:
+                continue
+            verdict.status = "apply"
+            applying.append((start, end))
+            flipped.append(
+                {"word_start": start, "word_end": end, "basis": basis}
+            )
+        return verdicts
+
+    return adjust
+
+
+def _gold_candidates_from_direction(
+    page_operations: list, verdict_dicts: list, words: list
+) -> list:
+    """Gold spans for the direction pass's held operations.
+
+    A held operation becomes gold when its holds are only the
+    soft ones (a negation, or a review the pass could not give
+    it). Operations held for anything else (protected material, a
+    special insert, too much at once) stay set aside exactly as
+    before: gold is for judgment calls, not for safety rails. The
+    model's own flag_for_review proposals are not held operations
+    and never become gold.
+    """
+    candidates = []
+    for entry, verdict in zip(page_operations, verdict_dicts):
+        if entry.get("status") != "flagged":
+            continue
+        if entry.get("type") == "flag_for_review":
+            continue
+        reasons = (verdict or {}).get("reasons") or []
+        if not reasons or not set(reasons) <= GOLD_SOFT_HOLDS:
+            continue
+        if entry.get("type") == "replace_take":
+            start = entry.get("cut_word_start")
+            end = entry.get("cut_word_end")
+        else:
+            start = entry.get("word_start")
+            end = entry.get("word_end")
+        if not isinstance(start, int) or not isinstance(end, int):
+            continue
+        if not 0 <= start < end <= len(words):
+            continue
+        kind = (
+            "negation"
+            if "negation_bearing_span" in reasons
+            else "held"
+        )
+        operation = {
+            key: value
+            for key, value in entry.items()
+            if key not in ("status", "plain_action", "negation_policy")
+        }
+        candidates.append(
+            {
+                "gold_id": _gold_id(start, end, kind),
+                "word_start": start,
+                "word_end": end,
+                "kind": kind,
+                "source": "direction",
+                "reason": (
+                    _GOLD_REASON_NEGATION
+                    if kind == "negation"
+                    else _GOLD_REASON_HELD
+                ),
+                "text": " ".join(
+                    str(words[i].get("word") or "")
+                    for i in range(start, end)
+                ),
+                "keep_text": None,
+                "keep_word_start": None,
+                "keep_word_end": None,
+                "pair_id": None,
+                "pair_key": None,
+                "operation": operation,
+                "status": "open",
+                "note": None,
+                "created_at": _utc_now(),
+                "decided_at": None,
+            }
+        )
+    return candidates
+
+
+def _gold_candidates_from_retakes(pairs: list, words: list) -> list:
+    """Gold spans for the retake pass's unapplied suspicions.
+
+    A pair the pass flagged (a policy hold, or a borderline pair no
+    model judged) and a pair whose cut the verifier held are the
+    same shape to the creator: the editor thinks this is a retake
+    and could not settle it. Pairs the model judged and settled
+    (keep both, not a pair) are decisions already, not gold.
+    """
+    candidates = []
+    for pair in pairs:
+        outcome = pair.get("outcome")
+        if outcome not in ("flagged", "held"):
+            continue
+        cut = pair.get("cut") or {}
+        start, end = cut.get("word_start"), cut.get("word_end")
+        if not isinstance(start, int) or not isinstance(end, int):
+            continue
+        if not 0 <= start < end <= len(words):
+            continue
+        if outcome == "flagged" and pair.get("band") == "flag":
+            reason = str(pair.get("reason") or _GOLD_REASON_RETAKE_HELD)
+        elif outcome == "flagged":
+            reason = retakes.band_b_flag_reason(pair)
+        else:
+            reason = _GOLD_REASON_RETAKE_HELD
+        keep = pair.get("keep") or {}
+        candidates.append(
+            {
+                "gold_id": _gold_id(start, end, "retake"),
+                "word_start": start,
+                "word_end": end,
+                "kind": "retake",
+                "source": "retakes",
+                "reason": reason,
+                "text": str(cut.get("text") or ""),
+                "keep_text": keep.get("text"),
+                "keep_word_start": keep.get("word_start"),
+                "keep_word_end": keep.get("word_end"),
+                "pair_id": pair.get("pair_id"),
+                "pair_key": retakes.pair_key(pair),
+                "operation": None,
+                "status": "open",
+                "note": None,
+                "created_at": _utc_now(),
+                "decided_at": None,
+            }
+        )
+    return candidates
+
+
+def _gold_verdict(
+    config: WebAppConfig, gold_id: str, decision: str, note: str
+) -> dict:
+    """Settle one gold span on the creator's word.
+
+    A cut verdict runs the span's change through the same
+    validate, verify, and apply path as every other edit, with one
+    difference: the holds that made the span gold (a negation, a
+    missing second review) are the decision the creator is now
+    making, so they do not hold it again. Every other safety rule
+    holds exactly as written. A leave verdict changes no words; it
+    settles the span so it is never offered again in this job, and
+    for a retake it records the pair's keep-both decision, the same
+    record a model judgment writes. Either way the verdict is
+    graded into the session's learning store with its note, so the
+    pattern it belongs to can surface as a rule with the creator's
+    own context attached.
+    """
+    records = _load_gold(config)
+    record = next(
+        (r for r in records if r.get("gold_id") == gold_id), None
+    )
+    if record is None or record.get("status") != "open":
+        raise ValueError("That spot is not waiting for a call anymore.")
+    if decision not in ("cut", "leave"):
+        raise ValueError("Say cut it, or leave it.")
+    start, end = record["word_start"], record["word_end"]
+    kind = str(record.get("kind") or "held")
+    changed = False
+    message = None
+    checkpoints.begin(config)
+    if decision == "cut":
+        operation = record.get("operation")
+        if not isinstance(operation, dict):
+            operation = {
+                "type": "cut_words",
+                "comment_id": "gold-verdict",
+                "word_start": start,
+                "word_end": end,
+                "reason": "You looked at this spot in gold and said to cut it.",
+                "confidence": 1.0,
+                "model": "mock",
+                "risk_tier": 3,
+                "wonder_reviewed": False,
+            }
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        base_cuts = _effective_cuts(config)
+        timeline = Timeline(transcript, base_cuts)
+        ops = validate_operations([operation])
+        profile = _load_optional_file(config.job_dir / "profile.json")
+        verdict = verify_operations(ops, timeline, profile)[0]
+        if verdict.status == "flag" and set(verdict.reasons) <= GOLD_SOFT_HOLDS:
+            verdict.status = "apply"
+        if verdict.status != "apply":
+            return {
+                "ok": True,
+                "gold_id": gold_id,
+                "changed": False,
+                "message": _plain_toggle_message(verdict),
+                "gold": _open_gold_spans(config),
+                "suggestions": _rule_suggestions(config),
+            }
+        revised, _audit = apply_verdicts(base_cuts, timeline, [verdict])
+        session = config.session_dir
+        session.mkdir(parents=True, exist_ok=True)
+        _write_json(session / "revised_cuts.json", revised)
+        changed = True
+        message = "Cut. Those words are out of the edit."
+    else:
+        message = "Left in. The editor will not offer this spot again."
+    # A retake verdict settles the pair itself: leave means both
+    # takes stay (the record a keep-both judgment writes), and cut
+    # means the pair is decided the other way. Either way the pair
+    # is never proposed again in this job.
+    if record.get("pair_key"):
+        retake_record = _load_retake_record(config)
+        decisions = retake_record.setdefault("decisions", {})
+        decisions[record["pair_key"]] = {
+            "keep_both": decision == "leave",
+            "source": "gold",
+        }
+        _save_retake_record(config, retake_record)
+    # The verdict is a grade. It joins the same store the review
+    # page writes, keyed by the gold span so re-grading can never
+    # double-count it, with the note riding as the feedback text:
+    # when the pattern surfaces as a rule, the creator's own words
+    # are the context it surfaces with.
+    entry = {
+        "id": f"gold-grade-{gold_id}",
+        "record_id": f"gold-grade-{gold_id}",
+        "comment_id": "gold",
+        "operation_type": (
+            "cut_words" if decision == "cut" else "flag_for_review"
+        ),
+        "verdict": "worked",
+        "pattern_key": f"gold:{kind}:{decision}",
+        "pattern_description": _GOLD_PATTERN_DESCRIPTIONS.get(
+            (kind, decision), _GOLD_PATTERN_DESCRIPTIONS[("held", decision)]
+        ),
+        "feedback_text": note,
+        "text": note,
+        "gold_id": gold_id,
+        "source": "gold",
+        "created_at": _utc_now(),
+    }
+    entries = creator_rules.merge_grade_entries(
+        _load_grades(config), [entry]
+    )
+    _save_grades(config, entries)
+    if note and decision == "cut":
+        # The note also lands on the edit the cut just made, in the
+        # same store the transcript dots read, so it stays visible
+        # on the words it was about.
+        edit_id = f"edit-{start}-{end}"
+        payload = _load_edit_notes(config)
+        existing = payload["edits"].get(edit_id)
+        if not isinstance(existing, dict):
+            existing = {
+                "edit_id": edit_id,
+                "word_start": start,
+                "word_end": end,
+                "removed_text": str(record.get("text") or ""),
+                "reason": str(record.get("reason") or ""),
+                "source": "gold",
+                "notes": [],
+            }
+            payload["edits"][edit_id] = existing
+        existing.setdefault("notes", []).append(
+            {
+                "id": uuid.uuid4().hex[:12],
+                "text": note,
+                "created_at": _utc_now(),
+            }
+        )
+        _save_edit_notes(config, payload)
+    record["status"] = "cut" if decision == "cut" else "left"
+    record["note"] = note or None
+    record["decided_at"] = _utc_now()
+    _save_gold(config, records)
+    checkpoints.commit(
+        config,
+        "Gold spot cut" if decision == "cut" else "Gold spot left in",
+    )
+    return {
+        "ok": True,
+        "gold_id": gold_id,
+        "changed": changed,
+        "message": message,
+        "gold": _open_gold_spans(config),
+        "suggestions": _rule_suggestions(config),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3223,6 +3889,13 @@ def _run_retake_pass(
         for pair in pairs
     ]
     _save_retake_record(config, record)
+    # The pairs this pass could not settle (flagged by policy or by
+    # the borderline band, or cut and then held by the verifier)
+    # wait in gold for the creator's call.
+    _record_gold_spans(
+        config,
+        _gold_candidates_from_retakes(record["pairs"], timeline.words),
+    )
     return summary
 
 
@@ -3261,6 +3934,13 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
             "Choose keeping the natural breath, or trimming "
             "breaths with the pause."
         )
+    mode = str(
+        body.get("mode", defaults.get("mode", "cleanest")) or "cleanest"
+    ).strip().lower()
+    if mode not in INVOLVEMENT_MODES:
+        raise ValueError(
+            "Choose the Cleanest cut, or Tailor it with me."
+        )
     settings = {
         "remove_retakes": bool(
             body.get("remove_retakes", defaults["remove_retakes"])
@@ -3272,6 +3952,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "remove_fillers": bool(
             body.get("remove_fillers", defaults.get("remove_fillers", True))
         ),
+        "mode": mode,
     }
     scope = str(body.get("format_scope") or "both").strip().lower()
     if scope not in ("both", "vertical", "landscape"):
@@ -3379,6 +4060,8 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "retakes": retake_summary,
         "filler": filler,
         "lines": list(filler["lines"]) if filler else [],
+        "mode_lines": _mode_and_gold_lines(config, settings),
+        "gold": len(_open_gold_spans(config)),
         "silence": silence,
         "saved_rules": creator_rules.active_rule_statements(
             _rules_store(config)
@@ -3457,10 +4140,10 @@ def _validated_drop_settings(body) -> Optional[dict]:
     """The per-drop front door settings in a first-edit request.
 
     The drop block can carry the creator's choices for this one
-    video. Only the six front door keys are taken, and each is
+    video. Only the front door keys are taken, and each is
     validated the way the front door itself validates it: booleans
     must be JSON booleans, the buffer is a number clamped to the
-    front door's range, and the two word choices must be known
+    front door's range, and the word choices must be known
     words. Anything else in the object is ignored, and a request
     with no settings object at all returns None.
     """
@@ -3482,6 +4165,8 @@ def _validated_drop_settings(body) -> Optional[dict]:
         validated["keep_mode"] = raw["keep_mode"]
     if raw.get("breaths") in BREATH_MODES:
         validated["breaths"] = raw["breaths"]
+    if raw.get("mode") in INVOLVEMENT_MODES:
+        validated["mode"] = raw["mode"]
     return validated
 
 
@@ -3782,6 +4467,10 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "The rest of your direction was saved as overall "
                 "guidance for the model."
             )
+        # The recap closes by naming the way of working and the
+        # spots waiting in gold, so the creator always knows how
+        # involved this run was and what is theirs to call.
+        recap.extend(_mode_and_gold_lines(config, settings))
         passes = {
             "retakes": _state_summary(retake_summary),
             "filler": _state_summary(filler_summary),
@@ -3806,6 +4495,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                     if direction_summary
                     else []
                 ),
+                "gold": _open_gold_spans(config),
                 "render_note": render_note,
                 "captions": caption_info,
             }
@@ -4191,6 +4881,7 @@ _JOB_REQUIRED_POSTS = frozenset({
     "/api/rule-remove",
     "/api/word-toggle",
     "/api/edit-action",
+    "/api/gold-verdict",
     "/api/word-correct",
     "/api/word-correct-remove",
     "/api/captions-pref",
@@ -4472,6 +5163,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_word_toggle()
         elif path == "/api/edit-action":
             self._post_edit_action()
+        elif path == "/api/gold-verdict":
+            self._post_gold_verdict()
         elif path == "/api/word-correct":
             self._post_word_correct()
         elif path == "/api/word-correct-remove":
@@ -5497,6 +6190,30 @@ class _Handler(BaseHTTPRequestHandler):
                 ],
             },
         )
+
+    def _post_gold_verdict(self) -> None:
+        """Settle one gold span on the creator's word.
+
+        The body names the span (gold_id), the call (cut or leave),
+        and an optional note carrying the creator's context; the
+        note rides with the verdict into the learning store. The
+        response carries what changed, the gold spans still waiting,
+        and the rule suggestions the verdict now supports, so the
+        page can refresh in place.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        gold_id = str(body.get("gold_id") or "")
+        decision = str(body.get("decision") or "").strip().lower()
+        note = str(body.get("note") or "").strip()
+        try:
+            result = _gold_verdict(self.config, gold_id, decision, note)
+        except (ValueError, SchemaError) as exc:
+            self._error(400, str(exc))
+            return
+        self._send_json(200, result)
 
     def _post_grades(self) -> None:
         """Receive graded changes from the review page.

@@ -12,7 +12,7 @@ job starts, and a choice made inside a job still wins for that job.
 
 The usual is a convenience, never a gate: a missing or damaged file
 just means the defaults, and a failed save never stops an edit.
-Only the six front door keys are stored, each cleaned the same way
+Only the front door keys are stored, each cleaned the same way
 the front door itself cleans them, so a hand-edited file can never
 smuggle in a value the controls themselves would refuse.
 """
@@ -30,11 +30,13 @@ USUAL_KEYS = (
     "keep_mode",
     "breaths",
     "remove_fillers",
+    "mode",
 )
 
 _BOOL_KEYS = ("remove_retakes", "cut_silence", "remove_fillers")
 _KEEP_MODES = ("last", "first", "best")
 _BREATH_MODES = ("keep", "trim")
+_INVOLVEMENT_MODES = ("cleanest", "tailor")
 BUFFER_MIN_S = 0.05
 BUFFER_MAX_S = 0.50
 
@@ -48,6 +50,7 @@ _FALLBACKS = {
     "keep_mode": "last",
     "breaths": "keep",
     "remove_fillers": True,
+    "mode": "cleanest",
 }
 
 USUAL_DIR_NAME = ".talk-to-your-editor"
@@ -82,6 +85,8 @@ def _clean_value(key: str, value, fallback):
         return value if value in _KEEP_MODES else fallback
     if key == "breaths":
         return value if value in _BREATH_MODES else fallback
+    if key == "mode":
+        return value if value in _INVOLVEMENT_MODES else fallback
     return fallback
 
 
@@ -94,7 +99,7 @@ def load_usual(defaults: dict) -> dict:
     """The usual choices laid over ``defaults``.
 
     Starts from a copy of ``defaults`` and overlays the file's
-    values for the six usual keys, each cleaned against the default
+    values for the usual keys, each cleaned against the default
     it would replace. A missing or unreadable file, or one that does
     not parse to a JSON object, returns the defaults copy untouched.
     Never raises: the usual can only ever be a starting point.
@@ -115,7 +120,7 @@ def load_usual(defaults: dict) -> dict:
 
 
 def save_usual(settings: dict) -> None:
-    """Save the six usual keys from ``settings``, cleaned.
+    """Save the usual keys from ``settings``, cleaned.
 
     Writes to a temp file in the same folder and replaces the real
     file with it, so a stopped save can never leave a half-written

@@ -373,6 +373,25 @@
     cursor: pointer;
   }
   .tflag::after { content: ""; position: absolute; inset: -6.5px; border-radius: 50%; }
+  /* Gold opportunities (v0.7.1): the spots a pass was not sure
+     about wash gold in the transcript, with a gold marker of their
+     own, distinct from the blue edit dots and the amber flags. */
+  .tgold {
+    position: relative;
+    display: inline-block;
+    width: 15px; height: 15px;
+    min-height: 0; padding: 0;
+    border-radius: 50%;
+    background: rgba(227, 179, 65, 0.16);
+    border: 1.5px solid #e3b341;
+    color: #e3b341;
+    font-size: 9px; line-height: 1;
+    vertical-align: middle;
+    margin: 0 3px;
+    cursor: pointer;
+  }
+  .tgold::after { content: ""; position: absolute; inset: -6.5px; border-radius: 50%; }
+  .tw-gold { background: rgba(227, 179, 65, 0.20); box-shadow: inset 0 -2px 0 rgba(227, 179, 65, 0.85); }
   .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); cursor: pointer; min-height: 44px; }
   .switch input {
     appearance: none;
@@ -656,6 +675,14 @@
           <p class="note">Filler words:</p>
           <label class="switch"><input type="checkbox" id="inFillers"> Take out the ums and uhs</label>
         </div>
+        <div>
+          <p class="note">How involved do you want to be?</p>
+          <div class="row" id="inModePills">
+            <button type="button" data-mode="cleanest">Cleanest cut</button>
+            <button type="button" data-mode="tailor">Tailor it with me</button>
+          </div>
+          <p class="note" id="inModeNote"></p>
+        </div>
       </div>
       <p class="note">Direction for the first edit, if you have any. Plain words are fine: "remove retakes, last take is the best take," or "keep the first clean take and leave 0.2 seconds of silence." What you say here outranks the saved choices for this video. Anything that is not one of the app's choices is saved as overall guidance for the model.</p>
       <textarea id="intakeDirection" rows="2" placeholder="Direction for the first edit (you can leave this empty)"></textarea>
@@ -725,6 +752,14 @@
       <p class="note">Filler words:</p>
       <label class="switch"><input type="checkbox" id="fdFillers"> Take out the ums and uhs</label>
       <p class="fd-note">Filler words like um and uh are taken out of the edit, not just hidden in the captions.</p>
+    </div>
+    <div>
+      <p class="note">How involved do you want to be?</p>
+      <div class="row" id="fdModePills">
+        <button type="button" data-mode="cleanest">Cleanest cut</button>
+        <button type="button" data-mode="tailor">Tailor it with me</button>
+      </div>
+      <p class="note" id="fdModeNote"></p>
     </div>
     <div class="row">
       <button id="fdFire" class="primary" type="button">Make the edit</button>
@@ -933,6 +968,11 @@
       <button id="editBringBack" type="button">Bring these words back</button>
       <button id="editSwapTakes" type="button" hidden>Swap takes</button>
     </div>
+    <div class="row" id="editPopupGoldActions" hidden>
+      <button id="editGoldCut" type="button">Cut it</button>
+      <button id="editGoldLeave" type="button">Leave it</button>
+    </div>
+    <p class="status-line" id="editGoldStatus"></p>
     <p class="status-line" id="editActionStatus"></p>
     <div id="editNotesList"></div>
     <textarea id="editNoteText" rows="2" placeholder="Leave a note on this edit. It travels with the removed words into the next run."></textarea>
@@ -1017,6 +1057,7 @@
   var corrections = [];
   var editSpans = [];
   var jobFlags = [];
+  var jobGold = [];
   var savedRules = [];
   var ruleSuggestions = [];
   var currentEditId = null;
@@ -1387,6 +1428,21 @@
         flagsByLast[key].push(f);
       }
     });
+    var goldByLast = {};
+    (jobGold || []).forEach(function (g) {
+      if (g && typeof g.word_end === "number") {
+        var key = g.word_end - 1;
+        if (!goldByLast[key]) { goldByLast[key] = []; }
+        goldByLast[key].push(g);
+      }
+    });
+    function inGold(w) {
+      var e = w.word_end || (w.index + 1);
+      return (jobGold || []).some(function (g) {
+        return typeof g.word_start === "number" && typeof g.word_end === "number" &&
+          w.index < g.word_end && g.word_start < e;
+      });
+    }
     var lineEl = null;
     var lineWords = null;
     var lineCount = 0;
@@ -1418,7 +1474,7 @@
       }
       if (needLine) { startLine(w); }
       var span = document.createElement("span");
-      span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "");
+      span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "") + (inGold(w) ? " tw-gold" : "");
       span.dataset.index = w.index;
       span.dataset.end = w.word_end || (w.index + 1);
       span.textContent = w.word;
@@ -1462,6 +1518,22 @@
           });
         }
       });
+      Object.keys(goldByLast).forEach(function (k) {
+        var lastIdx = parseInt(k, 10);
+        if (w.index <= lastIdx && lastIdx < entryEnd) {
+          goldByLast[k].forEach(function (g) {
+            var marker = document.createElement("button");
+            marker.type = "button";
+            marker.className = "tgold";
+            marker.textContent = "◆";
+            marker.setAttribute("aria-label", "The editor is not sure about this one: " + (g.reason || ""));
+            marker.setAttribute("aria-haspopup", "dialog");
+            marker.setAttribute("aria-expanded", "false");
+            wirePopupAnchor(marker, function (anchor) { openGoldPopup(g, anchor); });
+            lineWords.appendChild(marker);
+          });
+        }
+      });
       prev = w;
     });
     updateTxCounts();
@@ -1474,6 +1546,7 @@
       corrections = job.word_corrections || [];
       if (job.edit_spans) { editSpans = job.edit_spans; }
       jobFlags = job.flags || [];
+      jobGold = job.gold || [];
       renderTranscript(job.transcript_words);
     }).catch(function () {});
   }
@@ -1752,7 +1825,7 @@
       }
       return;
     }
-    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag"))) { return; }
+    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag") || e.target.closest(".tgold"))) { return; }
     var span = e.target && e.target.closest ? e.target.closest(".tw") : null;
     if (!span) { return; }
     var index = parseInt(span.dataset.index, 10);
@@ -2377,6 +2450,13 @@
   var editBringBack = document.getElementById("editBringBack");
   var editSwapTakes = document.getElementById("editSwapTakes");
   var editActionStatus = document.getElementById("editActionStatus");
+  var editPopupGoldActions = document.getElementById("editPopupGoldActions");
+  var editGoldCut = document.getElementById("editGoldCut");
+  var editGoldLeave = document.getElementById("editGoldLeave");
+  var editGoldStatus = document.getElementById("editGoldStatus");
+  var popupGoldRef = null;
+  var NOTE_PLACEHOLDER_EDIT = "Leave a note on this edit. It travels with the removed words into the next run.";
+  var NOTE_PLACEHOLDER_GOLD = "Add context if you want. It is saved with your call, and the editor learns from it.";
 
   function renderEditNotes(span) {
     if (!editNotesList) { return; }
@@ -2409,6 +2489,7 @@
     popupAnchor = null;
     popupSpanRef = null;
     popupFlagRef = null;
+    popupGoldRef = null;
     popupMode = "edit";
   }
 
@@ -2427,7 +2508,9 @@
     var spanRect = null;
     var start = null;
     var end = null;
-    if (popupMode === "flag" && popupFlagRef) {
+    if (popupMode === "gold" && popupGoldRef) {
+      start = popupGoldRef.word_start; end = popupGoldRef.word_end;
+    } else if (popupMode === "flag" && popupFlagRef) {
       start = popupFlagRef.word_start; end = popupFlagRef.word_end;
     } else if (popupSpanRef) {
       start = popupSpanRef.word_start; end = popupSpanRef.word_end;
@@ -2492,6 +2575,25 @@
     if (editActionStatus && on) { editActionStatus.textContent = ""; }
   }
 
+  // Gold mode (v0.7.1): the popup asks for the creator's call on a
+  // spot the editor was not sure about. The verdict buttons show,
+  // the note box stays (its text rides with the verdict), and the
+  // edit actions and the notes list step aside.
+  function setPopupGoldMode(on) {
+    if (editPopupGoldActions) { editPopupGoldActions.hidden = !on; }
+    if (editGoldStatus) { editGoldStatus.textContent = ""; }
+    if (editNotesList) { editNotesList.hidden = !!on; }
+    if (editNoteSave) { editNoteSave.hidden = !!on; }
+    if (editBringBack) { editBringBack.hidden = !!on; }
+    if (editSwapTakes && on) { editSwapTakes.hidden = true; }
+    if (editPopupShadow && on) { editPopupShadow.hidden = true; }
+    if (editPopupComment && on) { editPopupComment.hidden = true; }
+    if (editActionStatus && on) { editActionStatus.textContent = ""; }
+    if (editNoteText) {
+      editNoteText.placeholder = on ? NOTE_PLACEHOLDER_GOLD : NOTE_PLACEHOLDER_EDIT;
+    }
+  }
+
   function wirePopupAnchor(anchor, openFn) {
     anchor.addEventListener("mouseenter", function () {
       if (popupCloseTimer) { clearTimeout(popupCloseTimer); popupCloseTimer = null; }
@@ -2548,8 +2650,10 @@
     popupMode = "flag";
     popupFlagRef = flag;
     popupSpanRef = null;
+    popupGoldRef = null;
     popupAnchor = anchor || null;
     currentEditId = null;
+    if (editPopupGoldActions) { editPopupGoldActions.hidden = true; }
     if (editPopupTitle) { editPopupTitle.textContent = "Also noticed"; }
     var quoted = (typeof flag.word_start === "number" && typeof flag.word_end === "number")
       ? spanTextFor(flag.word_start, flag.word_end) : (flag.quote || "");
@@ -2562,6 +2666,77 @@
     positionEditPopup();
   }
 
+  function openGoldPopup(span, anchor) {
+    if (!span || !editPopup) { return; }
+    clearPopupTimers();
+    if (popupAnchor && popupAnchor !== anchor) { popupAnchor.setAttribute("aria-expanded", "false"); }
+    popupMode = "gold";
+    popupGoldRef = span;
+    popupSpanRef = null;
+    popupFlagRef = null;
+    popupAnchor = anchor || null;
+    currentEditId = null;
+    setPopupFlagMode(false);
+    setPopupGoldMode(true);
+    if (editPopupTitle) { editPopupTitle.textContent = "The editor is not sure about this one"; }
+    var quoted = (typeof span.word_start === "number" && typeof span.word_end === "number")
+      ? spanTextFor(span.word_start, span.word_end) : (span.text || "");
+    if (editPopupRemoved) { editPopupRemoved.textContent = '"' + quoted + '"'; }
+    if (editPopupReason) { editPopupReason.textContent = span.reason || ""; }
+    if (editPopupKept) {
+      if (span.keep_text) {
+        editPopupKept.hidden = false;
+        if (editPopupKeptText) { editPopupKeptText.textContent = '"' + span.keep_text + '"'; }
+      } else {
+        editPopupKept.hidden = true;
+        if (editPopupKeptText) { editPopupKeptText.textContent = ""; }
+      }
+    }
+    if (editNoteText) { editNoteText.value = ""; }
+    if (editNoteStatus) { editNoteStatus.textContent = ""; }
+    editPopup.hidden = false;
+    if (popupAnchor) { popupAnchor.setAttribute("aria-expanded", "true"); }
+    positionEditPopup();
+  }
+
+  function runGoldVerdict(decision) {
+    if (!popupGoldRef) { return; }
+    var note = editNoteText ? editNoteText.value.trim() : "";
+    if (editGoldCut) { editGoldCut.disabled = true; }
+    if (editGoldLeave) { editGoldLeave.disabled = true; }
+    postJson("/api/gold-verdict", {
+      gold_id: popupGoldRef.gold_id,
+      decision: decision,
+      note: note
+    }).then(function (res) {
+      var data = res.data || {};
+      if (editGoldCut) { editGoldCut.disabled = false; }
+      if (editGoldLeave) { editGoldLeave.disabled = false; }
+      if (!data.ok) {
+        if (editGoldStatus) { editGoldStatus.textContent = data.error || "That call could not be saved."; }
+        return;
+      }
+      jobGold = data.gold || [];
+      if (data.suggestions) { ruleSuggestions = data.suggestions; renderRules(); }
+      var message = data.message || "Done.";
+      closeEditPopup();
+      if (transcriptStatus) { transcriptStatus.textContent = message; }
+      refreshHistory();
+      reloadJobState();
+    }).catch(function () {
+      if (editGoldCut) { editGoldCut.disabled = false; }
+      if (editGoldLeave) { editGoldLeave.disabled = false; }
+      if (editGoldStatus) { editGoldStatus.textContent = "That call could not be saved."; }
+    });
+  }
+
+  if (editGoldCut) {
+    editGoldCut.addEventListener("click", function () { runGoldVerdict("cut"); });
+  }
+  if (editGoldLeave) {
+    editGoldLeave.addEventListener("click", function () { runGoldVerdict("leave"); });
+  }
+
   function openEditPopup(span, anchor) {
     if (!span || !editPopup) { return; }
     clearPopupTimers();
@@ -2569,8 +2744,10 @@
     popupMode = "edit";
     popupSpanRef = span;
     popupFlagRef = null;
+    popupGoldRef = null;
     popupAnchor = anchor || null;
     setPopupFlagMode(false);
+    setPopupGoldMode(false);
     currentEditId = span.edit_id;
     if (editPopupTitle) { editPopupTitle.textContent = "Why these words were removed"; }
     if (editPopupRemoved) { editPopupRemoved.textContent = '"' + (span.removed_text || "") + '"'; }
@@ -2868,6 +3045,36 @@
   }
   setBreaths("keep");
 
+  // How involved the creator wants to be (v0.7.1): one choice,
+  // saved with the other front door choices, named in every recap.
+  var fdModePills = document.getElementById("fdModePills");
+  var fdModeNote = document.getElementById("fdModeNote");
+  var fdMode = "cleanest";
+
+  var MODE_NOTES = {
+    cleanest: "The editor finishes everything it is sure about. The spots it is unsure about wait in gold, for whenever you want them.",
+    tailor: "The editor brings every spot it is unsure about to you, in gold, before it counts."
+  };
+
+  function setFdMode(mode) {
+    if (mode !== "tailor") { mode = "cleanest"; }
+    fdMode = mode;
+    if (fdModePills) {
+      Array.prototype.forEach.call(fdModePills.querySelectorAll("button"), function (btn) {
+        if (btn.getAttribute("data-mode") === mode) { btn.classList.add("on"); }
+        else { btn.classList.remove("on"); }
+      });
+    }
+    if (fdModeNote) { fdModeNote.textContent = MODE_NOTES[mode]; }
+  }
+
+  if (fdModePills) {
+    Array.prototype.forEach.call(fdModePills.querySelectorAll("button"), function (btn) {
+      btn.addEventListener("click", function () { setFdMode(btn.getAttribute("data-mode")); });
+    });
+  }
+  setFdMode("cleanest");
+
   function renderBetaLine(beta) {
     if (!fdBetaLine) { return; }
     if (beta && beta.line) {
@@ -2926,6 +3133,7 @@
           buffer_s: bufferVal,
           keep_mode: fdKeepMode,
           breaths: fdBreaths,
+          mode: fdMode,
           remove_fillers: fdFillers ? !!fdFillers.checked : false,
           format_scope: fdScope ? fdScope.value : "both",
           direction_text: fdDirection ? fdDirection.value : ""
@@ -2961,6 +3169,15 @@
           if (data.settings && data.settings.breaths) {
             setBreaths(data.settings.breaths);
           }
+          if (data.settings && data.settings.mode) {
+            setFdMode(data.settings.mode);
+          }
+          (data.mode_lines || []).forEach(function (line) {
+            var modeLine = document.createElement("p");
+            modeLine.className = "counts";
+            modeLine.textContent = line;
+            fdResults.appendChild(modeLine);
+          });
           if (data.settings && typeof data.settings.remove_fillers === "boolean" && fdFillers) {
             fdFillers.checked = data.settings.remove_fillers;
           }
@@ -3095,6 +3312,7 @@
     corrections = job.word_corrections || [];
     editSpans = job.edit_spans || [];
     jobFlags = job.flags || [];
+    jobGold = job.gold || [];
     savedRules = job.saved_rules || [];
     ruleSuggestions = job.rule_suggestions || [];
     if (job.front_door) {
@@ -3114,6 +3332,7 @@
       if (fdRow && fdS) { fdRow.style.opacity = fdS.checked ? "" : "0.5"; }
       if (fd.keep_mode) { setKeepMode(fd.keep_mode); }
       if (fd.breaths) { setBreaths(fd.breaths); }
+      if (fd.mode) { setFdMode(fd.mode); }
       var fdF = document.getElementById("fdFillers");
       if (fdF && typeof fd.remove_fillers === "boolean") { fdF.checked = fd.remove_fillers; }
       if (job.front_door) { stateFrontDoor = job.front_door; applyIntakeSettings(job.front_door); }
@@ -3192,7 +3411,7 @@
   var firstEditTimer = null;
 
   // -- the first edit's Remove choices --------------------------------
-  // The same six choices as the front door card, seeded from
+  // The same choices as the front door card, seeded from
   // GET /api/job (its summary carries the saved, usual seeded
   // choices, with or without a job loaded) so a first edit starts
   // from the choices the creator already uses.
@@ -3206,8 +3425,11 @@
   var inBreathsPills = document.getElementById("inBreathsPills");
   var inBreathsNote = document.getElementById("inBreathsNote");
   var inFillers = document.getElementById("inFillers");
+  var inModePills = document.getElementById("inModePills");
+  var inModeNote = document.getElementById("inModeNote");
   var inKeepMode = "last";
   var inBreaths = "keep";
+  var inMode = "cleanest";
 
   function setInKeepMode(mode) {
     if (mode !== "first" && mode !== "best") { mode = "last"; }
@@ -3245,6 +3467,24 @@
   }
   setInBreaths("keep");
 
+  function setInMode(mode) {
+    if (mode !== "tailor") { mode = "cleanest"; }
+    inMode = mode;
+    if (inModePills) {
+      Array.prototype.forEach.call(inModePills.querySelectorAll("button"), function (btn) {
+        if (btn.getAttribute("data-mode") === mode) { btn.classList.add("on"); }
+        else { btn.classList.remove("on"); }
+      });
+    }
+    if (inModeNote) { inModeNote.textContent = MODE_NOTES[mode]; }
+  }
+  if (inModePills) {
+    Array.prototype.forEach.call(inModePills.querySelectorAll("button"), function (btn) {
+      btn.addEventListener("click", function () { setInMode(btn.getAttribute("data-mode")); });
+    });
+  }
+  setInMode("cleanest");
+
   function setInBuffer(v) {
     var clamped = clampBuffer(v);
     if (inBufferRange) { inBufferRange.value = clamped; }
@@ -3274,6 +3514,7 @@
     if (typeof fd.buffer_s === "number") { setInBuffer(fd.buffer_s); }
     if (fd.keep_mode) { setInKeepMode(fd.keep_mode); }
     if (fd.breaths) { setInBreaths(fd.breaths); }
+    if (fd.mode) { setInMode(fd.mode); }
     if (inFillers && typeof fd.remove_fillers === "boolean") { inFillers.checked = fd.remove_fillers; }
     updateInBufferDim();
   }
@@ -3285,6 +3526,7 @@
       buffer_s: inBufferNum ? clampBuffer(inBufferNum.value) : 0.2,
       keep_mode: inKeepMode,
       breaths: inBreaths,
+      mode: inMode,
       remove_fillers: inFillers ? !!inFillers.checked : false
     };
   }

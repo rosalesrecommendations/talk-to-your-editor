@@ -88,7 +88,9 @@ class IsolatedHomeCase(unittest.TestCase):
 
 
 class UsualStoreTests(IsolatedHomeCase):
-    def test_round_trip_writes_only_the_six_keys(self):
+    def test_round_trip_writes_only_the_seven_keys(self):
+        # Seven since v0.7.1: the involvement mode joined the front
+        # door choices the usual carries.
         settings = {
             "remove_retakes": False,
             "cut_silence": False,
@@ -96,6 +98,7 @@ class UsualStoreTests(IsolatedHomeCase):
             "keep_mode": "first",
             "breaths": "trim",
             "remove_fillers": False,
+            "mode": "tailor",
             "something_else": "not stored",
         }
         usual.save_usual(settings)
@@ -125,6 +128,7 @@ class UsualStoreTests(IsolatedHomeCase):
                     "keep_mode": "whichever",  # unknown word: default
                     "breaths": "loud",  # unknown word: default
                     "remove_fillers": False,
+                    "mode": "sometimes",  # unknown word: default
                 }
             ),
             encoding="utf-8",
@@ -136,6 +140,7 @@ class UsualStoreTests(IsolatedHomeCase):
         self.assertEqual(loaded["keep_mode"], "last")
         self.assertEqual(loaded["breaths"], "keep")
         self.assertFalse(loaded["remove_fillers"])
+        self.assertEqual(loaded["mode"], "cleanest")
 
     def test_missing_and_corrupt_files_fall_back_to_defaults(self):
         defaults = dict(webapp.FRONT_DOOR_DEFAULTS)
@@ -534,7 +539,7 @@ class DropSettingsTests(IsolatedHomeCase):
         )
         self.assertIsNone(webapp._validated_drop_settings(None))
 
-    def test_validation_keeps_only_valid_six_keys(self):
+    def test_validation_keeps_only_valid_front_door_keys(self):
         validated = webapp._validated_drop_settings(
             {
                 "settings": {

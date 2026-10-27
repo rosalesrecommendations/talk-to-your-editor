@@ -32,6 +32,7 @@ EDIT_NOTES_FILENAME = "edit_notes.json"
 GRADES_FILENAME = "grades.json"
 CREATOR_RULES_FILENAME = "creator_rules.json"
 RETAKE_PASS_FILENAME = "retake_pass.json"
+GOLD_FILENAME = "gold.json"
 
 # The session files that together are the state of an edit in
 # progress. The after-review page and the rendered video are derived
@@ -47,6 +48,7 @@ STATE_FILES = (
     GRADES_FILENAME,
     CREATOR_RULES_FILENAME,
     RETAKE_PASS_FILENAME,
+    GOLD_FILENAME,
 )
 HISTORY_DIR_NAME = "history"
 META_FILENAME = "meta.json"

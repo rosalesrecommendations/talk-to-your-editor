@@ -35,5 +35,6 @@ tests/test_v04.py
 tests/test_v06.py
 tests/test_v061.py
 tests/test_v07.py
+tests/test_v071.py
 tests/test_v07_backend.py
 tests/test_webapp.py

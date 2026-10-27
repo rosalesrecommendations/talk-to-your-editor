@@ -139,11 +139,20 @@ def _validate_for_apply(ops_data) -> list:
     return ops
 
 
-def _verify_and_apply(args, ops_data, out_dir: Path) -> dict:
+def _verify_and_apply(args, ops_data, out_dir: Path,
+                      adjust_verdicts=None) -> dict:
     ops = _validate_for_apply(ops_data)
     timeline = _timeline(args)
     profile = _load_optional(getattr(args, "profile", None))
     verdicts = verify_operations(ops, timeline, profile)
+    if adjust_verdicts is not None:
+        # A product policy layer (the involvement mode's negation
+        # rule in the web app) may settle specific held verdicts
+        # before anything is applied. It receives the verdicts, the
+        # timeline, and the profile, and returns the verdicts to
+        # apply with. The CLI never passes one, so the command line
+        # path verifies exactly as it always has.
+        verdicts = adjust_verdicts(verdicts, timeline, profile)
     cuts = _load_json(args.cuts)
     revised, audit = apply_verdicts(cuts, timeline, verdicts)
     # A flat per-operation view of the verdicts, in the shape the

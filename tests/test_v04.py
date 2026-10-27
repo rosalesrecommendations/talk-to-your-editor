@@ -163,6 +163,9 @@ class V04Tests(unittest.TestCase):
                 # v0.7.0: the filler choice rides along too; taking
                 # out the ums and uhs is the default.
                 "remove_fillers": True,
+                # v0.7.1: the involvement mode rides along too;
+                # the Cleanest cut is the default.
+                "mode": "cleanest",
             },
         )
         self.assertEqual(summary["saved_rules"], [])

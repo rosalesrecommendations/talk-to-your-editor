@@ -205,8 +205,9 @@ class NoJobSummaryTests(unittest.TestCase):
         self.assertEqual(
             set(front_door),
             {"remove_retakes", "cut_silence", "buffer_s", "keep_mode",
-             "breaths", "remove_fillers"})
+             "breaths", "remove_fillers", "mode"})
         self.assertEqual(summary["flags"], [])
+        self.assertEqual(summary["gold"], [])
 
 
 if __name__ == "__main__":
