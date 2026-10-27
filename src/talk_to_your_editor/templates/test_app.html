@@ -55,9 +55,43 @@
     margin: 0 0 20px;
   }
   .note { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 8px 0 0; }
+  /* Dictation states (v0.6.1): recording is unmistakable, and so is
+     the moment the words are being written down. No control is ever
+     merely gray and silent while it works. */
+  button.recording {
+    background: #ff453a !important;
+    border-color: transparent !important;
+    color: #fff !important;
+    animation: recPulse 1.2s ease-in-out infinite;
+  }
+  @keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+  button.processing::before {
+    content: "";
+    display: inline-block;
+    width: 12px; height: 12px;
+    margin-right: 8px;
+    border-radius: 50%;
+    border: 2px solid rgba(140, 140, 150, 0.45);
+    border-top-color: currentColor;
+    animation: spin 0.8s linear infinite;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  textarea.processing { opacity: 0.6; }
+  /* First-edit progress (v0.6.1): the stage, its number, and a bar
+     that moves, inside the card itself. */
+  .fe-stage { font-size: 17px; font-weight: 600; margin: 14px 0 0; }
+  .fe-track { height: 10px; border-radius: 999px; background: rgba(140, 140, 150, 0.25); overflow: hidden; margin: 10px 0 4px; }
+  .fe-bar { height: 100%; width: 0%; border-radius: 999px; background: #0a84ff; transition: width 0.6s ease; position: relative; }
+  .fe-bar::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.35) 50%, rgba(255,255,255,0) 100%); background-size: 200% 100%; animation: feSheen 1.4s linear infinite; }
+  @keyframes feSheen { from { background-position: 200% 0; } to { background-position: -100% 0; } }
   /* With no job loaded the page is the front door: everything that
      works on a job waits out of sight until one arrives. */
   body.no-job .job-only { display: none !important; }
+  /* A job that is loaded but not whole yet (a file it needs is not
+     on disk) keeps its actions out of sight the same way, behind
+     the one plain banner, until the job is whole. */
+  body.job-incomplete .job-only { display: none !important; }
   video {
     width: 100%;
     border-radius: 20px;
@@ -506,6 +540,11 @@
   <h1>Talk to Your Editor</h1>
   <p class="subtitle">{{SUBTITLE}}</p>
 
+  <div class="card" id="jobIncompleteBanner" hidden>
+    <h2>This job is not whole yet</h2>
+    <p class="note">That job is missing a file it needs. Drop the folder again, or try the built-in sample. Everything that works on the job stays out of sight until the job is whole, and comes back on its own when it is.</p>
+  </div>
+
   <div class="card" id="dropCard">
     <h2>Bring in a job</h2>
     <p class="note">Drop a runner job folder anywhere on this page and the app takes it in and runs on it. No path typing, no Terminal. The app works on the copy it takes in; your original folder is never changed. A single video can be dropped too: it plays here, and the app can make its first edit itself.</p>
@@ -524,11 +563,15 @@
       <textarea id="intakeDirection" rows="2" placeholder="Direction for the first edit (you can leave this empty)"></textarea>
       <div class="row">
         <button id="intakeDictate" type="button">Dictate</button>
-        <label class="switch"><input type="checkbox" id="intakeCaptions" checked> Clean captions</label>
         <button id="firstEditBtn" class="primary" type="button">Make the first edit</button>
       </div>
-      <p class="note">Clean captions are a caption file for the finished first edit with filler words (um, uh, and the like) left out of the text. The sound and the transcript keep them; only the captions are cleaned.</p>
+      <p class="note">Captions come with the first edit, with ums and uhs hidden in the caption text only. The sound and the transcript keep them. You can change that where the captions are handed back, under Revised edit.</p>
       <p class="status-line" id="firstEditStatus"></p>
+      <div id="firstEditProgress" hidden>
+        <p class="fe-stage" id="firstEditStageText"></p>
+        <div class="fe-track"><div class="fe-bar" id="firstEditBar"></div></div>
+        <p class="note" id="firstEditStepCount"></p>
+      </div>
       <div id="firstEditRecap"></div>
     </div>
     <p class="note" id="sampleRow">Just looking around? <button id="loadSample" type="button">Try the built-in sample</button> <span id="sampleStatus"></span></p>
@@ -543,6 +586,7 @@
     <video id="vid" controls playsinline preload="metadata"></video>
     <div class="vid-loading" id="vidLoading" hidden>Loading the video…</div>
     <div class="vid-error" id="vidError" hidden>This video could not be played here; the file may be in a format this browser cannot show.</div>
+    <div class="vid-error" id="vidPending" hidden>Getting your video ready to watch… A long video can take a few minutes.</div>
   </div>
   <div class="tl-wrap job-only" id="tlbar">
     <div class="tl-track" id="tlTrack">
@@ -599,6 +643,12 @@
         <button type="button" data-keep="best">Best delivery (Beta)</button>
       </div>
       <p class="note" id="fdBetaLine"></p>
+      <p class="note">Breaths:</p>
+      <div class="row" id="fdBreathsPills">
+        <button type="button" data-breaths="keep">Keep the natural breath</button>
+        <button type="button" data-breaths="trim">Trim breaths with the pause</button>
+      </div>
+      <p class="note" id="fdBreathsNote"></p>
       <textarea id="fdDirection" rows="3" placeholder="Anything else for this video? What you say adds to the two choices above. Say unless when one spot should be treated differently."></textarea>
       <div class="row">
         <button id="fdDictate" type="button">Dictate</button>
@@ -716,10 +766,18 @@
       <button id="checkSignin" type="button">Check the Meta sign-in</button>
     </div>
     <div class="row">
-      <input id="signinKey" type="password" placeholder="Paste a Meta API key for this session" autocomplete="off">
+      <input id="signinKey" type="password" placeholder="Paste a Meta API key" autocomplete="off">
       <button id="saveSignin" type="button">Use this key for this session</button>
+      <button id="saveSigninMac" type="button">Save on this Mac</button>
     </div>
-    <p class="note">A pasted key is kept in memory only. It is never saved to a file, never shown back, and it is gone when the server stops.</p>
+    <p class="note" id="metaMacRow" hidden><span id="metaMacState"></span> <button id="removeMetaMac" type="button">Remove the saved Meta key</button></p>
+    <div class="row">
+      <input id="elevenKey" type="password" placeholder="Paste an ElevenLabs key (for writing down dropped videos)" autocomplete="off">
+      <button id="saveEleven" type="button">Use this key for this session</button>
+      <button id="saveElevenMac" type="button">Save on this Mac</button>
+    </div>
+    <p class="note" id="elevenMacRow" hidden><span id="elevenMacState"></span> <button id="removeElevenMac" type="button">Remove the saved ElevenLabs key</button></p>
+    <p class="note">A key used for this session only is kept in memory, never written to a file, never shown back, and gone when the server stops. Saving a key on this Mac writes it to a private file in your home folder instead, so the app finds it again after a restart and after a new kit download. The key itself is never displayed.</p>
     <p class="status-line" id="signinStatus"></p>
     <p class="status-line job-only" id="directStatus"></p>
     <div id="results" class="job-only"></div>
@@ -736,7 +794,9 @@
     </div>
     <p class="note">Opens the review page, where you grade each change the program made.</p>
     <p class="status-line" id="renderStatus"></p>
-    <p class="note" id="captionsRow" hidden>Clean captions are ready for this job: <a href="/api/captions">download the caption file (WebVTT)</a>. Filler words are left out of the caption text only; the sound and the transcript keep them.</p>
+    <p class="note" id="captionsRow" hidden>Captions are ready for this job: <a href="/api/captions">download the caption file (WebVTT)</a>.</p>
+    <p class="note" id="captionsSwitchRow" hidden><label class="switch"><input type="checkbox" id="captionsHideFillers" checked> Hide ums and uhs in captions</label> <span id="captionsPrefStatus"></span></p>
+    <p class="note">Hiding ums and uhs changes the caption text only. The sound and the transcript keep every word.</p>
     <details class="note downloads">
       <summary>Advanced: session files</summary>
       <a href="/api/download/feedback.json">feedback.json</a>
@@ -744,6 +804,17 @@
       <a href="/api/download/operations_audit.json">operations_audit.json</a>
       <a href="/api/download/revised_cuts.json">revised_cuts.json</a>
     </details>
+  </div>
+
+  <div class="card job-only" id="finishCard" hidden>
+    <h2>Finished edit</h2>
+    <p class="note">Your finished work, in one place. This is the latest video you built from this edit, with everything that goes with it.</p>
+    <div class="row">
+      <a href="/revised-review.mp4"><button type="button">Watch the finished video</button></a>
+      <a href="/api/finish/video"><button type="button">Download the finished video</button></a>
+    </div>
+    <p class="note" id="finishCaptionsRow" hidden>Captions for this edit: <a href="/api/captions">download the caption file (WebVTT)</a>.</p>
+    <p class="note" id="finishCaptionsSwitchRow" hidden><label class="switch"><input type="checkbox" id="finishCaptionsHideFillers" checked> Hide ums and uhs in captions</label></p>
   </div>
 
   <div class="card job-only" id="historyCard">
@@ -763,6 +834,7 @@
   "use strict";
   var JOB_NAME = {{JOB_NAME_JSON}};
   var HAS_JOB = {{HAS_JOB_JSON}};
+  var JOB_WHOLE = {{JOB_WHOLE_JSON}};
   var PRIMARY_VIDEO = {{VIDEO_JSON}};
   var META_AVAILABLE = {{META_AVAILABLE_JSON}};
 
@@ -772,6 +844,15 @@
     document.body.classList.add("no-job");
     var directionTitle = document.getElementById("directionTitle");
     if (directionTitle) { directionTitle.textContent = "Meta sign-in"; }
+  }
+
+  if (HAS_JOB && !JOB_WHOLE) {
+    // A job is loaded but a file it needs is not on disk: its
+    // actions wait out of sight behind the one plain banner until
+    // the job is whole.
+    document.body.classList.add("job-incomplete");
+    var incompleteBanner = document.getElementById("jobIncompleteBanner");
+    if (incompleteBanner) { incompleteBanner.hidden = false; }
   }
 
   var loadSampleBtn = document.getElementById("loadSample");
@@ -1594,8 +1675,95 @@
         signinStateEl.textContent = "No Meta sign-in is set on this server yet. Paste one below to use Meta direction.";
         if (fdNote) { fdNote.textContent = "Direction will use the offline mock. To use Muse, add a Meta sign-in in the Run direction card below."; }
       }
+      var metaRow = document.getElementById("metaMacRow");
+      var metaState = document.getElementById("metaMacState");
+      if (metaRow && metaState) {
+        metaRow.hidden = !s.meta_saved_on_mac;
+        metaState.textContent = s.meta_saved_on_mac
+          ? "Meta key saved on this Mac. It will be here after a restart, and after a new kit download."
+          : "";
+      }
+      var elevenRow = document.getElementById("elevenMacRow");
+      var elevenState = document.getElementById("elevenMacState");
+      if (elevenRow && elevenState) {
+        elevenRow.hidden = !s.elevenlabs_saved_on_mac;
+        elevenState.textContent = s.elevenlabs_saved_on_mac
+          ? "ElevenLabs key saved on this Mac. It will be here after a restart, and after a new kit download."
+          : "";
+      }
     }).catch(function () {
       signinStateEl.textContent = "";
+    });
+  }
+
+  function wireKeyButtons(saveMacId, inputId, kind, label) {
+    var saveMac = document.getElementById(saveMacId);
+    if (saveMac) {
+      saveMac.addEventListener("click", function () {
+        var input = document.getElementById(inputId);
+        var key = input ? input.value.trim() : "";
+        if (!key) {
+          signinStatusEl.textContent = "Paste the " + label + " key first, then save it on this Mac.";
+          if (input) { input.focus(); }
+          return;
+        }
+        postJson("/api/signin/save", { kind: kind, api_key: key }).then(function (res) {
+          var data = res.data || {};
+          if (data.ok) {
+            input.value = "";
+            signinStatusEl.textContent = "The " + label + " key is saved on this Mac, and this session is using it too.";
+            refreshSignin();
+          } else {
+            signinStatusEl.textContent = "The " + label + " key could not be saved: " + (data.error || res.status);
+          }
+        }).catch(function (err) {
+          signinStatusEl.textContent = "The " + label + " key could not be saved: " + err;
+        });
+      });
+    }
+  }
+
+  function wireKeyRemove(removeId, kind, label) {
+    var btn = document.getElementById(removeId);
+    if (!btn) { return; }
+    btn.addEventListener("click", function () {
+      postJson("/api/signin/remove", { kind: kind }).then(function (res) {
+        var data = res.data || {};
+        if (data.ok) {
+          signinStatusEl.textContent = "The saved " + label + " key is removed from this Mac. The next start will not find it.";
+          refreshSignin();
+        } else {
+          signinStatusEl.textContent = "The saved " + label + " key could not be removed: " + (data.error || res.status);
+        }
+      }).catch(function (err) {
+        signinStatusEl.textContent = "The saved " + label + " key could not be removed: " + err;
+      });
+    });
+  }
+
+  wireKeyButtons("saveSigninMac", "signinKey", "meta", "Meta");
+  wireKeyButtons("saveElevenMac", "elevenKey", "elevenlabs", "ElevenLabs");
+  wireKeyRemove("removeMetaMac", "meta", "Meta");
+  wireKeyRemove("removeElevenMac", "elevenlabs", "ElevenLabs");
+
+  var saveElevenBtn = document.getElementById("saveEleven");
+  if (saveElevenBtn) {
+    saveElevenBtn.addEventListener("click", function () {
+      var input = document.getElementById("elevenKey");
+      var key = input.value.trim();
+      if (!key) { input.focus(); return; }
+      postJson("/api/signin", { kind: "elevenlabs", api_key: key }).then(function (res) {
+        var data = res.data || {};
+        if (data.ok) {
+          input.value = "";
+          signinStatusEl.textContent = "Saved for this session. Dropped videos will be written down with this ElevenLabs key until the server stops.";
+          refreshSignin();
+        } else {
+          signinStatusEl.textContent = "Could not save the key: " + (data.error || res.status);
+        }
+      }).catch(function (err) {
+        signinStatusEl.textContent = "Could not save the key: " + err;
+      });
     });
   }
 
@@ -1646,6 +1814,12 @@
     area.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
+  function fmtClock(totalSeconds) {
+    var m = Math.floor(totalSeconds / 60);
+    var s = totalSeconds % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
   function wireDictation(btnId, areaId, statusId) {
     var btn = document.getElementById(btnId);
     var area = document.getElementById(areaId);
@@ -1655,6 +1829,8 @@
     var recorder = null;
     var chunks = [];
     var stream = null;
+    var timer = null;
+    var startedAt = 0;
     function say(text) { if (status) { status.textContent = text; } }
     function stopTracks() {
       if (stream) {
@@ -1662,12 +1838,45 @@
         stream = null;
       }
     }
+    // The recording state lives on the button itself: red, pulsing,
+    // counting the seconds, so it can never be missed.
+    function showRecording() {
+      startedAt = Date.now();
+      btn.classList.add("recording");
+      btn.textContent = "● Recording 0:00 — tap to stop";
+      timer = setInterval(function () {
+        var s = Math.floor((Date.now() - startedAt) / 1000);
+        btn.textContent = "● Recording " + fmtClock(s) + " — tap to stop";
+      }, 500);
+    }
+    function hideRecording() {
+      if (timer) { clearInterval(timer); timer = null; }
+      btn.classList.remove("recording");
+    }
+    // The writing-down state lives on the button and its box:
+    // a spinner, the words, and no typing until the text lands.
+    function showProcessing() {
+      btn.disabled = true;
+      btn.classList.add("processing");
+      btn.textContent = "Writing your words…";
+      area.classList.add("processing");
+      area.readOnly = true;
+    }
+    function hideProcessing() {
+      btn.disabled = false;
+      btn.classList.remove("processing");
+      btn.textContent = label;
+      area.classList.remove("processing");
+      area.readOnly = false;
+    }
     btn.addEventListener("click", function () {
       if (recorder && recorder.state === "recording") {
         recorder.stop();
-        btn.textContent = label;
+        hideRecording();
+        showProcessing();
         return;
       }
+      if (btn.disabled) { return; }
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
         say("This browser cannot record here. Typing works, and the microphone on the keyboard works too.");
         return;
@@ -1688,16 +1897,18 @@
         recorder.onstop = function () {
           stopTracks();
           if (!chunks.length) {
+            hideProcessing();
             say("Nothing was recorded. Try again, or type the note.");
             return;
           }
           var blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-          say("Writing down what you said…");
+          say("Writing your words…");
           fetch("/api/dictate", {
             method: "POST",
             body: blob,
             headers: { "Content-Type": blob.type }
           }).then(function (r) { return r.json(); }).then(function (data) {
+            hideProcessing();
             if (data && data.ok) {
               appendDictated(area, data.text || "");
               say("Your words are in the box. Read them over and fix anything before you save.");
@@ -1705,12 +1916,13 @@
               say((data && data.message) || "The note could not be written down. Typing works as always.");
             }
           }).catch(function () {
+            hideProcessing();
             say("The note could not be written down. Typing works as always.");
           });
         };
         recorder.start();
-        btn.textContent = "Stop and write it down";
-        say("Listening. Speak the note, then press the button again.");
+        showRecording();
+        say("Recording. Speak the note, then tap the button again to stop.");
       }).catch(function () {
         say("The microphone was not allowed. Typing works, and the microphone on the keyboard works too.");
       });
@@ -2027,6 +2239,34 @@
   }
   setKeepMode("last");
 
+  var fdBreathsPills = document.getElementById("fdBreathsPills");
+  var fdBreathsNote = document.getElementById("fdBreathsNote");
+  var fdBreaths = "keep";
+
+  var BREATHS_NOTES = {
+    keep: "The breath before a sentence stays in. Silence is trimmed toward the buffer, but never below the natural breath.",
+    trim: "Breaths go with the pause. Silence is trimmed all the way down to the buffer, so the next thought lands right away."
+  };
+
+  function setBreaths(mode) {
+    if (mode !== "trim") { mode = "keep"; }
+    fdBreaths = mode;
+    if (fdBreathsPills) {
+      Array.prototype.forEach.call(fdBreathsPills.querySelectorAll("button"), function (btn) {
+        if (btn.getAttribute("data-breaths") === mode) { btn.classList.add("on"); }
+        else { btn.classList.remove("on"); }
+      });
+    }
+    if (fdBreathsNote) { fdBreathsNote.textContent = BREATHS_NOTES[mode]; }
+  }
+
+  if (fdBreathsPills) {
+    Array.prototype.forEach.call(fdBreathsPills.querySelectorAll("button"), function (btn) {
+      btn.addEventListener("click", function () { setBreaths(btn.getAttribute("data-breaths")); });
+    });
+  }
+  setBreaths("keep");
+
   function renderBetaLine(beta) {
     if (!fdBetaLine) { return; }
     if (beta && beta.line) {
@@ -2084,6 +2324,7 @@
           cut_silence: fdSilence ? !!fdSilence.checked : true,
           buffer_s: bufferVal,
           keep_mode: fdKeepMode,
+          breaths: fdBreaths,
           format_scope: fdScope ? fdScope.value : "both",
           direction_text: fdDirection ? fdDirection.value : ""
         });
@@ -2102,6 +2343,21 @@
             recapLine.className = "counts";
             recapLine.textContent = data.recap;
             fdResults.appendChild(recapLine);
+          }
+          (data.direction_recap || []).forEach(function (line) {
+            var setLine = document.createElement("p");
+            setLine.className = "counts";
+            setLine.textContent = line;
+            fdResults.appendChild(setLine);
+          });
+          if (data.breaths_recap) {
+            var breathsLine = document.createElement("p");
+            breathsLine.className = "counts";
+            breathsLine.textContent = data.breaths_recap;
+            fdResults.appendChild(breathsLine);
+          }
+          if (data.settings && data.settings.breaths) {
+            setBreaths(data.settings.breaths);
           }
           var runs = data.direction_runs || [];
           if (runs.length) {
@@ -2243,6 +2499,7 @@
       }
       if (fdRow && fdS) { fdRow.style.opacity = fdS.checked ? "" : "0.5"; }
       if (fd.keep_mode) { setKeepMode(fd.keep_mode); }
+      if (fd.breaths) { setBreaths(fd.breaths); }
     }
     renderBetaLine(job.beta);
     renderList();
@@ -2310,7 +2567,10 @@
   var firstEditStatus = document.getElementById("firstEditStatus");
   var firstEditRecap = document.getElementById("firstEditRecap");
   var intakeDirectionEl = document.getElementById("intakeDirection");
-  var intakeCaptionsEl = document.getElementById("intakeCaptions");
+  var firstEditProgress = document.getElementById("firstEditProgress");
+  var firstEditStageText = document.getElementById("firstEditStageText");
+  var firstEditBar = document.getElementById("firstEditBar");
+  var firstEditStepCount = document.getElementById("firstEditStepCount");
   var currentIntakeId = null;
   var firstEditTimer = null;
 
@@ -2326,28 +2586,61 @@
     firstEditRecap.appendChild(p);
   }
 
+  // The progress block in the card: current stage in plain words,
+  // which step of how many, and a bar that moves. Updated from the
+  // status endpoint on every poll, so working is never just a gray
+  // button and a small line.
+  function showFirstEditProgress(stageText, index, total) {
+    if (firstEditProgress) { firstEditProgress.hidden = false; }
+    if (firstEditStageText) {
+      firstEditStageText.textContent = stageText || "Working…";
+    }
+    if (firstEditStepCount) {
+      firstEditStepCount.textContent =
+        index && total ? "Step " + index + " of " + total : "";
+    }
+    if (firstEditBar) {
+      var pct = index && total
+        ? Math.max(4, Math.round((index / total) * 100))
+        : 12;
+      firstEditBar.style.width = pct + "%";
+    }
+  }
+
+  function hideFirstEditProgress() {
+    if (firstEditProgress) { firstEditProgress.hidden = true; }
+  }
+
   function pollFirstEdit() {
     fetch("/api/intake/status?intake=" + encodeURIComponent(currentIntakeId))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data || data.status === "idle") { return; }
         if (data.status === "working") {
-          firstEditSay(data.stage || "Working…");
+          showFirstEditProgress(
+            data.stage, data.stage_index, data.stage_total
+          );
           firstEditTimer = setTimeout(pollFirstEdit, 2000);
           return;
         }
         if (data.status === "done") {
-          firstEditSay(data.stage || "The first edit is ready.");
+          showFirstEditProgress(
+            "The first edit is ready.",
+            data.stage_total || 1,
+            data.stage_total || 1
+          );
+          firstEditSay("");
           if (firstEditRecap) { firstEditRecap.innerHTML = ""; }
           (data.recap || []).forEach(firstEditLine);
           if (data.render_note) { firstEditLine(data.render_note); }
           if (data.captions) {
-            firstEditLine("Clean captions are ready too. After the page reloads, the download is under Revised edit.");
+            firstEditLine("Captions are ready too. After the page reloads, the download is under Revised edit.");
           }
           if (firstEditBtn) { firstEditBtn.disabled = false; }
           setTimeout(function () { window.location.reload(); }, 5000);
           return;
         }
+        hideFirstEditProgress();
         firstEditSay(data.message || "The first edit could not be made.");
         if (firstEditBtn) { firstEditBtn.disabled = false; }
       })
@@ -2361,20 +2654,22 @@
       if (!currentIntakeId) { return; }
       firstEditBtn.disabled = true;
       if (firstEditRecap) { firstEditRecap.innerHTML = ""; }
-      firstEditSay("Starting…");
+      firstEditSay("");
+      showFirstEditProgress("Starting…", 0, 0);
       postJson("/api/intake/first-edit", {
         intake_id: currentIntakeId,
-        direction: intakeDirectionEl ? intakeDirectionEl.value : "",
-        clean_captions: intakeCaptionsEl ? intakeCaptionsEl.checked : true
+        direction: intakeDirectionEl ? intakeDirectionEl.value : ""
       }).then(function (res) {
         var data = (res && res.data) || {};
         if (!data.ok) {
+          hideFirstEditProgress();
           firstEditSay(data.error || "The first edit could not be started.");
           firstEditBtn.disabled = false;
           return;
         }
         pollFirstEdit();
       }).catch(function () {
+        hideFirstEditProgress();
         firstEditSay("The first edit could not be started. Check the connection and try again.");
         firstEditBtn.disabled = false;
       });
@@ -2494,11 +2789,33 @@
         // whole page (video, transcript, counts) is the new job's.
         setTimeout(function () { window.location.reload(); }, 900);
       } else if (data.kind === "video" && data.video_url) {
-        dropVideo.src = data.video_url;
-        dropVideoWrap.hidden = false;
         currentIntakeId = dropIntakeId;
         if (firstEditBlock && data.can_first_edit) {
           firstEditBlock.hidden = false;
+        }
+        if (data.playback && data.playback !== "ready") {
+          // The watchable copy is still being made; the raw file
+          // is never the placeholder. Poll the intake status and
+          // swap the preview in when the copy lands.
+          dropSay("Getting your video ready to watch… A long video can take a few minutes.");
+          var previewPoll = setInterval(function () {
+            fetch("/api/intake/status?intake=" + encodeURIComponent(dropIntakeId))
+              .then(function (r) { return r.json(); })
+              .then(function (st) {
+                if (!st.playback || st.playback === "ready") {
+                  clearInterval(previewPoll);
+                  dropVideo.src = data.video_url;
+                  dropVideoWrap.hidden = false;
+                  dropSay(data.message || "");
+                } else if (st.playback === "failed") {
+                  clearInterval(previewPoll);
+                  dropSay("This video could not be made watchable here, so the preview cannot be shown. You can still make the first edit: the edit works from the words.");
+                }
+              }).catch(function () {});
+          }, 3000);
+        } else {
+          dropVideo.src = data.video_url;
+          dropVideoWrap.hidden = false;
         }
       }
     }).catch(function () {
@@ -2550,6 +2867,107 @@
     sendDrop(files);
   });
 
+  // The captions switch lives where the captions are handed back:
+  // beside the download on the Revised edit card, and on the
+  // finish card. Both switches drive the one choice, and both are
+  // set from the job state, so they never disagree.
+  function setCaptionsSwitches(on) {
+    ["captionsHideFillers", "finishCaptionsHideFillers"].forEach(
+      function (id) {
+        var el = document.getElementById(id);
+        if (el) { el.checked = !!on; }
+      }
+    );
+    var prefStatus = document.getElementById("captionsPrefStatus");
+    if (prefStatus) {
+      prefStatus.textContent = on
+        ? "Captions will hide ums and uhs."
+        : "Captions will show every word, ums and uhs too.";
+    }
+  }
+
+  function wireCaptionsSwitch(id) {
+    var el = document.getElementById(id);
+    if (!el) { return; }
+    el.addEventListener("change", function () {
+      var on = el.checked;
+      postJson("/api/captions-pref", { hide_fillers: on }).then(
+        function (res) {
+          var data = (res && res.data) || {};
+          if (data.ok) {
+            setCaptionsSwitches(data.captions_hide_fillers);
+            var row = document.getElementById("captionsRow");
+            if (row) { row.hidden = !data.captions_available; }
+            var finRow = document.getElementById("finishCaptionsRow");
+            if (finRow && !data.captions_available) {
+              finRow.hidden = true;
+            }
+          } else {
+            setCaptionsSwitches(!on);
+          }
+        }
+      ).catch(function () { setCaptionsSwitches(!on); });
+    });
+  }
+
+  wireCaptionsSwitch("captionsHideFillers");
+  wireCaptionsSwitch("finishCaptionsHideFillers");
+
+  // The player never points at a video whose watchable copy is
+  // not ready: the raw file is never served in its place. While
+  // the copy is being made the pending note stands in, the job is
+  // polled, and the copy swaps in when it lands, with no reload.
+  var primaryVideoName = null;
+  var playbackPoll = null;
+
+  function startPlayer(job) {
+    var pending = document.getElementById("vidPending");
+    var names = job.videos || [];
+    var name = videoFor("vertical") || names[0] || null;
+    primaryVideoName = name;
+    var state = name && job.playback ? job.playback[name] : "ready";
+    if (name && state && state !== "ready") {
+      if (pending) {
+        pending.hidden = false;
+        pending.textContent = state === "failed"
+          ? "This video could not be made watchable here, so it cannot be shown yet. The edit still works from the words."
+          : "Getting your video ready to watch… A long video can take a few minutes.";
+      }
+      document.getElementById("novid").hidden = true;
+      vid.hidden = true;
+      tlbarEl.hidden = true;
+      if (state !== "failed" && !playbackPoll) {
+        playbackPoll = setInterval(function () {
+          fetch("/api/job").then(function (r) { return r.json(); })
+            .then(function (fresh) {
+              var s = fresh.playback
+                ? fresh.playback[primaryVideoName]
+                : "ready";
+              if (s === "ready" || s === "failed") {
+                clearInterval(playbackPoll);
+                playbackPoll = null;
+                videos = fresh.videos || videos;
+                startPlayer(fresh);
+              }
+            }).catch(function () {});
+        }, 4000);
+      }
+      return;
+    }
+    if (pending) { pending.hidden = true; }
+    if (name) {
+      vid.hidden = false;
+      tlbarEl.hidden = false;
+      showLoading();
+      vid.src = "/video/" + name;
+      noteMissingFormats();
+    } else {
+      document.getElementById("novid").hidden = false;
+      vid.hidden = true;
+      tlbarEl.hidden = true;
+    }
+  }
+
   fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
     videos = job.videos || [];
     videoShapes = job.video_shapes || {};
@@ -2561,15 +2979,35 @@
     }
     var captionsRow = document.getElementById("captionsRow");
     if (captionsRow) { captionsRow.hidden = !job.captions_available; }
-    if (videos.length) {
-      showLoading();
-      vid.src = "/video/" + (videoFor("vertical") || videos[0]);
-      noteMissingFormats();
-    } else {
-      document.getElementById("novid").hidden = false;
-      vid.hidden = true;
-      tlbarEl.hidden = true;
+    setCaptionsSwitches(job.captions_hide_fillers !== false);
+    var captionsSwitchRow = document.getElementById("captionsSwitchRow");
+    if (captionsSwitchRow) {
+      captionsSwitchRow.hidden = !(job.is_intake || job.captions_available);
     }
+    if (job.has_job && job.job_whole === false) {
+      document.body.classList.add("job-incomplete");
+      var bannerNow = document.getElementById("jobIncompleteBanner");
+      if (bannerNow) { bannerNow.hidden = false; }
+    }
+    var finishCard = document.getElementById("finishCard");
+    if (finishCard && job.finish) {
+      finishCard.hidden = !job.finish.ready;
+      var finishCaptionsRow = document.getElementById("finishCaptionsRow");
+      if (finishCaptionsRow) {
+        finishCaptionsRow.hidden = !(
+          job.finish.is_intake && job.finish.captions_available
+        );
+      }
+      var finishSwitchRow = document.getElementById(
+        "finishCaptionsSwitchRow"
+      );
+      if (finishSwitchRow) {
+        finishSwitchRow.hidden = !(
+          job.finish.ready && job.finish.is_intake
+        );
+      }
+    }
+    startPlayer(job);
     applyJobState(job);
     updatePlayhead();
     refreshHistory();

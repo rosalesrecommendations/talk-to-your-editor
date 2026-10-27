@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -2449,7 +2450,18 @@ class BrowserSafeVideoTests(unittest.TestCase):
         )
 
     def test_hevc_mov_is_served_as_an_h264_playback_copy(self):
-        status, served = self._get(self.base, "/video/clip.MOV")
+        # Since v0.6.1 the copy is built in the background when
+        # the job loads, never inside the play request: until it
+        # lands, /video/ answers "still being made" (503) rather
+        # than the raw HEVC. Poll for the copy the way the page
+        # itself does.
+        status, served = 503, b""
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            status, served = self._get(self.base, "/video/clip.MOV")
+            if status == 200:
+                break
+            time.sleep(0.5)
         self.assertEqual(status, 200)
         # What the page receives is not the HEVC original...
         self.assertNotEqual(served, self.original_mov)

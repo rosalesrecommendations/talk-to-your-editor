@@ -192,9 +192,13 @@ class NoJobServerTests(unittest.TestCase):
         self.assertFalse(payload["can_undo"])
 
     def test_video_route_is_a_plain_404_with_no_job(self):
+        # v0.6.1: a media address is one a browser can land on, so
+        # it answers with a plain-words page, never a bare JSON body.
         status, _, body = self.request("/video/review.mp4")
         self.assertEqual(status, 404)
-        self.assertIn(b"no job is loaded yet", body)
+        self.assertIn(b"No job is loaded yet", body)
+        self.assertIn(b"<html", body)
+        self.assertNotIn(b'{"error"', body)
 
     # -- job-shaped requests get one plain sentence --------------------------
 

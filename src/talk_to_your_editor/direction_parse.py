@@ -4,7 +4,8 @@ When a creator drops a raw video they can say, in plain words, how
 the first edit should go: "remove retakes, last take is the best
 take." This module maps that sentence onto the controls the first
 edit actually has (retakes on or off, which take is kept, silence
-on or off and how much of it to leave) with fixed rules, never a
+on or off and how much of it to leave, and whether the breaths
+stay natural or trim away with the pauses) with fixed rules, never a
 model call, so the same words always set the same controls. Every
 setting it sets is named back in the recap, in plain words. Whatever
 does not map to a control is returned as a remainder, and the
@@ -98,6 +99,30 @@ _RULES = [
         ),
         {"cut_silence": True},
         "Silence will be cut.",
+    ),
+    # Breaths: the wordings that keep them are tried before the
+    # wordings that trim them, so "don't cut the breaths" can
+    # never read as "cut the breaths".
+    (
+        re.compile(
+            r"\bkeep\s+(?:the\s+)?breaths?\s+natural\b"
+            r"|\bkeep\s+(?:the\s+)?natural\s+breaths?\b"
+            r"|\bkeep\s+(?:the\s+)?breaths?\b"
+            r"|\bleave\s+(?:the\s+)?breaths?\b"
+            r"|\b(?:don'?t|do not|never)\s+(?:cut|trim|remove)\s+"
+            r"(?:the\s+)?breaths?\b",
+            re.I,
+        ),
+        {"breaths": "keep"},
+        "Breaths will be kept natural.",
+    ),
+    (
+        re.compile(
+            r"\b(?:cut|trim|remove|take out)\s+(?:the\s+)?breaths?\b",
+            re.I,
+        ),
+        {"breaths": "trim"},
+        "Breaths will be trimmed with the pauses.",
     ),
 ]
 

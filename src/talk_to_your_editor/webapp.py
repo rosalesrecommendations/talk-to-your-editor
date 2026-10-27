@@ -211,13 +211,86 @@ def _playback_copy_path(config: "WebAppConfig", name: str) -> Path:
     )
 
 
-def _convert_playback_copy(source: Path, dest: Path) -> bool:
-    """Build an H.264 copy of ``source`` at ``dest`` with ffmpeg.
+PLAYBACK_BUILDING_MESSAGE = (
+    "Your video is being made watchable here. A long video can "
+    "take a few minutes."
+)
+PLAYBACK_FAILED_MESSAGE = (
+    "This video could not be made watchable here, so it cannot be "
+    "shown yet. The edit still works from the words."
+)
+PLAYBACK_GETTING_READY = "Getting your video ready to watch…"
 
-    The copy is written to a scratch name and moved into place only
-    when it is complete, so a stopped conversion never leaves a
-    half-written file to serve. Returns False (with the detail in
-    the server log) when no copy could be built.
+_ENCODERS_CACHE: Optional[frozenset] = None
+
+
+def _ffmpeg_encoders() -> frozenset:
+    """The encoder names this machine's ffmpeg offers (cached).
+
+    A Mac's ffmpeg build may have no libx264 at all; the hardware
+    encoder is then the only route, so what exists is checked
+    before any conversion is attempted, never assumed.
+    """
+    global _ENCODERS_CACHE
+    if _ENCODERS_CACHE is not None:
+        return _ENCODERS_CACHE
+    found = set()
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        try:
+            out = subprocess.run(
+                [ffmpeg, "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=30,
+            )
+            for line in out.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2:
+                    found.add(parts[1])
+        except (OSError, subprocess.SubprocessError):
+            pass
+    _ENCODERS_CACHE = frozenset(found)
+    return _ENCODERS_CACHE
+
+
+def _playback_attempts() -> list:
+    """Encoder argument sets for a watchable copy, best first.
+
+    Each attempt is (input args, video args). On a Mac the
+    hardware encoder is preferred (several times faster, and it
+    leaves the CPU to transcription); the software ladder is the
+    fallback: capped at 720p, veryfast, CRF 24 with a 5 Mbps
+    ceiling, because a playback copy exists for watching and
+    scrubbing, not for delivery. A machine with neither encoder
+    yields no attempts, and the caller answers in plain words;
+    the raw file is never served in the copy's place.
+    """
+    encoders = _ffmpeg_encoders()
+    attempts = []
+    if "h264_videotoolbox" in encoders:
+        attempts.append((
+            ["-hwaccel", "videotoolbox"],
+            ["-c:v", "h264_videotoolbox", "-b:v", "5M"],
+        ))
+    if "libx264" in encoders:
+        attempts.append((
+            [],
+            [
+                "-c:v", "libx264", "-preset", "veryfast",
+                "-crf", "24", "-maxrate", "5M", "-bufsize", "10M",
+            ],
+        ))
+    return attempts
+
+
+def _convert_playback_copy(source: Path, dest: Path) -> bool:
+    """Build a watchable H.264 copy of ``source`` at ``dest``.
+
+    The ladder above, at reduced process priority so a long
+    conversion never starves transcription running alongside.
+    The copy is written to a scratch name and moved into place
+    only when it is complete, so a stopped conversion never
+    leaves a half-written file to serve. Returns False (with the
+    detail in the server log) when no copy could be built.
     """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -226,62 +299,177 @@ def _convert_playback_copy(source: Path, dest: Path) -> bool:
             file=sys.stderr,
         )
         return False
+    attempts = _playback_attempts()
+    if not attempts:
+        print(
+            "[video] this machine's ffmpeg has neither "
+            "h264_videotoolbox nor libx264, so no watchable copy "
+            f"can be made of {source.name}",
+            file=sys.stderr,
+        )
+        return False
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.parent / (dest.name + ".part")
-    try:
-        proc = subprocess.run(
-            [
-                ffmpeg, "-y", "-v", "error", "-i", str(source),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-movflags", "+faststart",
-                # The scratch name has no video extension, so the
-                # MP4 format is named outright.
-                "-f", "mp4", str(tmp),
-            ],
-            capture_output=True, text=True, timeout=1800,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        print(f"[video] conversion of {source.name} failed: {exc}",
-              file=sys.stderr)
-        tmp.unlink(missing_ok=True)
-        return False
-    if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size == 0:
+    nice = ["nice", "-n", "10"] if shutil.which("nice") else []
+    for input_args, video_args in attempts:
+        command = nice + [
+            ffmpeg, "-y", "-v", "error",
+            *input_args, "-i", str(source),
+            # The comma inside min() is escaped: bare, ffmpeg
+            # would read it as a filter-chain separator.
+            "-vf", "scale=-2:min(720\\,ih)",
+            *video_args,
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            # The scratch name has no video extension, so the
+            # MP4 format is named outright.
+            "-f", "mp4", str(tmp),
+        ]
+        try:
+            proc = subprocess.run(
+                command, capture_output=True, text=True, timeout=1800,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(
+                f"[video] conversion of {source.name} failed: {exc}",
+                file=sys.stderr,
+            )
+            tmp.unlink(missing_ok=True)
+            continue
+        if (
+            proc.returncode == 0
+            and tmp.is_file()
+            and tmp.stat().st_size > 0
+        ):
+            tmp.replace(dest)
+            return True
         tail = (proc.stderr or "").strip()[-1000:]
         print(
             f"[video] conversion of {source.name} failed:\n{tail}",
             file=sys.stderr,
         )
         tmp.unlink(missing_ok=True)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Watchable copies: built in the background, never inside a request,
+# and the raw original is never served in a copy's place.
+#
+# A copy's life is tracked by copy path in the two sets below, so
+# the state survives the config swaps that happen when a drop
+# becomes the job. "Ready" is the copy file itself on disk (or a
+# source that needs no copy); the sets only remember what the disk
+# cannot say: that a build is running, or that one already failed.
+# ---------------------------------------------------------------------------
+
+_PLAYBACK_BUILD_LOCK = threading.Lock()
+_PLAYBACK_BUILDING: set = set()
+_PLAYBACK_FAILED: set = set()
+
+
+def _copy_ready(copy_path: Path) -> bool:
+    try:
+        return copy_path.is_file() and copy_path.stat().st_size > 0
+    except OSError:
         return False
-    tmp.replace(dest)
-    return True
 
 
-def _playback_target(config: "WebAppConfig", name: str) -> Path:
-    """The file to actually serve for one of the job's videos.
+def _needs_copy(source: Path) -> bool:
+    """Whether this file needs a watchable copy at all.
 
-    The job's own file when it is already encoded the way browsers
-    can play (H.264). Otherwise a converted playback copy inside
-    the session folder, built once and then reused; the original is
-    never touched. When no copy can be built, the original is
-    served as-is: the browser refuses it and the player shows its
-    plain could-not-play message instead of sitting on a loading
-    note forever.
+    A file ffprobe cannot read at all (codec None) is not a video
+    any player could show either way; it keeps the legacy
+    byte-serve so odd files and test fixtures behave as they
+    always have. A real codec that is not H.264 always needs one.
+    """
+    codec = _probe_video_codec(source)
+    return codec is not None and codec != BROWSER_SAFE_CODEC
+
+
+def _playback_state_for(source: Path, copy_path: Path) -> str:
+    """One of ready, building, failed, unstarted, for the page."""
+    if not _needs_copy(source):
+        return "ready"
+    if _copy_ready(copy_path):
+        return "ready"
+    key = str(copy_path)
+    with _PLAYBACK_BUILD_LOCK:
+        if key in _PLAYBACK_BUILDING:
+            return "building"
+        if key in _PLAYBACK_FAILED:
+            return "failed"
+    return "unstarted"
+
+
+def _ensure_playback_copy_for(source: Path, copy_path: Path) -> None:
+    """Start this copy's build in the background, if it needs one.
+
+    Called when a drop finishes and when a job is loaded, never
+    from inside a play request's critical path (a serve may kick
+    it as a last resort, but answers "still being made" rather
+    than waiting). A failed build is remembered for the life of
+    the process, so a broken conversion is not retried on every
+    poll; the next server start tries again.
+    """
+    if not _needs_copy(source) or _copy_ready(copy_path):
+        return
+    key = str(copy_path)
+    with _PLAYBACK_BUILD_LOCK:
+        if key in _PLAYBACK_BUILDING or key in _PLAYBACK_FAILED:
+            return
+        _PLAYBACK_BUILDING.add(key)
+
+    def build() -> None:
+        try:
+            ok = _convert_playback_copy(source, copy_path)
+        except Exception:
+            ok = False
+        with _PLAYBACK_BUILD_LOCK:
+            _PLAYBACK_BUILDING.discard(key)
+            if not ok:
+                _PLAYBACK_FAILED.add(key)
+
+    threading.Thread(target=build, daemon=True).start()
+
+
+def _playback_state(config: "WebAppConfig", name: str) -> str:
+    return _playback_state_for(
+        config.job_dir / name, _playback_copy_path(config, name)
+    )
+
+
+def _ensure_playback_copy(config: "WebAppConfig", name: str) -> None:
+    _ensure_playback_copy_for(
+        config.job_dir / name, _playback_copy_path(config, name)
+    )
+
+
+def _kick_playback_copies(config: "WebAppConfig") -> None:
+    """Start watchable copies for every video of the loaded job."""
+    if not config.has_job:
+        return
+    for name in _job_videos(config.job_dir):
+        _ensure_playback_copy(config, name)
+
+
+def _playback_target(config: "WebAppConfig", name: str) -> Optional[Path]:
+    """The file to serve for one of the job's videos, or None.
+
+    The job's own file when it needs no copy; the finished copy
+    when one exists. None while the copy is still being made or
+    could not be made: the raw original is never served in the
+    copy's place, and that answer is never cached as a decision.
     """
     source = config.job_dir / name
-    with config.playback_lock:
-        cached = config.playback_cache.get(name)
-        if cached is not None:
-            return cached
-        target = source
-        if _probe_video_codec(source) != BROWSER_SAFE_CODEC:
-            copy_path = _playback_copy_path(config, name)
-            if copy_path.is_file() and copy_path.stat().st_size > 0:
-                target = copy_path
-            elif _convert_playback_copy(source, copy_path):
-                target = copy_path
-        config.playback_cache[name] = target
-        return target
+    if not _needs_copy(source):
+        return source
+    copy_path = _playback_copy_path(config, name)
+    if _copy_ready(copy_path):
+        return copy_path
+    _ensure_playback_copy(config, name)
+    return None
 
 
 def _video_content_type(path: Path) -> str:
@@ -307,7 +495,31 @@ NO_JOB_MESSAGE = (
     "No job is loaded yet. Drop a runner job folder on the page, "
     "or try the built-in sample."
 )
+# The one plain sentence for a job whose files are not all on disk
+# (a folder dropped before its pieces landed, a file removed
+# mid-session). It is the only wording a person ever sees for this
+# case: in the page's banner, in its status lines, on the plain
+# page a browser navigation lands on, and in the API's JSON for
+# programmatic callers. Raw machine wording never reaches a screen.
+JOB_INCOMPLETE_MESSAGE = (
+    "That job is missing a file it needs. Drop the folder again, "
+    "or try the built-in sample."
+)
+# The two files every job action reads. A job missing either one is
+# not whole: its actions wait out of sight until it is.
+JOB_REQUIRED_FILES = ("transcript.json", "cuts.json")
 _CHUNK = 256 * 1024
+
+
+def _job_files_missing(config: WebAppConfig) -> list:
+    """The required job files not on disk right now ([] when whole)."""
+    if not config.has_job:
+        return []
+    return [
+        name
+        for name in JOB_REQUIRED_FILES
+        if not (config.job_dir / name).is_file()
+    ]
 
 
 class WebAppConfig:
@@ -368,12 +580,14 @@ class WebAppConfig:
         # attribute only, in memory: never written to a file, never
         # sent back to the page, and gone when the server stops.
         self.session_api_key: Optional[str] = None
-        # Which file to serve for each job video (the original, or
-        # its converted playback copy), decided once per video; the
-        # lock keeps two watchers from converting the same file at
-        # the same time.
-        self.playback_cache: dict = {}
-        self.playback_lock = threading.Lock()
+        # The same for an ElevenLabs key pasted on the page
+        # (v0.6.1): session only, unless the creator saves it on
+        # this Mac through the sign-in card's own action.
+        self.session_elevenlabs_key: Optional[str] = None
+        # Watchable-copy builds are tracked by copy path in the
+        # module-level registry (see _ensure_playback_copy_for),
+        # so their state survives this config being swapped when
+        # a drop becomes the job.
 
     @property
     def has_job(self) -> bool:
@@ -431,10 +645,12 @@ class WebAppConfig:
     def elevenlabs_key(self) -> Optional[str]:
         """The creator's ElevenLabs key, when the server has one.
 
-        Used only by the intake's word route (Scribe). Read from
-        the environment the server started with, the way the Meta
-        key is; never saved by the app.
+        Used only by the intake's word route (Scribe). A key pasted
+        on the page for this session wins over the environment the
+        server started with, the way the Meta key works.
         """
+        if self.session_elevenlabs_key:
+            return self.session_elevenlabs_key
         return os.environ.get("ELEVENLABS_API_KEY") or None
 
     def render_missing(self) -> list[str]:
@@ -581,9 +797,31 @@ FRONT_DOOR_DEFAULTS = {
     "cut_silence": True,
     "buffer_s": 0.1,
     "keep_mode": "last",
+    "breaths": "keep",
 }
 BUFFER_MIN_S = 0.05
 BUFFER_MAX_S = 0.50
+# Breaths are a choice, not a law (v0.6.1). "keep" leaves the
+# natural breath before a sentence alone; "trim" lets the buffer
+# rule the whole join, breath and all. The keep floor comes from
+# the app's own waveform measurement: ``measure_speech_spans``
+# bridges quiet gaps of up to 0.30 seconds as part of one stretch
+# of speech, so 0.30 seconds is the longest quiet this app itself
+# still calls speaking. Keeping breaths therefore never trims a
+# join below 0.30 seconds of quiet: the in-breath that starts the
+# next sentence lives in the last stretch of the pause, and the
+# floor is set conservatively at that measured line. Where a plan
+# was built from measured speech spans (an intake job), the join
+# being trimmed is exactly a measured gap between spans; the same
+# floor applies to runner jobs, whose joins are measured the same
+# two ways (the quiet tail of one piece plus the lead-in to the
+# next word).
+BREATH_MODES = ("keep", "trim")
+BREATH_FLOOR_S = 0.30
+BREATHS_RECAP = {
+    "keep": "Breaths are being kept natural.",
+    "trim": "Breaths are trimmed with the pauses.",
+}
 RETAKES_GUIDANCE = (
     "Remove retakes: when the same line is said more than once, keep "
     "the last take and take the earlier tries out."
@@ -647,7 +885,14 @@ def _front_door_settings(config: WebAppConfig) -> dict:
             )
         if saved.get("keep_mode") in retakes.KEEP_MODES:
             settings["keep_mode"] = saved["keep_mode"]
+        if saved.get("breaths") in BREATH_MODES:
+            settings["breaths"] = saved["breaths"]
     return settings
+
+
+def _breaths_recap(settings: dict) -> str:
+    """The breaths state, named in plain words in every recap."""
+    return BREATHS_RECAP[settings.get("breaths", "keep")]
 
 
 def _keep_mode_recap(settings: dict) -> Optional[str]:
@@ -1098,6 +1343,66 @@ def _transcript_entries(config: WebAppConfig) -> tuple[list, list]:
     )
 
 
+AFTER_REVIEW_VISITED_FILENAME = "after_review_visited.json"
+CAPTIONS_PREF_FILENAME = "captions_pref.json"
+
+
+def _captions_hide_fillers(config: WebAppConfig) -> bool:
+    """The captions choice for this session: hide ums and uhs, or not.
+
+    On unless the creator turned it off where the captions are
+    handed back (the Revised edit card, and the finish card). The
+    choice is the session's, like the front door's choices.
+    """
+    payload = _load_session_json(config, CAPTIONS_PREF_FILENAME, {})
+    if isinstance(payload, dict) and isinstance(
+        payload.get("hide_fillers"), bool
+    ):
+        return payload["hide_fillers"]
+    return True
+
+
+def _save_captions_hide_fillers(config: WebAppConfig, on: bool) -> None:
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        config.session_dir / CAPTIONS_PREF_FILENAME,
+        {"hide_fillers": bool(on)},
+    )
+
+
+def _finish_state(config: WebAppConfig) -> dict:
+    """What the finish card can honestly say (v0.6.1).
+
+    The card is ready only when both halves are things the app can
+    see: a built video sitting in the session (the latest render;
+    the card labels it exactly that, never a claim about grading),
+    and a visit to the review page where the changes are graded.
+    For a job the app took in itself, the clean captions file rides
+    along when it exists.
+    """
+    state = {
+        "ready": False,
+        "has_render": False,
+        "review_visited": False,
+        "is_intake": False,
+        "captions_available": False,
+    }
+    if not config.has_job:
+        return state
+    state["has_render"] = (
+        config.session_dir / SESSION_VIDEO_NAME
+    ).is_file()
+    state["review_visited"] = (
+        config.session_dir / AFTER_REVIEW_VISITED_FILENAME
+    ).is_file()
+    state["is_intake"] = bool(config.is_intake_job)
+    state["captions_available"] = (
+        config.session_dir / clean_captions.CAPTIONS_FILENAME
+    ).is_file()
+    state["ready"] = state["has_render"] and state["review_visited"]
+    return state
+
+
 def _no_job_summary(config: WebAppConfig) -> dict:
     """The summary when no job is loaded: every field the page
     reads, at its empty value, so the front door renders cleanly
@@ -1119,6 +1424,7 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "transcript_words": [],
         "word_corrections": [],
         "videos": [],
+        "playback": {},
         "video_shapes": {},
         "feedback_exists": False,
         "comments": [],
@@ -1139,12 +1445,54 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "render_ready": False,
         "render_message": NO_JOB_MESSAGE,
         "captions_available": False,
+        "captions_hide_fillers": True,
+        "is_intake": False,
+        "job_whole": False,
+        "job_missing": [],
+        "finish": _finish_state(config),
     }
+
+
+def _incomplete_job_summary(config: WebAppConfig, missing: list) -> dict:
+    """The summary for a job whose required files are not on disk.
+
+    The job is named and loaded, but nothing that reads its files
+    can run yet (an intake still arriving, a folder dropped before
+    its pieces landed, a file removed mid-session). The page gets
+    the empty shape plus ``job_whole: False``, so it can show the
+    one plain sentence and keep every job action out of sight until
+    the job is whole, instead of failing on the first missing file.
+    """
+    summary = _no_job_summary(config)
+    summary.update(
+        {
+            "has_job": True,
+            "job_name": config.job_dir.name,
+            "videos": _job_videos(config.job_dir),
+            "playback": {
+                name: _playback_state(config, name)
+                for name in _job_videos(config.job_dir)
+            },
+            "front_door": _front_door_settings(config),
+            "render_missing": config.render_missing(),
+            "render_ready": False,
+            "render_message": JOB_INCOMPLETE_MESSAGE,
+            "captions_hide_fillers": _captions_hide_fillers(config),
+            "is_intake": bool(config.is_intake_job),
+            "job_whole": False,
+            "job_missing": list(missing),
+            "finish": _finish_state(config),
+        }
+    )
+    return summary
 
 
 def _job_summary(config: WebAppConfig) -> dict:
     if not config.has_job:
         return _no_job_summary(config)
+    missing = _job_files_missing(config)
+    if missing:
+        return _incomplete_job_summary(config, missing)
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     # The headline counts describe the edit as the session currently
     # has it, not as the job originally shipped: once anything has
@@ -1192,6 +1540,9 @@ def _job_summary(config: WebAppConfig) -> dict:
         "transcript_words": transcript_entries,
         "word_corrections": corrections,
         "videos": videos,
+        "playback": {
+            name: _playback_state(config, name) for name in videos
+        },
         "video_shapes": video_shapes,
         "feedback_exists": feedback_exists,
         "comments": comments,
@@ -1208,6 +1559,11 @@ def _job_summary(config: WebAppConfig) -> dict:
         "captions_available": (
             config.session_dir / clean_captions.CAPTIONS_FILENAME
         ).is_file(),
+        "captions_hide_fillers": _captions_hide_fillers(config),
+        "is_intake": bool(config.is_intake_job),
+        "job_whole": True,
+        "job_missing": [],
+        "finish": _finish_state(config),
     }
 
 
@@ -1279,11 +1635,95 @@ SIGNIN_NOT_ACCEPTED_MESSAGE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Keys saved on this Mac (v0.6.1)
+#
+# The launcher has always read two key files from the creator's
+# home folder at start: ~/.talk-to-your-editor/meta_key and
+# ~/.talk-to-your-editor/elevenlabs_key. Until now nothing in the
+# app ever wrote them, so a key pasted on the page died with the
+# session and every restart asked again. The sign-in card's "Save
+# on this Mac" action writes the same files, with the same
+# permissions the original save flow used (folder 700, file 600),
+# so a saved key survives restarts and new kit downloads alike:
+# the files live in the home folder, never in the kit. The key
+# itself is never sent back to the page; the state below carries
+# only whether a saved key exists.
+# ---------------------------------------------------------------------------
+
+MAC_KEY_DIR_NAME = ".talk-to-your-editor"
+MAC_KEY_FILES = {"meta": "meta_key", "elevenlabs": "elevenlabs_key"}
+KEY_KINDS = tuple(MAC_KEY_FILES)
+
+
+def _mac_key_path(kind: str) -> Path:
+    return Path.home() / MAC_KEY_DIR_NAME / MAC_KEY_FILES[kind]
+
+
+def _mac_key_saved(kind: str) -> bool:
+    """Whether a usable key is saved on this Mac for ``kind``."""
+    try:
+        text = _mac_key_path(kind).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return bool(text.strip())
+
+
+def _save_mac_key(kind: str, key: str) -> None:
+    """Write one key file, private the way the original flow made it."""
+    path = _mac_key_path(kind)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    path.write_text(key.strip() + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _read_mac_key(kind: str) -> Optional[str]:
+    try:
+        text = _mac_key_path(kind).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return text.strip() or None
+
+
+def _remove_mac_key(kind: str) -> None:
+    try:
+        _mac_key_path(kind).unlink()
+    except OSError:
+        pass
+
+
+def _set_session_key(config: WebAppConfig, kind: str, key: Optional[str]) -> None:
+    if kind == "meta":
+        config.session_api_key = key
+    else:
+        config.session_elevenlabs_key = key
+
+
+def _session_key(config: WebAppConfig, kind: str) -> Optional[str]:
+    if kind == "meta":
+        return config.session_api_key
+    return config.session_elevenlabs_key
+
+
 def _signin_state(config: WebAppConfig) -> dict:
-    """What the page may know about the sign-in: set or not, and where
-    it came from. The key itself is never part of this."""
+    """What the page may know about the sign-ins: set or not, where
+    they came from, and whether each is saved on this Mac. The keys
+    themselves are never part of this."""
     source = config.signin_source()
-    return {"meta_signin_set": source is not None, "source": source}
+    return {
+        "meta_signin_set": source is not None,
+        "source": source,
+        "meta_saved_on_mac": _mac_key_saved("meta"),
+        "elevenlabs_signin_set": bool(config.elevenlabs_key()),
+        "elevenlabs_saved_on_mac": _mac_key_saved("elevenlabs"),
+    }
 
 
 def _check_signin(config: WebAppConfig) -> tuple[bool, str]:
@@ -1445,7 +1885,67 @@ def _run_direction(
     return audit_with_routing
 
 
-def _silence_operations(config: WebAppConfig, buffer_s: float) -> list:
+def _protected_join_indices(config: WebAppConfig, timeline: Timeline) -> set:
+    """Joins the silence pass must never trim, under either breaths choice.
+
+    A join is protected when one of the two words that border it is
+    inside a protected span (a protected moment from the profile or
+    the plan), or when a pinned comment resolves to one of those
+    two words: the creator pointed at that exact spot, so its pause
+    is theirs to judge, not the pass's. Intention cannot be
+    measured; protection, the default, and the transcript dots a
+    trim leaves behind are how it is carried.
+    """
+    protected: set = set()
+    joins = timeline.joins()
+    if not joins:
+        return protected
+    border_words: dict = {}
+    for join in joins:
+        index = join["join_index"]
+        prev_words = timeline.words_in_range(timeline.ranges[index])
+        next_words = timeline.words_in_range(timeline.ranges[index + 1])
+        border_words[index] = (
+            prev_words[-1] if prev_words else None,
+            next_words[0] if next_words else None,
+        )
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    protected_words: set = set()
+    for span in timeline.protected_spans(profile):
+        protected_words.update(
+            range(span["word_start"], span["word_end"])
+        )
+    pinned_words: set = set()
+    feedback_path = _feedback_path(config)
+    if feedback_path is not None:
+        try:
+            payload = _load_json(str(feedback_path))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            for comment in payload.get("comments") or []:
+                if not isinstance(comment, dict):
+                    continue
+                ts = comment.get("ts")
+                if ts is None:
+                    continue
+                try:
+                    resolved = timeline.map_output_time_approx(float(ts))
+                except (TypeError, ValueError):
+                    resolved = None
+                if resolved is not None and resolved.get("word_index") is not None:
+                    pinned_words.add(resolved["word_index"])
+    for index, (last_prev, first_next) in border_words.items():
+        if last_prev in protected_words or first_next in protected_words:
+            protected.add(index)
+        elif last_prev in pinned_words or first_next in pinned_words:
+            protected.add(index)
+    return protected
+
+
+def _silence_operations(
+    config: WebAppConfig, buffer_s: float, breaths: str = "keep"
+) -> list:
     """Join-pause operations that trim silence toward the buffer.
 
     The buffer is the silence left between one word and the next:
@@ -1456,14 +1956,28 @@ def _silence_operations(config: WebAppConfig, buffer_s: float) -> list:
     ``set_join_pause`` operation, so the safety verifier and the
     applier decide what actually changes, exactly as they do for a
     note that asks for a shorter pause.
+
+    Breaths (v0.6.1): with ``breaths`` "keep", a join is never
+    trimmed below ``BREATH_FLOOR_S`` of quiet, so the natural
+    breath before the next sentence survives even when the buffer
+    is tighter; with "trim", the buffer alone rules and the breath
+    inside a trimmed gap goes with it. Joins a pinned comment or a
+    protected moment covers are never proposed under either choice
+    (see ``_protected_join_indices``); every trim that does land
+    stays a transcript dot with its reason, and restorable.
     """
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     timeline = Timeline(transcript, _effective_cuts(config))
+    floor_s = BREATH_FLOOR_S if breaths == "keep" else 0.0
+    effective_s = max(buffer_s, floor_s)
+    protected = _protected_join_indices(config, timeline)
     operations = []
     for join in timeline.joins():
         if join["prev_special"] or join["next_special"]:
             continue
         index = join["join_index"]
+        if index in protected:
+            continue
         prev_range = timeline.ranges[index]
         next_range = timeline.ranges[index + 1]
         prev_words = timeline.words_in_range(prev_range)
@@ -1476,24 +1990,32 @@ def _silence_operations(config: WebAppConfig, buffer_s: float) -> list:
         head = float(timeline.words[next_words[0]]["start"]) - float(
             next_range["start"]
         )
-        if prev_tail + head <= buffer_s + 1e-3:
+        if prev_tail + head <= effective_s + 1e-3:
             continue
-        target = buffer_s - prev_tail
+        target = effective_s - prev_tail
         if target < MIN_JOIN_PAUSE_S:
             target = MIN_JOIN_PAUSE_S
         target = min(target, MAX_JOIN_PAUSE_S)
         if target >= head - 1e-3:
             continue  # This join cannot get any tighter from its head.
+        if breaths == "keep" and floor_s > buffer_s:
+            reason = (
+                "front door: trim the silence at this join "
+                f"toward {effective_s:g} seconds, keeping the "
+                "natural breath"
+            )
+        else:
+            reason = (
+                "front door: trim the silence at this join "
+                f"toward {effective_s:g} seconds"
+            )
         operations.append(
             {
                 "type": "set_join_pause",
                 "comment_id": SILENCE_COMMENT_ID,
                 "join_index": index,
                 "target_pause_s": round(target, 3),
-                "reason": (
-                    "front door: trim the silence at this join "
-                    f"toward {buffer_s:g} seconds"
-                ),
+                "reason": reason,
                 "confidence": 1.0,
                 # A deterministic local proposal, like the mock's;
                 # the comment id and the reason carry its provenance.
@@ -1505,22 +2027,28 @@ def _silence_operations(config: WebAppConfig, buffer_s: float) -> list:
     return operations
 
 
-def _run_silence_pass(config: WebAppConfig, buffer_s: float) -> dict:
+def _run_silence_pass(
+    config: WebAppConfig, buffer_s: float, breaths: str = "keep"
+) -> dict:
     """Trim the session plan's long silences toward ``buffer_s``.
 
     Runs the join-pause proposals through the same verify-and-apply
     path as a direction run, against the session's current plan. The
     pass is recorded in its own session file, and its page
     operations are merged into the session audit so the removed and
-    shortened moments stay explained in one place.
+    shortened moments stay explained in one place. ``breaths`` is
+    the front door's breaths choice, passed through to the
+    operations and named in the summary.
     """
     summary = {
         "ran": True,
         "buffer_s": buffer_s,
+        "breaths": breaths,
+        "floor_s": BREATH_FLOOR_S if breaths == "keep" else None,
         "joins_trimmed": 0,
         "operations": [],
     }
-    operations = _silence_operations(config, buffer_s)
+    operations = _silence_operations(config, buffer_s, breaths)
     if not operations:
         _record_silence_pass(config, summary)
         return summary
@@ -1580,6 +2108,7 @@ def _record_silence_pass(config: WebAppConfig, summary: dict) -> None:
         {
             "at": _utc_now(),
             "buffer_s": summary["buffer_s"],
+            "breaths": summary.get("breaths", "keep"),
             "joins_trimmed": summary["joins_trimmed"],
         }
     )
@@ -2153,6 +2682,14 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
             "Choose the last take, the first clean take, or best "
             "delivery (Beta)."
         )
+    breaths = str(
+        body.get("breaths", defaults["breaths"]) or "keep"
+    ).strip().lower()
+    if breaths not in BREATH_MODES:
+        raise ValueError(
+            "Choose keeping the natural breath, or trimming "
+            "breaths with the pause."
+        )
     settings = {
         "remove_retakes": bool(
             body.get("remove_retakes", defaults["remove_retakes"])
@@ -2160,11 +2697,25 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "cut_silence": bool(body.get("cut_silence", defaults["cut_silence"])),
         "buffer_s": min(BUFFER_MAX_S, max(BUFFER_MIN_S, buffer_s)),
         "keep_mode": keep_mode,
+        "breaths": breaths,
     }
     scope = str(body.get("format_scope") or "both").strip().lower()
     if scope not in ("both", "vertical", "landscape"):
         raise ValueError("Choose both formats, vertical only, or landscape only.")
     direction_text = str(body.get("direction_text") or "").strip()
+    # Spoken direction in the box can set the breaths choice too,
+    # through the same deterministic mapping intake uses; what it
+    # sets wins for this video and is named in the result.
+    direction_recap: list = []
+    if direction_text:
+        spoken = direction_parse.parse_direction(direction_text)
+        if "breaths" in spoken["overrides"]:
+            settings["breaths"] = spoken["overrides"]["breaths"]
+            direction_recap = [
+                line
+                for line in spoken["recap"]
+                if line.startswith("Breaths will be")
+            ]
     provider_name = str(body.get("provider") or "").strip().lower()
     if provider_name not in ("mock", "meta"):
         provider_name = "meta" if config.signin_key() else "mock"
@@ -2230,12 +2781,16 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
                 _write_json(session_audit_path, retake_audit)
     silence = None
     if settings["cut_silence"]:
-        silence = _run_silence_pass(config, settings["buffer_s"])
+        silence = _run_silence_pass(
+            config, settings["buffer_s"], settings["breaths"]
+        )
     return {
         "ok": True,
         "provider": provider_name,
         "settings": settings,
         "recap": _keep_mode_recap(settings),
+        "breaths_recap": _breaths_recap(settings),
+        "direction_recap": direction_recap,
         "beta": _beta_score(config),
         "format_scope": scope,
         "direction_runs": direction_runs,
@@ -2304,7 +2859,13 @@ def _adopt_job(httpd, job_root: Path) -> WebAppConfig:
     current = httpd.config  # type: ignore[attr-defined]
     config = WebAppConfig(job_root, launch_home=current.launch_home)
     setattr(config, "session_api_key", getattr(current, "session_api_key"))
+    setattr(
+        config,
+        "session_elevenlabs_key",
+        getattr(current, "session_elevenlabs_key", None),
+    )
     httpd.config = config  # type: ignore[attr-defined]
+    _kick_playback_copies(config)
     return config
 
 
@@ -2325,11 +2886,35 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
     video_path = base / record["video_rel"]
     job_root = video_path.parent
 
-    def stage(text: str) -> None:
+    def stage(text: str, index: int, total: int) -> None:
+        # The page shows the stage, its number, and how many there
+        # are: progress a person can see, not a gray button.
         state["stage"] = text
+        state["stage_index"] = index
+        state["stage_total"] = total
+
+    def stage_total(settings: dict) -> int:
+        return (
+            4
+            + (1 if settings.get("remove_retakes") else 0)
+            + (1 if settings.get("cut_silence") else 0)
+            + 1
+        )
+
+    # The total is first estimated from the standing front-door
+    # choices; once this video's direction has been read and the
+    # settings are settled, the exact total replaces it. (The
+    # watchable copy is not a stage: it has been building in the
+    # background since the drop finished.)
+    standing = (
+        _front_door_settings(httpd.config)  # type: ignore[attr-defined]
+        if httpd.config.has_job  # type: ignore[attr-defined]
+        else dict(FRONT_DOOR_DEFAULTS)
+    )
+    total = stage_total(standing)
 
     try:
-        stage("Taking the sound out of the video…")
+        stage("Listening to your video…", 1, total)
         media = speech.probe_media(video_path)
         work = job_root / FIRST_EDIT_WORK_NAME
         wav_path = work / "audio.wav"
@@ -2347,8 +2932,12 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "so this step takes a while. Leave this page open."
             )
         if route == "scribe":
-            stage("Writing down the words with ElevenLabs Scribe…"
-                  + long_note)
+            stage(
+                "Writing the words down with ElevenLabs Scribe…"
+                + long_note,
+                2,
+                total,
+            )
             result = speech.scribe_transcribe_wav(
                 wav_path,
                 httpd.config.elevenlabs_key(),  # type: ignore[attr-defined]
@@ -2357,10 +2946,12 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             )
         else:
             stage(
-                "Writing down the words on this computer. The "
+                "Writing the words down on this computer. The "
                 "first time, the speech model downloads once "
                 "(about 150 MB), so this can take a few minutes."
-                + long_note
+                + long_note,
+                2,
+                total,
             )
             result = speech.local_transcribe_wav(
                 wav_path, duration_s=duration
@@ -2372,9 +2963,9 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             )
             shutil.rmtree(work, ignore_errors=True)
             return
-        stage("Measuring the silences from the sound itself…")
+        stage("Measuring the silences from the sound itself…", 3, total)
         spans = speech.measure_speech_spans(wav_path)
-        stage("Laying out the first plan…")
+        stage("Laying out the first plan…", 4, total)
         intake_build.build_job_files(
             job_root,
             video_path.name,
@@ -2416,10 +3007,14 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             )
             _write_json(feedback_path, payload)
         kept_before = len(words)
-        stage("Making the first edit…")
+        total = stage_total(settings)
+        state["stage_total"] = total
         checkpoints.begin(config)
+        next_index = 5
         retake_summary = None
         if settings["remove_retakes"]:
+            stage("Checking for retakes…", next_index, total)
+            next_index += 1
             retake_summary = _run_retake_pass(
                 config,
                 "mock",
@@ -2440,14 +3035,16 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                     _write_json(audit_path, retake_audit)
         silence_summary = None
         if settings["cut_silence"]:
+            stage("Cutting the silence…", next_index, total)
+            next_index += 1
             silence_summary = _run_silence_pass(
-                config, settings["buffer_s"]
+                config, settings["buffer_s"], settings["breaths"]
             )
         checkpoints.commit(config, "First edit")
         transcript = _load_json(str(job_root / "transcript.json"))
         timeline = Timeline(transcript, _effective_cuts(config))
         kept_after = len(timeline.kept_word_indices())
-        stage("Building the review video…")
+        stage("Building your review video…", total, total)
         render_note = None
         try:
             intake_build.render_splice(
@@ -2484,6 +3081,11 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 f"{silence_summary.get('joins_trimmed', 0)} joins "
                 f"trimmed toward {settings['buffer_s']:g} seconds."
             )
+        if "breaths" not in parsed["overrides"]:
+            # When the direction set the breaths choice, the parsed
+            # recap above already names it; otherwise the recap
+            # still names the state the first edit ran with.
+            recap.append(_breaths_recap(settings))
         if parsed["remainder"]:
             recap.append(
                 "The rest of your direction was saved as overall "
@@ -2816,30 +3418,33 @@ def _has_any_file(base: Path) -> bool:
         return False
 
 
-_STAGED_PLAYBACK_LOCK = threading.Lock()
+def _staged_copy_path(source: Path) -> Path:
+    """Where a staged video's watchable copy lives.
 
-
-def _staged_playback_target(source: Path) -> Path:
-    """The file to serve for a staged video.
-
-    The staged file itself when it is already browser-safe; else a
-    converted playback copy in a ``playback`` folder beside it,
-    built once and reused. The staged original is never touched.
+    The same session playback folder the job will use once the
+    drop becomes a job (a lone video's job is built in its staging
+    folder), so the copy is built once, at drop time, and the job
+    simply inherits it. The staged original is never touched.
     """
-    if _probe_video_codec(source) == BROWSER_SAFE_CODEC:
-        return source
     suffix = source.suffix.lstrip(".").lower()
-    dest = (
+    return (
         source.parent
+        / SESSION_DIR_NAME
         / PLAYBACK_DIR_NAME
         / f"{source.stem}-{suffix}.playback.mp4"
     )
-    with _STAGED_PLAYBACK_LOCK:
-        if dest.is_file() and dest.stat().st_size > 0:
-            return dest
-        if _convert_playback_copy(source, dest):
-            return dest
-    return source
+
+
+def _staged_playback_target(source: Path) -> Optional[Path]:
+    """The file to serve for a staged video, or None while its
+    watchable copy is still being made or could not be made."""
+    if not _needs_copy(source):
+        return source
+    copy_path = _staged_copy_path(source)
+    if _copy_ready(copy_path):
+        return copy_path
+    _ensure_playback_copy_for(source, copy_path)
+    return None
 
 
 def _detect_intake(base: Path) -> dict:
@@ -2884,6 +3489,7 @@ _JOB_REQUIRED_POSTS = frozenset({
     "/api/edit-action",
     "/api/word-correct",
     "/api/word-correct-remove",
+    "/api/captions-pref",
     "/api/render",
     "/api/history/undo",
     "/api/history/redo",
@@ -2931,6 +3537,29 @@ class _Handler(BaseHTTPRequestHandler):
         payload.update(extra)
         self._send_json(status, payload)
 
+    def _send_plain_page(self, status: int, title: str, sentence: str) -> None:
+        """A whole page that says one plain sentence, and nothing else.
+
+        Browser navigations (a video link opened directly, a stale
+        address) must never land on a bare JSON body: this is the
+        page they get instead, styled like the app's own fallback
+        pages, with the way back. Programmatic callers keep JSON.
+        """
+        page = (
+            "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, "
+            "initial-scale=1\"><title>" + html.escape(title) + "</title></head>"
+            "<body style=\"font-family: sans-serif; background: #0b0b0f; "
+            "color: #f5f5f7; padding: 24px;\">"
+            "<h1>" + html.escape(title) + "</h1>"
+            "<p>" + html.escape(sentence) + "</p>"
+            "<p><a href=\"/\" style=\"color: #0a84ff;\">Back to the app</a></p>"
+            "</body></html>"
+        )
+        self._send_bytes(
+            status, page.encode("utf-8"), "text/html; charset=utf-8"
+        )
+
     def _read_json_body(self) -> Optional[dict]:
         length = self.headers.get("Content-Length")
         if length is None:
@@ -2951,7 +3580,12 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             size = path.stat().st_size
         except OSError:
-            self._error(404, "file not found")
+            # Only media is ever served through here, and a media
+            # address is one a browser can land on: plain words on a
+            # page, never a bare JSON body.
+            self._send_plain_page(
+                404, "A file is missing", JOB_INCOMPLETE_MESSAGE
+            )
             return
         start, end, status = 0, size - 1, 200
         range_header = self.headers.get("Range")
@@ -3022,13 +3656,19 @@ class _Handler(BaseHTTPRequestHandler):
                 self._get_intake_status()
             elif path == "/api/captions":
                 self._serve_captions()
+            elif path == "/api/finish/video":
+                self._serve_finish_video()
             elif path == "/api/history":
                 self._send_json(
                     200, {"ok": True, **checkpoints.state(self.config)}
                 )
             elif path.startswith("/video/"):
                 if not self.config.has_job:
-                    self._error(404, "no job is loaded yet")
+                    # A media route is something a browser can land
+                    # on, so it answers with a page, never bare JSON.
+                    self._send_plain_page(
+                        404, "No job is loaded yet", NO_JOB_MESSAGE
+                    )
                     return
                 self._serve_video(path[len("/video/"):])
             elif path == "/after-review":
@@ -3044,10 +3684,25 @@ class _Handler(BaseHTTPRequestHandler):
                 # The after-review page references its video by bare name;
                 # resolve it from the session dir first, then the job dir.
                 self._serve_media_by_name(path[1:])
-            else:
+            elif path.startswith("/api/"):
                 self._error(404, "not found")
+            else:
+                self._send_plain_page(
+                    404,
+                    "That page is not here",
+                    "That page is not part of this app.",
+                )
         except FileNotFoundError:
-            self._error(404, "a job file is missing")
+            # A job file an action needs is not on disk. API callers
+            # keep JSON, with the plain sentence as its wording; a
+            # browser navigation gets the plain page instead, so a
+            # person never lands on a bare JSON body for this.
+            if path.startswith("/api/"):
+                self._error(404, JOB_INCOMPLETE_MESSAGE)
+            else:
+                self._send_plain_page(
+                    404, "A file is missing", JOB_INCOMPLETE_MESSAGE
+                )
         except (ValueError, json.JSONDecodeError) as exc:
             self._error(400, str(exc))
 
@@ -3061,6 +3716,17 @@ class _Handler(BaseHTTPRequestHandler):
             # that works on a job gets one plain sentence, never a
             # crash or a machine error.
             self._error(400, NO_JOB_MESSAGE)
+            return
+        if (
+            path in _JOB_REQUIRED_POSTS
+            and self.config.has_job
+            and _job_files_missing(self.config)
+        ):
+            # A job whose files are not all on disk yet (or no
+            # longer): its actions are unavailable until it is
+            # whole, and the answer is the same plain sentence the
+            # page's banner shows.
+            self._error(400, JOB_INCOMPLETE_MESSAGE)
             return
         if path == "/api/load-sample":
             self._post_load_sample()
@@ -3078,6 +3744,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_comments()
         elif path == "/api/signin":
             self._post_signin()
+        elif path == "/api/signin/save":
+            self._post_signin_save()
+        elif path == "/api/signin/remove":
+            self._post_signin_remove()
         elif path == "/api/signin/check":
             self._post_signin_check()
         elif path == "/api/direct":
@@ -3102,6 +3772,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_word_correct()
         elif path == "/api/word-correct-remove":
             self._post_word_correct_remove()
+        elif path == "/api/captions-pref":
+            self._post_captions_pref()
         elif path == "/api/render":
             self._post_render()
         elif path == "/api/history/undo":
@@ -3132,7 +3804,12 @@ class _Handler(BaseHTTPRequestHandler):
             videos = summary["videos"]
             primary_video = videos[0] if videos else None
             meta_available = summary["meta_available"]
-        if self.config.has_job:
+        job_whole = True
+        if summary is not None:
+            job_whole = bool(summary.get("job_whole", True))
+        if self.config.has_job and not job_whole:
+            subtitle = JOB_INCOMPLETE_MESSAGE
+        elif self.config.has_job:
             subtitle = (
                 f"Test session for {job_name}. Watch the edit, pin a "
                 "comment where something needs to change, then run "
@@ -3151,6 +3828,7 @@ class _Handler(BaseHTTPRequestHandler):
         page = page.replace(
             "{{HAS_JOB_JSON}}", json.dumps(self.config.has_job)
         )
+        page = page.replace("{{JOB_WHOLE_JSON}}", json.dumps(job_whole))
         page = page.replace("{{VIDEO_JSON}}", json.dumps(primary_video))
         page = page.replace(
             "{{META_AVAILABLE_JSON}}", json.dumps(meta_available)
@@ -3159,14 +3837,39 @@ class _Handler(BaseHTTPRequestHandler):
             200, page.encode("utf-8"), "text/html; charset=utf-8"
         )
 
+    def _send_playback_pending(self, state: str) -> None:
+        """The answer while a watchable copy is not ready: one
+        plain page, never the raw file in the copy's place."""
+        if state == "failed":
+            self._send_plain_page(
+                503,
+                "This video cannot be shown here yet",
+                PLAYBACK_FAILED_MESSAGE,
+            )
+        else:
+            self._send_plain_page(
+                503, PLAYBACK_GETTING_READY, PLAYBACK_BUILDING_MESSAGE
+            )
+
     def _serve_video(self, name: str) -> None:
         if name not in _job_videos(self.config.job_dir):
-            self._error(404, "unknown video")
+            self._send_plain_page(
+                404,
+                "That video is not here",
+                "That video is not in this job. Drop the job folder "
+                "again, or pick the video from the app.",
+            )
             return
         # A video that is not browser-safe is served through its
-        # converted playback copy; the job's file is never served
-        # in a form the browser cannot decode when a copy exists.
+        # watchable copy; while the copy is being made (or could
+        # not be made) the answer is the plain state, never the
+        # raw file.
         target = _playback_target(self.config, name)
+        if target is None:
+            self._send_playback_pending(
+                _playback_state(self.config, name)
+            )
+            return
         self._serve_file_with_range(target, _video_content_type(target))
 
     def _serve_media_by_name(self, name: str) -> None:
@@ -3178,15 +3881,35 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if name in _job_videos(self.config.job_dir):
             target = _playback_target(self.config, name)
+            if target is None:
+                self._send_playback_pending(
+                    _playback_state(self.config, name)
+                )
+                return
             self._serve_file_with_range(
                 target, _video_content_type(target)
             )
             return
-        self._error(404, "video not found")
+        self._send_plain_page(
+            404,
+            "That video is not here yet",
+            "That video is not here yet. Go back and build the "
+            "fixed video, then open it from the app.",
+        )
 
     def _serve_after_review(self) -> None:
         target = self.config.session_dir / "after-review.html"
         if target.is_file():
+            # The visit is one half of what the finish card needs to
+            # see; record it in the session, beside the render.
+            try:
+                self.config.session_dir.mkdir(parents=True, exist_ok=True)
+                _write_json(
+                    self.config.session_dir / AFTER_REVIEW_VISITED_FILENAME,
+                    {"visited_at": _utc_now()},
+                )
+            except OSError:
+                pass
             self._send_bytes(
                 200,
                 target.read_bytes(),
@@ -3280,6 +4003,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(404, "video not found")
             return
         served = _staged_playback_target(target)
+        if served is None:
+            self._send_playback_pending(
+                _playback_state_for(target, _staged_copy_path(target))
+            )
+            return
         self._serve_file_with_range(served, _video_content_type(served))
 
     # -- POST handlers ----------------------------------------------------
@@ -3295,7 +4023,11 @@ class _Handler(BaseHTTPRequestHandler):
             job_root, launch_home=self.config.launch_home
         )
         new_config.session_api_key = self.config.session_api_key
+        new_config.session_elevenlabs_key = (
+            self.config.session_elevenlabs_key
+        )
         self.server.config = new_config  # type: ignore[attr-defined]
+        _kick_playback_copies(new_config)
 
     def _post_load_sample(self) -> None:
         """Load the built-in sample job with one click.
@@ -3469,6 +4201,13 @@ class _Handler(BaseHTTPRequestHandler):
             video_path = detected["video_path"]
             relative = video_path.relative_to(base).as_posix()
             record["video_rel"] = relative
+            # The watchable copy starts now, in the background,
+            # the moment the drop is complete: the preview and
+            # the later job both draw on it, and no play request
+            # ever waits on the conversion itself.
+            _ensure_playback_copy_for(
+                video_path, _staged_copy_path(video_path)
+            )
             self._send_json(
                 200,
                 {
@@ -3478,6 +4217,9 @@ class _Handler(BaseHTTPRequestHandler):
                     "video_url": (
                         f"/api/intake/video/{intake_id}/"
                         + quote(relative)
+                    ),
+                    "playback": _playback_state_for(
+                        video_path, _staged_copy_path(video_path)
                     ),
                     "can_first_edit": True,
                     "message": VIDEO_ONLY_MESSAGE,
@@ -3545,10 +4287,46 @@ class _Handler(BaseHTTPRequestHandler):
         query = parse_qs(urlsplit(self.path).query)
         intake_id = (query.get("intake") or [""])[0]
         state = self._first_edits().get(intake_id)
-        if state is None:
-            self._send_json(200, {"ok": True, "status": "idle"})
+        payload = {"ok": True, **(state or {"status": "idle"})}
+        # The watchable copy's state rides along on the same poll
+        # the page already runs: the preview swaps in when it is
+        # ready, without a reload.
+        record = self._intakes().get(intake_id)
+        if record is not None and record.get("video_rel"):
+            staged = Path(record["dir"]) / record["video_rel"]
+            payload["playback"] = _playback_state_for(
+                staged, _staged_copy_path(staged)
+            )
+        self._send_json(200, payload)
+
+    def _serve_finish_video(self) -> None:
+        """Download the session's built video, for the finish card.
+
+        This is the latest render, under a plain download name. The
+        same file stays watchable in the page through its usual
+        address; this route is only the save-it copy.
+        """
+        if not self.config.has_job:
+            self._error(404, NO_JOB_MESSAGE)
             return
-        self._send_json(200, {"ok": True, **state})
+        target = self.config.session_dir / SESSION_VIDEO_NAME
+        if not target.is_file():
+            self._error(
+                404,
+                "No video has been built for this job yet. Build "
+                "the fixed video first.",
+            )
+            return
+        self._send_bytes(
+            200,
+            target.read_bytes(),
+            "video/mp4",
+            {
+                "Content-Disposition": (
+                    'attachment; filename="finished-edit.mp4"'
+                )
+            },
+        )
 
     def _serve_captions(self) -> None:
         if not self.config.has_job:
@@ -3664,13 +4442,75 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             self._error(400, "request body must be a JSON object")
             return
+        kind = str(body.get("kind") or "meta").strip().lower()
+        if kind not in KEY_KINDS:
+            self._error(400, "Choose the Meta key or the ElevenLabs key.")
+            return
         key = body.get("api_key")
         if not isinstance(key, str) or not key.strip():
             self._error(400, "Paste the API key first.")
             return
         # Memory only: the key is never written to a file and never
         # sent back; the response carries the sign-in state alone.
-        self.config.session_api_key = key.strip()
+        _set_session_key(self.config, kind, key.strip())
+        self._send_json(200, {"ok": True, **_signin_state(self.config)})
+
+    def _post_signin_save(self) -> None:
+        """Save a pasted key on this Mac, in the launcher's own files.
+
+        The same two files the launcher reads at start, with the
+        same permissions, so the key is simply there next time, in
+        this kit or a new one. The saved key also serves this
+        session right away, like a paste does.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        kind = str(body.get("kind") or "").strip().lower()
+        if kind not in KEY_KINDS:
+            self._error(400, "Choose the Meta key or the ElevenLabs key.")
+            return
+        key = body.get("api_key")
+        if not isinstance(key, str) or not key.strip():
+            self._error(
+                400,
+                "Paste the key first, then save it on this Mac.",
+            )
+            return
+        try:
+            _save_mac_key(kind, key)
+        except OSError:
+            _log_raw_error("save key on this Mac", OSError("write failed"))
+            self._error(
+                400,
+                "The key could not be saved on this Mac. It still "
+                "works for this session if you use it that way.",
+            )
+            return
+        _set_session_key(self.config, kind, key.strip())
+        self._send_json(200, {"ok": True, **_signin_state(self.config)})
+
+    def _post_signin_remove(self) -> None:
+        """Remove a key saved on this Mac.
+
+        The file goes; if this session's pasted key is the one that
+        was saved, it goes too. A key the server started with (from
+        its environment) is untouched: only the saved copy is the
+        card's to remove, and the state says what remains.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        kind = str(body.get("kind") or "").strip().lower()
+        if kind not in KEY_KINDS:
+            self._error(400, "Choose the Meta key or the ElevenLabs key.")
+            return
+        saved = _read_mac_key(kind)
+        _remove_mac_key(kind)
+        if saved is not None and _session_key(self.config, kind) == saved:
+            _set_session_key(self.config, kind, None)
         self._send_json(200, {"ok": True, **_signin_state(self.config)})
 
     def _post_signin_check(self) -> None:
@@ -3822,7 +4662,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, _plain_direction_error(exc))
             return
         except FileNotFoundError:
-            self._error(404, "a job file is missing")
+            self._error(404, JOB_INCOMPLETE_MESSAGE)
             return
         try:
             _regenerate_after_review(self.config)
@@ -3873,7 +4713,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, _plain_direction_error(exc))
             return
         except FileNotFoundError:
-            self._error(404, "a job file is missing")
+            self._error(404, JOB_INCOMPLETE_MESSAGE)
             return
         after_review = False
         if result["direction_runs"] or (result.get("retakes") or {}).get(
@@ -4254,6 +5094,71 @@ class _Handler(BaseHTTPRequestHandler):
         _refresh_after_review(self.config)
         self._send_json(200, {"ok": True, **moved})
 
+    def _post_captions_pref(self) -> None:
+        """Set whether ums and uhs are hidden in this job's captions.
+
+        The switch lives where the captions are handed back (the
+        Revised edit card, and the finish card). The choice is saved
+        in the session; for a job the app took in itself it also
+        updates the job's marker, and the caption file is rebuilt
+        (on) or removed (off) right away, so what downloads always
+        matches the switch. For a runner job the choice is recorded
+        and a caption file that exists is removed when it is off;
+        building captions stays the intake's own work.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        on = body.get("hide_fillers")
+        if not isinstance(on, bool):
+            self._error(
+                400,
+                "Say whether ums and uhs stay hidden in the captions.",
+            )
+            return
+        config = self.config
+        _save_captions_hide_fillers(config, on)
+        session = config.session_dir
+        captions_path = session / clean_captions.CAPTIONS_FILENAME
+        available = captions_path.is_file()
+        if config.is_intake_job:
+            marker_path = config.job_dir / intake_build.INTAKE_MARKER
+            try:
+                marker = _load_json(str(marker_path))
+            except (OSError, ValueError):
+                marker = {}
+            marker["captions"] = on
+            try:
+                _write_json(marker_path, marker)
+            except OSError:
+                _log_raw_error("captions marker", OSError("write failed"))
+            if on:
+                try:
+                    clean_captions.build_captions(
+                        config.job_dir,
+                        _effective_cuts(config),
+                        captions_path,
+                    )
+                    available = captions_path.is_file()
+                except Exception as exc:
+                    _log_raw_error("clean captions", exc)
+                    available = captions_path.is_file()
+            else:
+                captions_path.unlink(missing_ok=True)
+                available = False
+        elif not on:
+            captions_path.unlink(missing_ok=True)
+            available = False
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "captions_hide_fillers": on,
+                "captions_available": available,
+            },
+        )
+
     def _post_render_intake(self) -> None:
         """Render an intake job with the app's own splice.
 
@@ -4463,6 +5368,10 @@ def create_server(
     httpd = _Server((host, port), _Handler)
     httpd.daemon_threads = True
     httpd.config = config  # type: ignore[attr-defined]
+    # A job loaded at start gets its watchable copies building
+    # right away, in the background, so no play request ever
+    # waits on a conversion.
+    _kick_playback_copies(config)
     # Drag-and-drop intake is anchored to the session area the
     # server started with, so staged drops stay in one known place
     # even after a dropped job becomes the current job and the

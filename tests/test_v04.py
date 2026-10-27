@@ -145,6 +145,9 @@ class V04Tests(unittest.TestCase):
                 # v0.5.1: the keeper mode rides with the front-door
                 # choices; the last take is the default.
                 "keep_mode": "last",
+                # v0.6.1: the breaths choice rides along too;
+                # keeping the natural breath is the default.
+                "breaths": "keep",
             },
         )
         self.assertEqual(summary["saved_rules"], [])
