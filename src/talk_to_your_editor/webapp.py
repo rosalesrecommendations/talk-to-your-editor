@@ -7,7 +7,11 @@ runner job folder.
 
 Job-dir contract: the job dir holds ``transcript.json`` and ``cuts.json``,
 optionally ``profile.json``, ``feedback.json``, and any video files
-(``.mp4``, ``.mov``, or ``.m4v``). A video that is not already in a
+(``.mp4``, ``.mov``, or ``.m4v``). A job folder can also be dropped
+onto the page: the drop is staged as a copy under the starting
+session's ``intake`` folder and becomes the current job, so no path
+typing is needed; a lone dropped video is staged and served for
+watching, with a plain note about what a full edit still needs. A video that is not already in a
 browser-safe codec is served through a converted playback copy kept
 in the session folder; the job's own files are never modified. Every
 output of a test session lands in ``<job-dir>/tye-session/``; the
@@ -38,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import checkpoints, creator_rules
 from .after_review import generate_after_review
@@ -280,6 +284,7 @@ DOWNLOAD_NAMES = (
     "revised_cuts.json",
 )
 SESSION_DIR_NAME = "tye-session"
+INTAKE_DIR_NAME = "intake"
 _CHUNK = 256 * 1024
 
 
@@ -1452,6 +1457,157 @@ def _toggle_word(config: WebAppConfig, word_index: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Drag-and-drop intake (v0.4.1)
+#
+# A job folder (or a single video) dropped on the page is uploaded
+# file by file and staged under the session area the server started
+# with: ``<launch job>/tye-session/intake/<name>-<id>/``. The staged
+# copy is a copy; whatever the creator dropped is never modified. A
+# staged folder that carries the two files a finished-edit job is
+# made of (transcript.json and cuts.json) becomes the server's
+# current job on the spot, exactly as if its path had been picked
+# at launch. A staged video on its own is served for watching, with
+# one plain sentence about what a full edit still needs.
+# ---------------------------------------------------------------------------
+
+VIDEO_ONLY_MESSAGE = (
+    "Your video is in, and you can watch it below. A full edit "
+    "needs more than the video: it needs the word-by-word "
+    "transcript and the edit plan, which part 1, the runner, "
+    "makes from the original recording. Drop the finished-edit "
+    "job folder and the app can work on it."
+)
+NOT_A_JOB_MESSAGE = (
+    "That folder is not a finished-edit job. A job folder carries "
+    "transcript.json and cuts.json together, the two files part 1, "
+    "the runner, makes. Nothing was loaded and nothing was "
+    "changed. Drop the job folder itself and it will load here."
+)
+EMPTY_DROP_MESSAGE = (
+    "Nothing arrived with that drop. Try again, and drop the job "
+    "folder itself."
+)
+
+
+def _safe_drop_name(name: str) -> str:
+    """A display name for a drop, safe as one folder name segment."""
+    tail = str(name or "").replace("\\", "/").split("/")[-1]
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "-", tail).strip(" .")
+    return cleaned[:60] or "dropped-files"
+
+
+def _safe_relative_parts(raw: str) -> Optional[list]:
+    """The segments of an uploaded file's relative path, or None.
+
+    Empty and "." segments are dropped. Any ".." refuses the whole
+    path: an upload may only ever land inside its own staging
+    folder, never outside it.
+    """
+    parts = []
+    for segment in str(raw or "").replace("\\", "/").split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            return None
+        parts.append(segment)
+    return parts or None
+
+
+def _intake_candidates(base: Path) -> list:
+    """The staging folder itself, then each folder directly inside it.
+
+    A dropped job folder lands one level down (its own name is the
+    first path segment); loose files land at the top. Job detection
+    looks at both, shallowest first.
+    """
+    candidates = [base]
+    try:
+        candidates += sorted(
+            path for path in base.iterdir() if path.is_dir()
+        )
+    except OSError:
+        pass
+    return candidates
+
+
+def _find_job_root(base: Path) -> Optional[Path]:
+    """The folder in the drop that is a finished-edit job, if any.
+
+    A finished-edit job is the folder carrying transcript.json and
+    cuts.json together: the two files every other part of the app
+    reads from the job folder.
+    """
+    for candidate in _intake_candidates(base):
+        if (candidate / "transcript.json").is_file() and (
+            candidate / "cuts.json"
+        ).is_file():
+            return candidate
+    return None
+
+
+def _find_staged_video(base: Path) -> Optional[tuple]:
+    """(folder, name) of the first watchable video in the drop."""
+    for candidate in _intake_candidates(base):
+        names = _job_videos(candidate)
+        if names:
+            return candidate, names[0]
+    return None
+
+
+def _has_any_file(base: Path) -> bool:
+    try:
+        return any(path.is_file() for path in base.rglob("*"))
+    except OSError:
+        return False
+
+
+_STAGED_PLAYBACK_LOCK = threading.Lock()
+
+
+def _staged_playback_target(source: Path) -> Path:
+    """The file to serve for a staged video.
+
+    The staged file itself when it is already browser-safe; else a
+    converted playback copy in a ``playback`` folder beside it,
+    built once and reused. The staged original is never touched.
+    """
+    if _probe_video_codec(source) == BROWSER_SAFE_CODEC:
+        return source
+    suffix = source.suffix.lstrip(".").lower()
+    dest = (
+        source.parent
+        / PLAYBACK_DIR_NAME
+        / f"{source.stem}-{suffix}.playback.mp4"
+    )
+    with _STAGED_PLAYBACK_LOCK:
+        if dest.is_file() and dest.stat().st_size > 0:
+            return dest
+        if _convert_playback_copy(source, dest):
+            return dest
+    return source
+
+
+def _detect_intake(base: Path) -> dict:
+    """What a finished drop turned out to be, in plain categories.
+
+    One of "job" (a finished-edit job folder; ``job_root`` set),
+    "video" (a watchable video but no job files; ``video_path``
+    set), "not_a_job" (files arrived, but no job and no video), or
+    "empty" (nothing arrived at all).
+    """
+    job_root = _find_job_root(base)
+    if job_root is not None:
+        return {"kind": "job", "job_root": job_root}
+    found = _find_staged_video(base)
+    if found is not None:
+        folder, name = found
+        return {"kind": "video", "video_path": folder / name}
+    if _has_any_file(base):
+        return {"kind": "not_a_job"}
+    return {"kind": "empty"}
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
 
@@ -1592,6 +1748,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._serve_video(path[len("/video/"):])
             elif path == "/after-review":
                 self._serve_after_review()
+            elif path.startswith("/api/intake/video/"):
+                self._serve_intake_video(path[len("/api/intake/video/"):])
             elif path.startswith("/api/download/"):
                 self._serve_download(path[len("/api/download/"):])
             elif (
@@ -1610,7 +1768,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802 - stdlib name
         path = unquote(urlsplit(self.path).path)
-        if path == "/api/comments":
+        if path == "/api/intake/begin":
+            self._post_intake_begin()
+        elif path == "/api/intake/file":
+            self._post_intake_file()
+        elif path == "/api/intake/finish":
+            self._post_intake_finish()
+        elif path == "/api/comments":
             self._post_comments()
         elif path == "/api/signin":
             self._post_signin()
@@ -1741,7 +1905,219 @@ class _Handler(BaseHTTPRequestHandler):
             {"Content-Disposition": f'attachment; filename="{name}"'},
         )
 
+    # -- intake plumbing --------------------------------------------------
+
+    def _intake_root(self) -> Path:
+        """Where drops are staged: the session area the server
+        started with, fixed at server start so it stays one place
+        even after a dropped job becomes the current job."""
+        root = getattr(self.server, "intake_root", None)
+        if root is None:
+            root = self.config.session_dir / INTAKE_DIR_NAME
+        return Path(root)
+
+    def _intakes(self) -> dict:
+        """The drop registry (intake id to staging record)."""
+        registry = getattr(self.server, "intakes", None)
+        if registry is None:
+            registry = {}
+            self.server.intakes = registry  # type: ignore[attr-defined]
+        return registry
+
+    def _serve_intake_video(self, rest: str) -> None:
+        """Serve one staged video from a drop that was not a job.
+
+        The path is <intake id>/<relative path>. A staged video in
+        a format the browser cannot play is served through a
+        converted playback copy, the same arrangement as job videos.
+        """
+        parts = rest.split("/", 1)
+        if len(parts) != 2:
+            self._error(404, "video not found")
+            return
+        intake_id, raw_relative = parts
+        record = self._intakes().get(intake_id)
+        if record is None:
+            self._error(404, "video not found")
+            return
+        segments = _safe_relative_parts(raw_relative)
+        if segments is None:
+            self._error(404, "video not found")
+            return
+        base = Path(record["dir"]).resolve()
+        target = base.joinpath(*segments).resolve()
+        if not target.is_relative_to(base) or not target.is_file():
+            self._error(404, "video not found")
+            return
+        if target.suffix.lower() not in VIDEO_EXTENSIONS:
+            self._error(404, "video not found")
+            return
+        served = _staged_playback_target(target)
+        self._serve_file_with_range(served, _video_content_type(served))
+
     # -- POST handlers ----------------------------------------------------
+
+    def _post_intake_begin(self) -> None:
+        """Open a staging folder for one drop and hand back its id.
+
+        Files then arrive one by one at /api/intake/file, and
+        /api/intake/finish closes the drop and says what it was.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        name = _safe_drop_name(str(body.get("name") or ""))
+        intake_id = uuid.uuid4().hex[:12]
+        staging = self._intake_root() / f"{name}-{intake_id}"
+        try:
+            staging.mkdir(parents=True, exist_ok=False)
+        except OSError:
+            _log_raw_error("intake begin", OSError(str(staging)))
+            self._error(
+                500,
+                "The drop could not be taken in. Try again in a moment.",
+            )
+            return
+        self._intakes()[intake_id] = {"dir": str(staging), "name": name}
+        self._send_json(200, {"ok": True, "intake_id": intake_id})
+
+    def _post_intake_file(self) -> None:
+        """Receive one file of a drop, byte for byte, into staging.
+
+        The file's path inside the dropped folder rides the query
+        string; the body is the file itself, streamed to disk so a
+        large video never has to sit in memory. The path is checked
+        segment by segment and the finished path must resolve inside
+        the staging folder.
+        """
+        query = parse_qs(urlsplit(self.path).query)
+        intake_id = (query.get("intake") or [""])[0]
+        raw_path = (query.get("path") or [""])[0]
+        record = self._intakes().get(intake_id)
+        if record is None:
+            self._error(
+                400,
+                "That drop is not on record anymore. Drop the folder again.",
+            )
+            return
+        parts = _safe_relative_parts(raw_path)
+        if parts is None:
+            self._error(
+                400,
+                "That file's name could not be used, so it was not taken in.",
+            )
+            return
+        base = Path(record["dir"]).resolve()
+        target = base.joinpath(*parts).resolve()
+        if not target.is_relative_to(base):
+            self._error(
+                400,
+                "That file's name could not be used, so it was not taken in.",
+            )
+            return
+        length_header = self.headers.get("Content-Length")
+        if length_header is None:
+            self._error(400, "The file arrived without a size.")
+            return
+        try:
+            remaining = int(length_header)
+        except ValueError:
+            self._error(400, "The file arrived without a size.")
+            return
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as handle:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+        except OSError as exc:
+            _log_raw_error("intake file", exc)
+            self._error(
+                500,
+                "That file could not be saved. The drop was stopped; "
+                "nothing was loaded.",
+            )
+            return
+        self._send_json(
+            200,
+            {"ok": True, "path": "/".join(parts), "size": target.stat().st_size},
+        )
+
+    def _post_intake_finish(self) -> None:
+        """Close a drop and say, in plain words, what it turned out to be.
+
+        A finished-edit job becomes the server's current job on the
+        spot, with the session sign-in carried over. A lone video is
+        offered back for watching with the sentence about what a
+        full edit still needs. Anything else is the clear not-a-job
+        state. In every case the dropped originals are untouched:
+        the app works on the staged copy it took in.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        intake_id = str(body.get("intake_id") or "")
+        record = self._intakes().get(intake_id)
+        if record is None:
+            self._error(
+                400,
+                "That drop is not on record anymore. Drop the folder again.",
+            )
+            return
+        base = Path(record["dir"])
+        detected = _detect_intake(base)
+        kind = detected["kind"]
+        if kind == "job":
+            job_root = detected["job_root"]
+            new_config = WebAppConfig(job_root)
+            new_config.session_api_key = self.config.session_api_key
+            self.server.config = new_config  # type: ignore[attr-defined]
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "kind": "job",
+                    "job_name": job_root.name,
+                    "message": (
+                        f"Your job folder is in. The app is now "
+                        f"running on {job_root.name}, the copy it "
+                        "just took in; your original folder was not "
+                        "changed. The page will reload on the new job."
+                    ),
+                },
+            )
+            return
+        if kind == "video":
+            video_path = detected["video_path"]
+            relative = video_path.relative_to(base).as_posix()
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "kind": "video",
+                    "video_name": video_path.name,
+                    "video_url": (
+                        f"/api/intake/video/{intake_id}/"
+                        + quote(relative)
+                    ),
+                    "message": VIDEO_ONLY_MESSAGE,
+                },
+            )
+            return
+        if kind == "empty":
+            self._send_json(
+                200, {"ok": True, "kind": "empty", "message": EMPTY_DROP_MESSAGE}
+            )
+            return
+        self._send_json(
+            200,
+            {"ok": True, "kind": "not_a_job", "message": NOT_A_JOB_MESSAGE},
+        )
 
     def _post_signin(self) -> None:
         body = self._read_json_body()
@@ -2433,6 +2809,12 @@ def create_server(
     httpd = _Server((host, port), _Handler)
     httpd.daemon_threads = True
     httpd.config = config  # type: ignore[attr-defined]
+    # Drag-and-drop intake is anchored to the session area the
+    # server started with, so staged drops stay in one known place
+    # even after a dropped job becomes the current job and the
+    # config is swapped for the staged copy's.
+    httpd.intake_root = config.session_dir / INTAKE_DIR_NAME  # type: ignore[attr-defined]
+    httpd.intakes = {}  # type: ignore[attr-defined]
     return httpd
 
 

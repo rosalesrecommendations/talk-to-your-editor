@@ -48,6 +48,24 @@ http://127.0.0.1:8765
 
 Keep the Terminal window open. Closing it stops the app.
 
+### Bring in a job by dropping it (new)
+
+You do not have to restart the app or paste a path to change jobs. The page itself takes a job in.
+
+1. Open Finder to the runner job folder you want to test.
+2. Drag the folder onto the app page. Anywhere on the page works; the **Bring in a job** card at the top lights up while you drag. Let go.
+3. The card reports progress in plain words: how many files, and each file as it arrives. When the folder is in, the page reloads and the whole app, video, transcript, counts, is now running on that job. You are testing the dropped job, no restart needed.
+4. The app works on **the copy it took in**, staged under the first job's `tye-session/intake` folder. Your original folder is never changed. Notes, runs, and grades for the dropped job live in the dropped copy's own `tye-session`, just as they would if you had launched with its path.
+
+Two more drop shapes to try:
+
+- **Drop a single video file** (an .mp4 or .mov on its own). It stages and plays right in the Bring in a job card. The card says what a full edit still needs: the word-by-word transcript and the edit plan that part 1, the runner, makes. A video alone cannot be directed, and the app says so instead of failing.
+- **Drop a folder that is not a job** (a folder of photos, say). The card says plainly that it is not a finished-edit job, names the two files a job folder carries, and confirms nothing was loaded. Your current job keeps running untouched.
+
+If dragging is awkward, the card's **choose a folder** and **choose files** buttons bring in the same things the picking way.
+
+Things worth noticing while you test this: whether the progress wording keeps up with a big folder, whether the reload lands you where you expect, and whether the staged copy behaving like a launched job feels seamless or surprising anywhere.
+
 ### 3. Make the edit: the front door
 
 Under the video is the card that matters most: **Make the edit**.
@@ -160,7 +178,9 @@ Never paste the key into chat. The launcher prompt and the page's sign-in field 
 
 ## Test with a real runner job
 
-After the sample feels clear, quit the app and launch it again.
+The shortest route is now drag and drop: launch with the sample, then drop the real job folder onto the page (see "Bring in a job by dropping it" above). The app reloads on the dropped job and you are testing it.
+
+The older route still works too: quit the app and launch it again, pasting the job's path at the prompt.
 
 ### Which folder to paste
 

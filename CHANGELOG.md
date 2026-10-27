@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 - 2026-10-27
+
+Drag and drop. The app vacuums a job in: no path typing, no Terminal.
+
+- Drop a runner job folder anywhere on the test page and the app takes it in. The folder arrives file by file, with progress in plain words ("Bringing in file 3 of 12"), and is staged as a copy in the session's intake folder. The moment the copy is in, the app runs on it exactly as if its path had been picked at launch, and the page reloads on the new job. Your original folder is never changed; the app works on the copy it took in. Choosing a folder or files with a button works too, for the days dragging is awkward.
+- Drop a single video and it stages and plays right on the page. The page says in one sentence what a full edit still needs: the word-by-word transcript and the edit plan that part 1, the runner, makes. A video that is not in a browser-friendly format is played through a converted copy, the same arrangement as job videos, and the staged original is never touched.
+- Drop a folder that is not a finished-edit job and the page says so, plainly: a job folder carries transcript.json and cuts.json together, nothing was loaded, and nothing was changed. Drop the job folder itself and it loads.
+- The folder-path route is untouched: the launcher still takes a pasted path exactly as before, and the drop simply lands in the same place by a shorter road.
+
 ## 0.4.0 - 2026-10-27
 
 The simple build. The test page was rebuilt around how a creator actually works: two choices, one button, and the transcript itself explaining every change.

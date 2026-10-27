@@ -432,6 +432,23 @@
   .downloads summary { cursor: pointer; line-height: 2; color: var(--muted); }
   .status-line { font-size: 14px; line-height: 1.45; color: var(--muted); min-height: 21px; margin: 9px 0 0; }
   .counts { font-size: 16px; line-height: 1.55; margin: 10px 0; }
+  .drop-area {
+    border: 1.5px dashed rgba(10, 132, 255, 0.45);
+    border-radius: 22px;
+    padding: 26px 18px 20px;
+    text-align: center;
+    margin-top: 14px;
+    transition: background 140ms var(--ease-out), border-color 140ms var(--ease-out);
+  }
+  .drop-area.over {
+    background: rgba(10, 132, 255, 0.13);
+    border-color: var(--accent);
+  }
+  .drop-big { font-size: 18px; font-weight: 600; margin: 0 0 6px; }
+  .drop-area .note { margin: 0; }
+  .drop-area button { min-height: 44px; }
+  #dropVideoWrap { margin-top: 14px; }
+  #dropVideo { width: 100%; border-radius: 18px; background: #000; }
   .empty { color: var(--muted); font-size: 14px; line-height: 1.5; padding: 10px 2px; }
   .transcript { font-size: 17px; line-height: 1.92; margin: 14px 0 0; }
   .tw { cursor: pointer; border-radius: 7px; padding: 2px 3px; transition: background 120ms var(--ease-out), opacity 120ms var(--ease-out); }
@@ -485,6 +502,21 @@
 <main>
   <h1>Talk to Your Editor</h1>
   <p class="subtitle">Test session for {{JOB_NAME}}. Watch the edit, pin a comment where something needs to change, then run direction and see exactly what the program did about each note.</p>
+
+  <div class="card" id="dropCard">
+    <h2>Bring in a job</h2>
+    <p class="note">Drop a runner job folder anywhere on this page and the app takes it in and runs on it. No path typing, no Terminal. The app works on the copy it takes in; your original folder is never changed. A single video can be dropped too: it plays here, and the page says what a full edit still needs.</p>
+    <div class="drop-area" id="dropArea">
+      <p class="drop-big">Drop the job folder or a video here</p>
+      <p class="note">or <button id="dropPickFolder" type="button">choose a folder</button> <button id="dropPickFiles" type="button">choose files</button></p>
+    </div>
+    <input type="file" id="dropFolderInput" webkitdirectory hidden>
+    <input type="file" id="dropFilesInput" multiple hidden>
+    <p class="status-line" id="dropStatus"></p>
+    <div id="dropVideoWrap" hidden>
+      <video id="dropVideo" controls playsinline preload="metadata"></video>
+    </div>
+  </div>
 
   <div class="card" id="novid" hidden>
     <h2>No video in this job folder</h2>
@@ -1945,6 +1977,182 @@
 
   undoBtn.addEventListener("click", function () { moveHistory("undo"); });
   redoBtn.addEventListener("click", function () { moveHistory("redo"); });
+
+  // -- Drag and drop intake -------------------------------------------------
+  // A job folder dropped anywhere on the page is read through the
+  // browser's folder entries, sent to the app file by file, and
+  // staged as a copy the app then runs on. A single video stages
+  // and plays here, with the server's plain sentence about what a
+  // full edit still needs. Progress is reported in plain words on
+  // the drop card's own status line.
+  var dropArea = document.getElementById("dropArea");
+  var dropStatus = document.getElementById("dropStatus");
+  var dropVideoWrap = document.getElementById("dropVideoWrap");
+  var dropVideo = document.getElementById("dropVideo");
+  var dropBusy = false;
+
+  function dropSay(text) { dropStatus.textContent = text; }
+
+  function dropJunk(path) {
+    var parts = path.split("/");
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i] === "__MACOSX" || parts[i] === ".DS_Store") { return true; }
+    }
+    return false;
+  }
+
+  function readEntry(entry, prefix, out) {
+    return new Promise(function (resolve) {
+      if (entry.isFile) {
+        entry.file(function (file) {
+          out.push({ file: file, path: prefix + entry.name });
+          resolve();
+        }, function () { resolve(); });
+      } else if (entry.isDirectory) {
+        var reader = entry.createReader();
+        var readBatch = function () {
+          reader.readEntries(function (entries) {
+            if (!entries.length) { resolve(); return; }
+            var pending = [];
+            for (var i = 0; i < entries.length; i++) {
+              pending.push(readEntry(entries[i], prefix + entry.name + "/", out));
+            }
+            // readEntries hands back one batch at a time; keep
+            // asking until a batch comes back empty.
+            Promise.all(pending).then(readBatch, readBatch);
+          }, function () { resolve(); });
+        };
+        readBatch();
+      } else {
+        resolve();
+      }
+    });
+  }
+
+  function collectDrop(dt) {
+    var out = [];
+    var entries = [];
+    var items = dt && dt.items ? Array.prototype.slice.call(dt.items) : [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === "file" && items[i].webkitGetAsEntry) {
+        var entry = items[i].webkitGetAsEntry();
+        if (entry) { entries.push(entry); }
+      }
+    }
+    if (entries.length) {
+      var pending = entries.map(function (e) { return readEntry(e, "", out); });
+      return Promise.all(pending).then(function () { return out; });
+    }
+    var files = dt && dt.files ? Array.prototype.slice.call(dt.files) : [];
+    files.forEach(function (file) { out.push({ file: file, path: file.name }); });
+    return Promise.resolve(out);
+  }
+
+  function sendDrop(files) {
+    files = files.filter(function (item) { return !dropJunk(item.path); });
+    if (!files.length) {
+      dropSay("Nothing arrived with that drop. Try again, and drop the job folder itself.");
+      return;
+    }
+    if (dropBusy) {
+      dropSay("A drop is already coming in. Let it finish first.");
+      return;
+    }
+    dropBusy = true;
+    dropVideoWrap.hidden = true;
+    var firstSegment = files[0].path.split("/")[0] || "dropped-files";
+    var rootName = files[0].path.indexOf("/") >= 0
+      ? firstSegment
+      : firstSegment.replace(/\.[^.]*$/, "");
+    dropSay("Taking in " + rootName + ": " + files.length +
+      (files.length === 1 ? " file." : " files."));
+    postJson("/api/intake/begin", { name: rootName }).then(function (begun) {
+      if (!begun.data || !begun.data.ok) {
+        throw new Error("begin");
+      }
+      var intakeId = begun.data.intake_id;
+      var chain = Promise.resolve();
+      files.forEach(function (item, index) {
+        chain = chain.then(function () {
+          dropSay("Bringing in file " + (index + 1) + " of " + files.length +
+            ": " + item.path);
+          return fetch(
+            "/api/intake/file?intake=" + encodeURIComponent(intakeId) +
+            "&path=" + encodeURIComponent(item.path),
+            { method: "POST", body: item.file }
+          ).then(function (r) { return r.json(); }).then(function (res) {
+            if (!res || !res.ok) { throw new Error("file"); }
+          });
+        });
+      });
+      return chain.then(function () {
+        dropSay("Checking what arrived…");
+        return postJson("/api/intake/finish", { intake_id: intakeId });
+      });
+    }).then(function (finished) {
+      var data = (finished && finished.data) || {};
+      dropBusy = false;
+      if (!data.ok) {
+        dropSay("The drop did not come through. Try again in a moment.");
+        return;
+      }
+      dropSay(data.message || "");
+      if (data.kind === "job") {
+        // The app is now running on the staged job; reload so the
+        // whole page (video, transcript, counts) is the new job's.
+        setTimeout(function () { window.location.reload(); }, 900);
+      } else if (data.kind === "video" && data.video_url) {
+        dropVideo.src = data.video_url;
+        dropVideoWrap.hidden = false;
+      }
+    }).catch(function () {
+      dropBusy = false;
+      dropSay("The drop did not come through. Check the connection and try again.");
+    });
+  }
+
+  var dragDepth = 0;
+  document.addEventListener("dragenter", function (e) {
+    e.preventDefault();
+    dragDepth++;
+    dropArea.classList.add("over");
+  });
+  document.addEventListener("dragover", function (e) { e.preventDefault(); });
+  document.addEventListener("dragleave", function (e) {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) { dropArea.classList.remove("over"); }
+  });
+  document.addEventListener("drop", function (e) {
+    e.preventDefault();
+    dragDepth = 0;
+    dropArea.classList.remove("over");
+    collectDrop(e.dataTransfer).then(sendDrop);
+  });
+
+  var dropFolderInput = document.getElementById("dropFolderInput");
+  var dropFilesInput = document.getElementById("dropFilesInput");
+  document.getElementById("dropPickFolder").addEventListener("click", function () {
+    dropFolderInput.click();
+  });
+  document.getElementById("dropPickFiles").addEventListener("click", function () {
+    dropFilesInput.click();
+  });
+  dropFolderInput.addEventListener("change", function () {
+    var files = Array.prototype.slice.call(dropFolderInput.files || []).map(
+      function (file) {
+        return { file: file, path: file.webkitRelativePath || file.name };
+      }
+    );
+    dropFolderInput.value = "";
+    sendDrop(files);
+  });
+  dropFilesInput.addEventListener("change", function () {
+    var files = Array.prototype.slice.call(dropFilesInput.files || []).map(
+      function (file) { return { file: file, path: file.name }; }
+    );
+    dropFilesInput.value = "";
+    sendDrop(files);
+  });
 
   fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
     videos = job.videos || [];
