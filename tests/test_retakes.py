@@ -13,6 +13,7 @@ and a "did not work" grade retires the pair.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -21,6 +22,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -314,6 +316,15 @@ TOTAL_WORDS = sum(len(s.split()) for s in HTTP_SENTENCES)       # 94
 class RetakeHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="tye-retakes-"))
+        # v0.7.0: front-door saves also write the creator's usual;
+        # isolate HOME so tests never write the real one.
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        env = mock.patch.dict(
+            os.environ, {"HOME": str(self.home)}, clear=False
+        )
+        env.start()
+        self.addCleanup(env.stop)
         self.job = self.tmp / "job"
         self.job.mkdir()
         transcript = make_transcript(HTTP_SENTENCES)

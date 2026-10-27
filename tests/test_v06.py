@@ -550,9 +550,15 @@ class FirstEditHttpTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="tye-v06-"))
         self.launch = self.tmp / "launch home"
         self.launch.mkdir()
+        # v0.7.0: a first edit saves its choices as the creator's
+        # usual (~/.talk-to-your-editor/usual.json); isolate HOME so
+        # one test's choices cannot seed another test's first edit.
+        self.home = self.tmp / "home"
+        self.home.mkdir()
         env = mock.patch.dict(os.environ, {}, clear=False)
         env.start()
         self.addCleanup(env.stop)
+        os.environ["HOME"] = str(self.home)
         os.environ.pop("ELEVENLABS_API_KEY", None)
         os.environ.pop("MODEL_API_KEY", None)
         self.server = create_server(

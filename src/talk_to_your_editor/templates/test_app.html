@@ -304,9 +304,75 @@
     cursor: pointer;
   }
   .fd-note { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 2px 0 10px; }
-  #fdBufferRow { transition: opacity 160ms var(--ease-out); }
+  #fdBufferRow, #inBufferRow { transition: opacity 160ms var(--ease-out); }
   input[type="range"] { accent-color: var(--accent); }
-  #editPopup { margin-top: 14px; }
+  .remove-heading { font-size: 17px; font-weight: 700; margin: 16px 0 8px; }
+  .remove-group { border-top: 0.5px solid var(--line); margin-top: 14px; padding-top: 4px; }
+  /* The edit popup is a floating card (v0.7.0): it opens next to the
+     dot or flag that was picked, and scrolls inside itself. */
+  #editPopup {
+    position: fixed;
+    width: min(320px, 92vw);
+    max-height: 45vh;
+    overflow-y: auto;
+    z-index: 60;
+    margin: 0;
+    background: rgba(38, 38, 40, 0.97);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  #editPopup[hidden] { display: none; }
+  /* Transcript panel (v0.7.0): lines with time chips, a pinned header,
+     and an action strip for the words picked. */
+  .tx-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-top: 10px; }
+  .tx-counts { font-size: 15px; font-weight: 600; }
+  #transcriptPanel { overflow-y: auto; max-height: 52vh; margin-top: 8px; }
+  @media (max-width: 700px) { #transcriptPanel { max-height: 40vh; } }
+  #transcriptPanel .transcript { margin: 0; line-height: 1.6; }
+  .tx-line { display: flex; align-items: flex-start; gap: 8px; padding: 3px 4px; border-radius: 10px; }
+  .tx-line-now { background: rgba(10, 132, 255, 0.10); }
+  .tx-chip {
+    flex: none;
+    min-height: 0;
+    padding: 3px 8px;
+    margin-top: 3px;
+    font-size: 12.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent-soft);
+    background: rgba(10, 132, 255, 0.13);
+    border: 0.5px solid rgba(10, 132, 255, 0.22);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .tx-words { flex: 1; min-width: 0; }
+  .tw-now { background: rgba(10, 132, 255, 0.34); box-shadow: inset 0 -2px 0 var(--accent-soft); }
+  #txActionStrip {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    margin-top: 10px; padding: 10px 12px;
+    background: var(--panel-2);
+    border: 0.5px solid var(--line);
+    border-radius: 16px;
+  }
+  #txActionStrip[hidden] { display: none; }
+  #txActionStrip button { min-height: 40px; padding: 8px 14px; font-size: 14px; }
+  #txSelLabel { font-size: 14px; font-weight: 600; margin-right: 4px; }
+  .tdot { position: relative; }
+  .tdot::after { content: ""; position: absolute; inset: -7.5px; border-radius: 50%; }
+  .tflag {
+    position: relative;
+    display: inline-block;
+    width: 15px; height: 15px;
+    min-height: 0; padding: 0;
+    border-radius: 50%;
+    background: transparent;
+    border: 1.5px solid var(--amber);
+    color: var(--amber);
+    font-size: 9px; line-height: 1;
+    vertical-align: middle;
+    margin: 0 3px;
+    cursor: pointer;
+  }
+  .tflag::after { content: ""; position: absolute; inset: -6.5px; border-radius: 50%; }
   .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); cursor: pointer; min-height: 44px; }
   .switch input {
     appearance: none;
@@ -559,6 +625,38 @@
       <video id="dropVideo" controls playsinline preload="metadata"></video>
     </div>
     <div id="firstEditBlock" hidden>
+      <div class="remove-group" id="inRemoveGroup">
+        <h3 class="remove-heading">Remove</h3>
+        <div>
+          <label class="switch"><input type="checkbox" id="inRetakes" checked> Retakes</label>
+          <p class="fd-note" id="inRetakesNote">When a line is said more than once, the last take stays.</p>
+          <div class="row" id="inKeepPills">
+            <button type="button" data-keep="last">The last take</button>
+            <button type="button" data-keep="first">The first clean take</button>
+            <button type="button" data-keep="best">Best delivery (Beta)</button>
+          </div>
+        </div>
+        <div>
+          <label class="switch"><input type="checkbox" id="inSilence" checked> Silence</label>
+          <p class="fd-note" id="inSilenceNote">Pauses over the buffer are shortened to the buffer. Every pause over that length is cut down the same way.</p>
+        </div>
+        <div class="row" id="inBufferRow">
+          <label for="inBufferRange">Silence left between words</label>
+          <input type="range" id="inBufferRange" min="0.05" max="0.5" step="0.05" value="0.2">
+          <input type="number" id="inBufferNum" min="0.05" max="0.5" step="0.05" value="0.2">
+          <span>seconds</span>
+        </div>
+        <p class="note">Breaths:</p>
+        <div class="row" id="inBreathsPills">
+          <button type="button" data-breaths="keep">Keep the natural breath</button>
+          <button type="button" data-breaths="trim">Trim breaths with the pause</button>
+        </div>
+        <p class="note" id="inBreathsNote"></p>
+        <div>
+          <p class="note">Filler words:</p>
+          <label class="switch"><input type="checkbox" id="inFillers"> Take out the ums and uhs</label>
+        </div>
+      </div>
       <p class="note">Direction for the first edit, if you have any. Plain words are fine: "remove retakes, last take is the best take," or "keep the first clean take and leave 0.2 seconds of silence." What you say here outranks the saved choices for this video. Anything that is not one of the app's choices is saved as overall guidance for the model.</p>
       <textarea id="intakeDirection" rows="2" placeholder="Direction for the first edit (you can leave this empty)"></textarea>
       <div class="row">
@@ -607,20 +705,26 @@
 
   <div class="card job-only">
     <h2>Make the edit</h2>
-    <p class="note">Two choices, on unless you turn them off. Set them while you watch, then make the edit.</p>
+    <p class="note">Choices, on unless you turn them off. Set them while you watch, then make the edit. The choices are: remove retakes, cut silence, and take out filler words.</p>
+    <h3 class="remove-heading">Remove</h3>
     <div>
       <label class="switch"><input type="checkbox" id="fdRetakes" checked> Remove retakes</label>
       <p class="fd-note" id="fdRetakesNote">When a line is said more than once, the last take stays.</p>
     </div>
     <div>
       <label class="switch"><input type="checkbox" id="fdSilence" checked> Cut silence</label>
-      <p class="fd-note">Long silences are trimmed down to the buffer.</p>
+      <p class="fd-note">Pauses over the buffer are shortened to the buffer. Every pause over that length is cut down the same way.</p>
     </div>
     <div class="row" id="fdBufferRow">
       <label for="fdBufferRange">Silence left between words</label>
       <input type="range" id="fdBufferRange" min="0.05" max="0.5" step="0.05" value="0.2">
       <input type="number" id="fdBufferNum" min="0.05" max="0.5" step="0.05" value="0.2">
       <span>seconds</span>
+    </div>
+    <div>
+      <p class="note">Filler words:</p>
+      <label class="switch"><input type="checkbox" id="fdFillers"> Take out the ums and uhs</label>
+      <p class="fd-note">Filler words like um and uh are taken out of the edit, not just hidden in the captions.</p>
     </div>
     <div class="row">
       <button id="fdFire" class="primary" type="button">Make the edit</button>
@@ -649,7 +753,7 @@
         <button type="button" data-breaths="trim">Trim breaths with the pause</button>
       </div>
       <p class="note" id="fdBreathsNote"></p>
-      <textarea id="fdDirection" rows="3" placeholder="Anything else for this video? What you say adds to the two choices above. Say unless when one spot should be treated differently."></textarea>
+      <textarea id="fdDirection" rows="3" placeholder="Anything else for this video? What you say adds to the choices above. Say unless when one spot should be treated differently."></textarea>
       <div class="row">
         <button id="fdDictate" type="button">Dictate</button>
         <span class="note" id="fdDictateStatus"></span>
@@ -707,36 +811,22 @@
 
   <div class="card job-only" id="transcriptCard">
     <h2>Transcript</h2>
-    <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Click a word to cut it, or click a struck word to bring it back. Every click passes the same safety check as a direction change.</p>
-    <p class="transcript" id="transcriptWords"></p>
-    <p class="status-line" id="transcriptStatus"></p>
-    <div class="comment" id="editPopup" hidden>
-      <span id="editPopupTitle">Why these words were removed</span>
-      <p class="comment-text" id="editPopupRemoved"></p>
-      <p class="action" id="editPopupReason"></p>
-      <p id="editPopupComment" hidden></p>
-      <div id="editPopupKept" hidden>
-        <p class="note">The take that stayed:</p>
-        <p class="comment-text" id="editPopupKeptText"></p>
-      </div>
-      <p class="action" id="editPopupShadow" hidden></p>
-      <div class="row" id="editPopupActions">
-        <button id="editBringBack" type="button">Bring these words back</button>
-        <button id="editSwapTakes" type="button" hidden>Swap takes</button>
-      </div>
-      <p class="status-line" id="editActionStatus"></p>
-      <div id="editNotesList"></div>
-      <textarea id="editNoteText" rows="2" placeholder="Leave a note on this edit. It travels with the removed words into the next run."></textarea>
-      <div class="row">
-        <button id="editNoteSpeak" type="button">Dictate the note</button>
-        <button id="editNoteSave" class="primary" type="button">Save note</button>
-        <button id="editPopupClose" type="button">Close</button>
-      </div>
-      <div class="row">
-        <button id="editNoteSpeakBrowser" type="button" hidden>Use the browser's voice typing instead</button>
-      </div>
-      <p class="status-line" id="editNoteStatus"></p>
+    <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Click a word to jump the video to it and pick it, then cut the picked words or bring them back with the buttons under the words. Shift and click picks every word from the first picked word to the one clicked. Every change passes the same safety check as a direction change.</p>
+    <div class="tx-header">
+      <span class="tx-counts" id="txCounts"></span>
+      <label class="switch"><input type="checkbox" id="txFollow" checked> Follow the video</label>
     </div>
+    <div id="transcriptPanel">
+      <p class="transcript" id="transcriptWords"></p>
+    </div>
+    <div id="txActionStrip" hidden>
+      <span id="txSelLabel"></span>
+      <button id="txCutBtn" type="button">Cut these words</button>
+      <button id="txRestoreBtn" type="button">Bring these words back</button>
+      <button id="txFixBtn" type="button">Fix the words</button>
+      <button id="txClearSel" type="button">Clear</button>
+    </div>
+    <p class="status-line" id="transcriptStatus"></p>
     <div class="row">
       <button id="fixWordsBtn" type="button">Fix words</button>
     </div>
@@ -829,6 +919,34 @@
   </div>
 </main>
 
+  <div class="comment" id="editPopup" role="dialog" hidden>
+    <span id="editPopupTitle">Why these words were removed</span>
+    <p class="comment-text" id="editPopupRemoved"></p>
+    <p class="action" id="editPopupReason"></p>
+    <p id="editPopupComment" hidden></p>
+    <div id="editPopupKept" hidden>
+      <p class="note">The take that stayed:</p>
+      <p class="comment-text" id="editPopupKeptText"></p>
+    </div>
+    <p class="action" id="editPopupShadow" hidden></p>
+    <div class="row" id="editPopupActions">
+      <button id="editBringBack" type="button">Bring these words back</button>
+      <button id="editSwapTakes" type="button" hidden>Swap takes</button>
+    </div>
+    <p class="status-line" id="editActionStatus"></p>
+    <div id="editNotesList"></div>
+    <textarea id="editNoteText" rows="2" placeholder="Leave a note on this edit. It travels with the removed words into the next run."></textarea>
+    <div class="row">
+      <button id="editNoteSpeak" type="button">Dictate the note</button>
+      <button id="editNoteSave" class="primary" type="button">Save note</button>
+      <button id="editPopupClose" type="button">Close</button>
+    </div>
+    <div class="row">
+      <button id="editNoteSpeakBrowser" type="button" hidden>Use the browser's voice typing instead</button>
+    </div>
+    <p class="status-line" id="editNoteStatus"></p>
+  </div>
+
 <script>
 (function () {
   "use strict";
@@ -898,12 +1016,37 @@
   var transcriptEntries = [];
   var corrections = [];
   var editSpans = [];
+  var jobFlags = [];
   var savedRules = [];
   var ruleSuggestions = [];
   var currentEditId = null;
   var fixMode = false;
   var fixStart = null;
   var fixEnd = null;
+  // Transcript panel (v0.7.0): the picked run of words, the follow
+  // switch, and the floating popup's anchor and timers.
+  var selStart = null;
+  var selEnd = null;
+  var followOn = true;
+  var followScrolling = false;
+  var lastTxSync = 0;
+  var currentWordIndex = null;
+  var transcriptPanel = document.getElementById("transcriptPanel");
+  var txFollowEl = document.getElementById("txFollow");
+  var txCountsEl = document.getElementById("txCounts");
+  var txActionStrip = document.getElementById("txActionStrip");
+  var txSelLabel = document.getElementById("txSelLabel");
+  var txCutBtn = document.getElementById("txCutBtn");
+  var txRestoreBtn = document.getElementById("txRestoreBtn");
+  var txFixBtn = document.getElementById("txFixBtn");
+  var txClearSel = document.getElementById("txClearSel");
+  var popupAnchor = null;
+  var popupSpanRef = null;
+  var popupFlagRef = null;
+  var popupMode = "edit";
+  var popupOpenTimer = null;
+  var popupCloseTimer = null;
+  var stateFrontDoor = null;
   var state = { comments: [], overall: [], outputDuration: 0 };
   var pinnedTs = null;
   var pinnedFmt = "vertical";
@@ -931,6 +1074,13 @@
     var m = Math.floor(t / 60);
     var s = t - m * 60;
     return m + ":" + (s < 10 ? "0" : "") + s.toFixed(1);
+  }
+
+  function fmtMinSec(t) {
+    t = Math.max(0, Math.floor(t || 0));
+    var m = Math.floor(t / 60);
+    var s = t - m * 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
   }
 
   function tlDuration() {
@@ -1186,31 +1336,103 @@
     });
   }
 
+  function updateTxCounts() {
+    if (!txCountsEl) { return; }
+    var kept = 0;
+    var total = 0;
+    transcriptEntries.forEach(function (w) {
+      var n = (w.word_end || (w.index + 1)) - w.index;
+      if (n < 0) { n = 0; }
+      total += n;
+      if (w.status === "kept") { kept += n; }
+    });
+    txCountsEl.textContent = kept + " of " + total + " words in the edit";
+  }
+
+  function entryByIndex(index) {
+    for (var i = 0; i < transcriptEntries.length; i++) {
+      if (transcriptEntries[i].index === index) { return transcriptEntries[i]; }
+    }
+    return null;
+  }
+
+  function spanTextFor(start, end) {
+    var parts = [];
+    transcriptEntries.forEach(function (w) {
+      var e = w.word_end || (w.index + 1);
+      if (e <= start || w.index >= end) { return; }
+      parts.push(w.word);
+    });
+    return parts.join(" ");
+  }
+
+  // Lines break on a pause over 0.7 seconds, at 14 words, or after
+  // a word that ends a sentence. Each line opens with a time chip
+  // that seeks the video to the line's first word.
   function renderTranscript(words) {
     transcriptEntries = words || [];
     transcriptEl.innerHTML = "";
+    currentWordIndex = null;
     var dotByLast = {};
     (editSpans || []).forEach(function (s) {
       if (s && typeof s.word_end === "number") {
         dotByLast[s.word_end - 1] = s;
       }
     });
+    var flagsByLast = {};
+    (jobFlags || []).forEach(function (f) {
+      if (f && typeof f.word_end === "number") {
+        var key = f.word_end - 1;
+        if (!flagsByLast[key]) { flagsByLast[key] = []; }
+        flagsByLast[key].push(f);
+      }
+    });
+    var lineEl = null;
+    var lineWords = null;
+    var lineCount = 0;
+    var prev = null;
+    function startLine(w) {
+      lineEl = document.createElement("div");
+      lineEl.className = "tx-line";
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "tx-chip";
+      chip.dataset.start = (typeof w.start === "number") ? w.start : "";
+      chip.textContent = fmtMinSec(w.start);
+      chip.setAttribute("aria-label", "Play from " + fmtMinSec(w.start));
+      lineEl.appendChild(chip);
+      lineWords = document.createElement("span");
+      lineWords.className = "tx-words";
+      lineEl.appendChild(lineWords);
+      transcriptEl.appendChild(lineEl);
+      lineCount = 0;
+    }
     transcriptEntries.forEach(function (w) {
+      var needLine = !lineEl;
+      if (!needLine && prev) {
+        if (typeof w.start === "number" && typeof prev.end === "number" &&
+            w.start - prev.end > 0.7) { needLine = true; }
+        if (lineCount >= 14) { needLine = true; }
+        var prevText = String(prev.word || "").replace(/\s+$/, "");
+        if (/[.!?]$/.test(prevText)) { needLine = true; }
+      }
+      if (needLine) { startLine(w); }
       var span = document.createElement("span");
       span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "");
       span.dataset.index = w.index;
       span.dataset.end = w.word_end || (w.index + 1);
       span.textContent = w.word;
       span.title = w.corrected
-        ? "Corrected from: " + (w.original || "") + ". Click to change or remove this correction."
+        ? "Corrected from: " + (w.original || "") + ". Click to pick it, then Fix the words to change the correction."
         : (w.status === "cut"
-          ? "Cut. Click to bring this word back."
-          : "Click to cut this word.");
-      transcriptEl.appendChild(span);
-      transcriptEl.appendChild(document.createTextNode(" "));
+          ? "Cut. Click to jump here and pick this word."
+          : "Click to jump here and pick this word.");
+      lineWords.appendChild(span);
+      lineWords.appendChild(document.createTextNode(" "));
+      lineCount += ((w.word_end || (w.index + 1)) - w.index) || 1;
+      var entryEnd = w.word_end || (w.index + 1);
       Object.keys(dotByLast).forEach(function (k) {
         var lastIdx = parseInt(k, 10);
-        var entryEnd = w.word_end || (w.index + 1);
         if (w.index <= lastIdx && lastIdx < entryEnd) {
           var editSpan = dotByLast[k];
           var dot = document.createElement("button");
@@ -1218,22 +1440,178 @@
           dot.className = "tdot";
           dot.dataset.editId = editSpan.edit_id;
           dot.setAttribute("aria-label", "Why these words were removed, and notes on this edit");
-          dot.addEventListener("click", function (e) {
-            e.stopPropagation();
-            openEditPopup(editSpan);
-          });
-          transcriptEl.appendChild(dot);
+          dot.setAttribute("aria-haspopup", "dialog");
+          dot.setAttribute("aria-expanded", "false");
+          wirePopupAnchor(dot, function (anchor) { openEditPopup(editSpan, anchor); });
+          lineWords.appendChild(dot);
         }
       });
+      Object.keys(flagsByLast).forEach(function (k) {
+        var lastIdx = parseInt(k, 10);
+        if (w.index <= lastIdx && lastIdx < entryEnd) {
+          flagsByLast[k].forEach(function (flag) {
+            var marker = document.createElement("button");
+            marker.type = "button";
+            marker.className = "tflag";
+            marker.textContent = "⚑";
+            marker.setAttribute("aria-label", "Also noticed: " + (flag.recap || flag.reason || ""));
+            marker.setAttribute("aria-haspopup", "dialog");
+            marker.setAttribute("aria-expanded", "false");
+            wirePopupAnchor(marker, function (anchor) { openFlagPopup(flag, anchor); });
+            lineWords.appendChild(marker);
+          });
+        }
+      });
+      prev = w;
     });
+    updateTxCounts();
     refreshFixSelection();
+    updateTxActionStrip();
   }
 
   function reloadTranscript() {
     return fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
       corrections = job.word_corrections || [];
+      if (job.edit_spans) { editSpans = job.edit_spans; }
+      jobFlags = job.flags || [];
       renderTranscript(job.transcript_words);
     }).catch(function () {});
+  }
+
+  // -- picked words -----------------------------------------------------
+  // Clicking a word (outside fix mode) seeks to it and picks it.
+  // The strip under the panel cuts or brings back the picked run:
+  // one /api/word-toggle post per word, grouped by the contiguous
+  // runs of words that are in the state being changed, which is
+  // exactly what a single word click posts today.
+  function selectedEntries() {
+    if (selStart === null || selEnd === null) { return []; }
+    return transcriptEntries.filter(function (w) {
+      var e = w.word_end || (w.index + 1);
+      return w.index < selEnd && selStart < e;
+    });
+  }
+
+  function updateTxActionStrip() {
+    if (!txActionStrip) { return; }
+    var picked = selectedEntries();
+    if (!picked.length || fixMode) {
+      txActionStrip.hidden = true;
+      return;
+    }
+    var count = 0;
+    var anyKept = false;
+    var anyCut = false;
+    picked.forEach(function (w) {
+      count += ((w.word_end || (w.index + 1)) - w.index) || 1;
+      if (w.status === "kept") { anyKept = true; }
+      if (w.status === "cut") { anyCut = true; }
+    });
+    if (txSelLabel) {
+      txSelLabel.textContent = count + (count === 1 ? " word picked" : " words picked");
+    }
+    if (txCutBtn) { txCutBtn.disabled = !anyKept; }
+    if (txRestoreBtn) { txRestoreBtn.disabled = !anyCut; }
+    txActionStrip.hidden = false;
+  }
+
+  function clearSelection() {
+    selStart = null;
+    selEnd = null;
+    refreshFixSelection();
+    updateTxActionStrip();
+  }
+
+  function runSelectionToggle(targetStatus) {
+    var picked = selectedEntries().filter(function (w) { return w.status !== targetStatus; });
+    if (!picked.length) { return; }
+    // Group into contiguous runs (neighboring entries in the list).
+    var runs = [];
+    var run = [];
+    var lastPos = -2;
+    picked.forEach(function (w) {
+      var pos = transcriptEntries.indexOf(w);
+      if (pos !== lastPos + 1 && run.length) { runs.push(run); run = []; }
+      run.push(w);
+      lastPos = pos;
+    });
+    if (run.length) { runs.push(run); }
+    if (txCutBtn) { txCutBtn.disabled = true; }
+    if (txRestoreBtn) { txRestoreBtn.disabled = true; }
+    transcriptStatus.textContent = "";
+    var chain = Promise.resolve();
+    var anyChanged = false;
+    var lastMessage = "";
+    runs.forEach(function (r) {
+      r.forEach(function (w) {
+        chain = chain.then(function () {
+          return postJson("/api/word-toggle", { word_index: w.index }).then(function (res) {
+            var data = res.data || {};
+            if (!data.ok) { lastMessage = data.error || "That word could not be changed."; return; }
+            if (data.changed) { anyChanged = true; }
+            if (data.message) { lastMessage = data.message; }
+          });
+        });
+      });
+    });
+    chain.then(function () {
+      clearSelection();
+      if (anyChanged) { refreshHistory(); }
+      reloadTranscript();
+      reloadJobState();
+      transcriptStatus.textContent = anyChanged
+        ? (targetStatus === "cut" ? "Words cut." : "Words brought back.")
+        : (lastMessage || "Nothing changed.");
+    }).catch(function () {
+      updateTxActionStrip();
+      transcriptStatus.textContent = "Those words could not be changed.";
+    });
+  }
+
+  // -- playback sync ------------------------------------------------------
+  function syncTranscriptPlayback(force) {
+    var now = Date.now();
+    if (!force && now - lastTxSync < 100) { return; }
+    lastTxSync = now;
+    if (!transcriptEntries.length) { return; }
+    var ct = vid.currentTime || 0;
+    var current = null;
+    for (var i = 0; i < transcriptEntries.length; i++) {
+      if (typeof transcriptEntries[i].start === "number" && transcriptEntries[i].start <= ct) {
+        current = transcriptEntries[i];
+      } else if (typeof transcriptEntries[i].start === "number" && transcriptEntries[i].start > ct) {
+        break;
+      }
+    }
+    transcriptEl.querySelectorAll(".tw-now").forEach(function (el) { el.classList.remove("tw-now"); });
+    transcriptEl.querySelectorAll(".tx-line-now").forEach(function (el) { el.classList.remove("tx-line-now"); });
+    if (!current) { currentWordIndex = null; return; }
+    currentWordIndex = current.index;
+    var wordEl = null;
+    transcriptEl.querySelectorAll(".tw").forEach(function (el) {
+      if (parseInt(el.dataset.index, 10) === current.index) { wordEl = el; }
+    });
+    if (!wordEl) { return; }
+    wordEl.classList.add("tw-now");
+    var line = wordEl.closest ? wordEl.closest(".tx-line") : null;
+    if (!line) { return; }
+    line.classList.add("tx-line-now");
+    if (followOn && transcriptPanel) {
+      var panelRect = transcriptPanel.getBoundingClientRect();
+      var lineRect = line.getBoundingClientRect();
+      if (lineRect.top < panelRect.top + 4 || lineRect.bottom > panelRect.bottom - 4) {
+        followScrolling = true;
+        var target = transcriptPanel.scrollTop + (lineRect.top - panelRect.top) - 12;
+        transcriptPanel.scrollTo({ top: Math.max(0, target), behavior: "auto" });
+        setTimeout(function () { followScrolling = false; }, 60);
+      }
+    }
+  }
+
+  function setFollow(on) {
+    followOn = !!on;
+    if (txFollowEl) { txFollowEl.checked = followOn; }
+    if (followOn) { syncTranscriptPlayback(true); }
   }
 
   // -- word corrections -------------------------------------------------
@@ -1256,7 +1634,12 @@
     transcriptEl.querySelectorAll(".tw").forEach(function (span) {
       var start = parseInt(span.dataset.index, 10);
       var end = parseInt(span.dataset.end, 10);
-      var selected = fixMode && fixStart !== null && start < fixEnd && fixStart < end;
+      var selected;
+      if (fixMode) {
+        selected = fixStart !== null && start < fixEnd && fixStart < end;
+      } else {
+        selected = selStart !== null && selEnd !== null && start < selEnd && selStart < end;
+      }
       span.classList.toggle("tw-selected", !!selected);
     });
     fixRemoveBtn.hidden = !exactCorrection();
@@ -1291,6 +1674,7 @@
     fixStart = null;
     fixEnd = null;
     refreshFixSelection();
+    updateTxActionStrip();
     transcriptStatus.textContent = "Click the first word of the part to fix, then the last word.";
   }
 
@@ -1300,6 +1684,7 @@
     fixStart = null;
     fixEnd = null;
     refreshFixSelection();
+    updateTxActionStrip();
   }
 
   document.getElementById("fixWordsBtn").addEventListener("click", function () {
@@ -1350,13 +1735,24 @@
     });
   });
 
-  // Clicking a word asks the server to cut or restore exactly that
-  // word. The server runs the safety check; the span restyles only to
-  // the state the server reports back, and a word the check would not
-  // move stays put with one plain sentence about why. In fix mode, or
-  // on a word that already carries a correction, the click instead
-  // picks the words for the correction editor.
+  // Clicking a word outside fix mode seeks the video to the word
+  // and picks it. Shift and click extends the pick from the first
+  // picked word to the word clicked. Cutting and bringing back run
+  // from the strip under the panel, through the same /api/word-toggle
+  // post a single word click used to make. In fix mode, clicks keep
+  // picking the run for the correction editor.
   transcriptEl.addEventListener("click", function (e) {
+    var chip = e.target && e.target.closest ? e.target.closest(".tx-chip") : null;
+    if (chip) {
+      var chipStart = parseFloat(chip.dataset.start);
+      if (!isNaN(chipStart)) {
+        vid.currentTime = chipStart;
+        updatePlayhead();
+        syncTranscriptPlayback(true);
+      }
+      return;
+    }
+    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag"))) { return; }
     var span = e.target && e.target.closest ? e.target.closest(".tw") : null;
     if (!span) { return; }
     var index = parseInt(span.dataset.index, 10);
@@ -1366,32 +1762,60 @@
       selectSpan(index, spanEnd);
       return;
     }
-    if (span.classList.contains("tw-corrected")) {
-      enterFixMode();
-      selectSpan(index, spanEnd);
-      return;
+    var entry = entryByIndex(index);
+    if (entry && typeof entry.start === "number") {
+      vid.currentTime = entry.start;
+      updatePlayhead();
     }
-    transcriptStatus.textContent = "";
-    postJson("/api/word-toggle", { word_index: index }).then(function (res) {
-      var data = res.data || {};
-      if (!data.ok) {
-        transcriptStatus.textContent = data.error || "That word could not be changed.";
-        return;
-      }
-      if (typeof data.status === "string") {
-        span.className = "tw tw-" + data.status;
-        span.title = data.status === "cut"
-          ? "Cut. Click to bring this word back."
-          : "Click to cut this word.";
-      }
-      transcriptStatus.textContent = data.changed
-        ? (data.status === "cut" ? "Word cut." : "Word restored.")
-        : (data.message || "");
-      if (data.changed) { refreshHistory(); }
-    }).catch(function () {
-      transcriptStatus.textContent = "That word could not be changed.";
-    });
+    if (e.shiftKey && selStart !== null && selEnd !== null) {
+      if (index < selStart) { selStart = index; }
+      if (spanEnd > selEnd) { selEnd = spanEnd; }
+      if (index >= selStart && spanEnd <= selEnd) { /* inside the pick already */ }
+      else if (index >= selStart && index < selEnd) { selEnd = spanEnd; }
+    } else {
+      selStart = index;
+      selEnd = spanEnd;
+    }
+    refreshFixSelection();
+    updateTxActionStrip();
+    syncTranscriptPlayback(true);
   });
+
+  if (txCutBtn) { txCutBtn.addEventListener("click", function () { runSelectionToggle("cut"); }); }
+  if (txRestoreBtn) { txRestoreBtn.addEventListener("click", function () { runSelectionToggle("kept"); }); }
+  if (txClearSel) { txClearSel.addEventListener("click", function () { clearSelection(); }); }
+  if (txFixBtn) {
+    txFixBtn.addEventListener("click", function () {
+      if (selStart === null || selEnd === null) { return; }
+      var s = selStart;
+      var en = selEnd;
+      enterFixMode();
+      selectSpan(s, en);
+      clearSelection();
+      fixMode = true;
+      fixPanel.hidden = false;
+      refreshFixSelection();
+      updateTxActionStrip();
+    });
+  }
+  if (txFollowEl) {
+    txFollowEl.addEventListener("change", function () { setFollow(txFollowEl.checked); });
+  }
+  if (transcriptPanel) {
+    transcriptPanel.addEventListener("scroll", function () {
+      if (followScrolling) { return; }
+      closeEditPopup();
+      if (followOn) { setFollow(false); }
+    });
+    transcriptPanel.addEventListener("wheel", function () {
+      if (followOn) { setFollow(false); }
+    }, { passive: true });
+    transcriptPanel.addEventListener("touchmove", function () {
+      if (followOn) { setFollow(false); }
+    }, { passive: true });
+  }
+  vid.addEventListener("play", function () { setFollow(true); });
+  vid.addEventListener("seeked", function () { syncTranscriptPlayback(true); });
 
   document.getElementById("btnV").addEventListener("click", function () { setFmt("vertical"); });
   document.getElementById("btnL").addEventListener("click", function () { setFmt("landscape"); });
@@ -1400,6 +1824,7 @@
   vid.addEventListener("timeupdate", function () {
     clockEl.textContent = fmtTime(vid.currentTime);
     updatePlayhead();
+    syncTranscriptPlayback(false);
   });
 
   function updatePinNote() {
@@ -1972,8 +2397,180 @@
     });
   }
 
-  function openEditPopup(span) {
+  function clearPopupTimers() {
+    if (popupOpenTimer) { clearTimeout(popupOpenTimer); popupOpenTimer = null; }
+    if (popupCloseTimer) { clearTimeout(popupCloseTimer); popupCloseTimer = null; }
+  }
+
+  function closeEditPopup() {
+    clearPopupTimers();
+    if (editPopup) { editPopup.hidden = true; }
+    if (popupAnchor) { popupAnchor.setAttribute("aria-expanded", "false"); }
+    popupAnchor = null;
+    popupSpanRef = null;
+    popupFlagRef = null;
+    popupMode = "edit";
+  }
+
+  // Position the floating card by the dot (or flag) and the words
+  // it belongs to: above the dot first, below it when above would
+  // cover the words or leave the top of the screen, and always
+  // inside the screen sideways. The dot itself is never covered.
+  function positionEditPopup() {
+    if (!editPopup || editPopup.hidden || !popupAnchor) { return; }
+    var anchorRect = popupAnchor.getBoundingClientRect();
+    if (anchorRect.bottom < 0 || anchorRect.top > window.innerHeight ||
+        anchorRect.right < 0 || anchorRect.left > window.innerWidth) {
+      closeEditPopup();
+      return;
+    }
+    var spanRect = null;
+    var start = null;
+    var end = null;
+    if (popupMode === "flag" && popupFlagRef) {
+      start = popupFlagRef.word_start; end = popupFlagRef.word_end;
+    } else if (popupSpanRef) {
+      start = popupSpanRef.word_start; end = popupSpanRef.word_end;
+    }
+    if (typeof start === "number" && typeof end === "number") {
+      transcriptEl.querySelectorAll(".tw").forEach(function (el) {
+        var i = parseInt(el.dataset.index, 10);
+        var e2 = parseInt(el.dataset.end, 10) || (i + 1);
+        if (i < end && start < e2) {
+          var r = el.getBoundingClientRect();
+          if (!spanRect) {
+            spanRect = { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+          } else {
+            spanRect.top = Math.min(spanRect.top, r.top);
+            spanRect.bottom = Math.max(spanRect.bottom, r.bottom);
+            spanRect.left = Math.min(spanRect.left, r.left);
+            spanRect.right = Math.max(spanRect.right, r.right);
+          }
+        }
+      });
+    }
+    var cardW = editPopup.offsetWidth || 320;
+    var cardH = editPopup.offsetHeight || 200;
+    var left = anchorRect.left + anchorRect.width / 2 - cardW / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - cardW - 8));
+    var topAbove = anchorRect.top - cardH - 10;
+    var topBelow = anchorRect.bottom + 10;
+    function overlapsSpan(top) {
+      if (!spanRect) { return false; }
+      return top < spanRect.bottom && (top + cardH) > spanRect.top;
+    }
+    var top;
+    if (topAbove >= 8 && !overlapsSpan(topAbove)) { top = topAbove; }
+    else { top = topBelow; }
+    if (top + cardH > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - cardH - 8);
+    }
+    if (top < 8) { top = 8; }
+    // Never cover the anchor itself.
+    if (top < anchorRect.bottom && top + cardH > anchorRect.top) {
+      top = (anchorRect.bottom + 10 + cardH <= window.innerHeight - 8)
+        ? anchorRect.bottom + 10 : Math.max(8, anchorRect.top - cardH - 10);
+    }
+    editPopup.style.left = left + "px";
+    editPopup.style.top = top + "px";
+  }
+
+  function setPopupFlagMode(on) {
+    var noteBits = [editNotesList, editNoteText, editNoteSpeak, editNoteSave, editNoteSpeakBrowser];
+    noteBits.forEach(function (el) { if (el) { el.hidden = !!on || (el === editNoteSpeakBrowser ? el.hidden && !!on : false); } });
+    // The browser voice button keeps its own availability state in
+    // edit mode; in flag mode every note control is out of sight.
+    if (!on && editNoteSpeakBrowser) {
+      var BrowserRec2 = window.SpeechRecognition || window.webkitSpeechRecognition;
+      editNoteSpeakBrowser.hidden = !BrowserRec2;
+    }
+    if (editBringBack) { editBringBack.hidden = !!on; }
+    if (editSwapTakes && on) { editSwapTakes.hidden = true; }
+    if (editPopupKept && on) { editPopupKept.hidden = true; }
+    if (editPopupShadow && on) { editPopupShadow.hidden = true; }
+    if (editPopupComment && on) { editPopupComment.hidden = true; }
+    if (editActionStatus && on) { editActionStatus.textContent = ""; }
+  }
+
+  function wirePopupAnchor(anchor, openFn) {
+    anchor.addEventListener("mouseenter", function () {
+      if (popupCloseTimer) { clearTimeout(popupCloseTimer); popupCloseTimer = null; }
+      if (popupOpenTimer) { clearTimeout(popupOpenTimer); }
+      popupOpenTimer = setTimeout(function () { openFn(anchor); }, 300);
+    });
+    anchor.addEventListener("mouseleave", function () {
+      if (popupOpenTimer) { clearTimeout(popupOpenTimer); popupOpenTimer = null; }
+      if (popupCloseTimer) { clearTimeout(popupCloseTimer); }
+      popupCloseTimer = setTimeout(function () { closeEditPopup(); }, 250);
+    });
+    anchor.addEventListener("focus", function () {
+      if (popupCloseTimer) { clearTimeout(popupCloseTimer); popupCloseTimer = null; }
+      openFn(anchor);
+    });
+    anchor.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (popupOpenTimer) { clearTimeout(popupOpenTimer); popupOpenTimer = null; }
+      if (!editPopup.hidden && popupAnchor === anchor) { closeEditPopup(); }
+      else { openFn(anchor); }
+    });
+  }
+
+  if (editPopup) {
+    editPopup.addEventListener("mouseenter", function () {
+      if (popupCloseTimer) { clearTimeout(popupCloseTimer); popupCloseTimer = null; }
+    });
+    editPopup.addEventListener("mouseleave", function () {
+      if (popupCloseTimer) { clearTimeout(popupCloseTimer); }
+      popupCloseTimer = setTimeout(function () { closeEditPopup(); }, 250);
+    });
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && editPopup && !editPopup.hidden) {
+      var anchor = popupAnchor;
+      closeEditPopup();
+      if (anchor && anchor.focus) { anchor.focus(); }
+    }
+  });
+  window.addEventListener("scroll", function () {
+    if (editPopup && !editPopup.hidden) { positionEditPopup(); }
+  }, { passive: true });
+  window.addEventListener("resize", function () {
+    if (editPopup && !editPopup.hidden) {
+      if (!popupAnchor || !document.contains(popupAnchor)) { closeEditPopup(); }
+      else { positionEditPopup(); }
+    }
+  });
+
+  function openFlagPopup(flag, anchor) {
+    if (!flag || !editPopup) { return; }
+    clearPopupTimers();
+    if (popupAnchor && popupAnchor !== anchor) { popupAnchor.setAttribute("aria-expanded", "false"); }
+    popupMode = "flag";
+    popupFlagRef = flag;
+    popupSpanRef = null;
+    popupAnchor = anchor || null;
+    currentEditId = null;
+    if (editPopupTitle) { editPopupTitle.textContent = "Also noticed"; }
+    var quoted = (typeof flag.word_start === "number" && typeof flag.word_end === "number")
+      ? spanTextFor(flag.word_start, flag.word_end) : (flag.quote || "");
+    if (editPopupRemoved) { editPopupRemoved.textContent = '"' + quoted + '"'; }
+    if (editPopupReason) { editPopupReason.textContent = flag.recap || flag.reason || ""; }
+    setPopupFlagMode(true);
+    if (editNoteStatus) { editNoteStatus.textContent = ""; }
+    editPopup.hidden = false;
+    if (popupAnchor) { popupAnchor.setAttribute("aria-expanded", "true"); }
+    positionEditPopup();
+  }
+
+  function openEditPopup(span, anchor) {
     if (!span || !editPopup) { return; }
+    clearPopupTimers();
+    if (popupAnchor && popupAnchor !== anchor) { popupAnchor.setAttribute("aria-expanded", "false"); }
+    popupMode = "edit";
+    popupSpanRef = span;
+    popupFlagRef = null;
+    popupAnchor = anchor || null;
+    setPopupFlagMode(false);
     currentEditId = span.edit_id;
     if (editPopupTitle) { editPopupTitle.textContent = "Why these words were removed"; }
     if (editPopupRemoved) { editPopupRemoved.textContent = '"' + (span.removed_text || "") + '"'; }
@@ -2014,7 +2611,8 @@
     renderEditNotes(span);
     if (editNoteStatus) { editNoteStatus.textContent = ""; }
     editPopup.hidden = false;
-    editPopup.scrollIntoView({ block: "nearest" });
+    if (popupAnchor) { popupAnchor.setAttribute("aria-expanded", "true"); }
+    positionEditPopup();
   }
 
   function runEditAction(action) {
@@ -2030,7 +2628,7 @@
         return;
       }
       if (data.changed) {
-        editPopup.hidden = true;
+        closeEditPopup();
         var ts = document.getElementById("transcriptStatus");
         if (ts) { ts.textContent = data.message || "Done."; }
         refreshHistory();
@@ -2054,7 +2652,9 @@
 
   if (editPopupClose) {
     editPopupClose.addEventListener("click", function () {
-      editPopup.hidden = true;
+      var anchor = popupAnchor;
+      closeEditPopup();
+      if (anchor && anchor.focus) { anchor.focus(); }
     });
   }
 
@@ -2200,6 +2800,7 @@
   // -- front door -------------------------------------------------------
   var fdRetakes = document.getElementById("fdRetakes");
   var fdSilence = document.getElementById("fdSilence");
+  var fdFillers = document.getElementById("fdFillers");
   var fdBufferRow = document.getElementById("fdBufferRow");
   var fdBufferRange = document.getElementById("fdBufferRange");
   var fdBufferNum = document.getElementById("fdBufferNum");
@@ -2244,8 +2845,8 @@
   var fdBreaths = "keep";
 
   var BREATHS_NOTES = {
-    keep: "The breath before a sentence stays in. Silence is trimmed toward the buffer, but never below the natural breath.",
-    trim: "Breaths go with the pause. Silence is trimmed all the way down to the buffer, so the next thought lands right away."
+    keep: "Pauses over the buffer are shortened to the buffer. Keep the natural breath is the one exception protected on purpose: the signature breath before a sentence is saved and kept, while every other pause is cut down to the buffer.",
+    trim: "Breaths go with the pause. Pauses over the buffer are shortened to the buffer, with no exception for breaths, so the next thought lands right away."
   };
 
   function setBreaths(mode) {
@@ -2325,6 +2926,7 @@
           buffer_s: bufferVal,
           keep_mode: fdKeepMode,
           breaths: fdBreaths,
+          remove_fillers: fdFillers ? !!fdFillers.checked : false,
           format_scope: fdScope ? fdScope.value : "both",
           direction_text: fdDirection ? fdDirection.value : ""
         });
@@ -2358,6 +2960,9 @@
           }
           if (data.settings && data.settings.breaths) {
             setBreaths(data.settings.breaths);
+          }
+          if (data.settings && typeof data.settings.remove_fillers === "boolean" && fdFillers) {
+            fdFillers.checked = data.settings.remove_fillers;
           }
           var runs = data.direction_runs || [];
           if (runs.length) {
@@ -2395,6 +3000,14 @@
                 ". It changed nothing.";
               fdResults.appendChild(shadowLine);
             }
+          }
+          if (data.filler && data.filler.ran && data.filler.lines) {
+            data.filler.lines.forEach(function (text) {
+              var fillerLine = document.createElement("p");
+              fillerLine.className = "counts";
+              fillerLine.textContent = text;
+              fdResults.appendChild(fillerLine);
+            });
           }
           if (data.silence && data.silence.joins_trimmed) {
             var silenceLine = document.createElement("p");
@@ -2481,6 +3094,7 @@
     });
     corrections = job.word_corrections || [];
     editSpans = job.edit_spans || [];
+    jobFlags = job.flags || [];
     savedRules = job.saved_rules || [];
     ruleSuggestions = job.rule_suggestions || [];
     if (job.front_door) {
@@ -2500,6 +3114,9 @@
       if (fdRow && fdS) { fdRow.style.opacity = fdS.checked ? "" : "0.5"; }
       if (fd.keep_mode) { setKeepMode(fd.keep_mode); }
       if (fd.breaths) { setBreaths(fd.breaths); }
+      var fdF = document.getElementById("fdFillers");
+      if (fdF && typeof fd.remove_fillers === "boolean") { fdF.checked = fd.remove_fillers; }
+      if (job.front_door) { stateFrontDoor = job.front_door; applyIntakeSettings(job.front_door); }
     }
     renderBetaLine(job.beta);
     renderList();
@@ -2573,6 +3190,114 @@
   var firstEditStepCount = document.getElementById("firstEditStepCount");
   var currentIntakeId = null;
   var firstEditTimer = null;
+
+  // -- the first edit's Remove choices --------------------------------
+  // The same six choices as the front door card, seeded from
+  // GET /api/job (its summary carries the saved, usual seeded
+  // choices, with or without a job loaded) so a first edit starts
+  // from the choices the creator already uses.
+  var inRetakes = document.getElementById("inRetakes");
+  var inRetakesNote = document.getElementById("inRetakesNote");
+  var inKeepPills = document.getElementById("inKeepPills");
+  var inSilence = document.getElementById("inSilence");
+  var inBufferRow = document.getElementById("inBufferRow");
+  var inBufferRange = document.getElementById("inBufferRange");
+  var inBufferNum = document.getElementById("inBufferNum");
+  var inBreathsPills = document.getElementById("inBreathsPills");
+  var inBreathsNote = document.getElementById("inBreathsNote");
+  var inFillers = document.getElementById("inFillers");
+  var inKeepMode = "last";
+  var inBreaths = "keep";
+
+  function setInKeepMode(mode) {
+    if (mode !== "first" && mode !== "best") { mode = "last"; }
+    inKeepMode = mode;
+    if (inKeepPills) {
+      Array.prototype.forEach.call(inKeepPills.querySelectorAll("button"), function (btn) {
+        if (btn.getAttribute("data-keep") === mode) { btn.classList.add("on"); }
+        else { btn.classList.remove("on"); }
+      });
+    }
+    if (inRetakesNote) { inRetakesNote.textContent = KEEP_NOTES[mode]; }
+  }
+  if (inKeepPills) {
+    Array.prototype.forEach.call(inKeepPills.querySelectorAll("button"), function (btn) {
+      btn.addEventListener("click", function () { setInKeepMode(btn.getAttribute("data-keep")); });
+    });
+  }
+  setInKeepMode("last");
+
+  function setInBreaths(mode) {
+    if (mode !== "trim") { mode = "keep"; }
+    inBreaths = mode;
+    if (inBreathsPills) {
+      Array.prototype.forEach.call(inBreathsPills.querySelectorAll("button"), function (btn) {
+        if (btn.getAttribute("data-breaths") === mode) { btn.classList.add("on"); }
+        else { btn.classList.remove("on"); }
+      });
+    }
+    if (inBreathsNote) { inBreathsNote.textContent = BREATHS_NOTES[mode]; }
+  }
+  if (inBreathsPills) {
+    Array.prototype.forEach.call(inBreathsPills.querySelectorAll("button"), function (btn) {
+      btn.addEventListener("click", function () { setInBreaths(btn.getAttribute("data-breaths")); });
+    });
+  }
+  setInBreaths("keep");
+
+  function setInBuffer(v) {
+    var clamped = clampBuffer(v);
+    if (inBufferRange) { inBufferRange.value = clamped; }
+    if (inBufferNum) { inBufferNum.value = clamped; }
+    return clamped;
+  }
+  function updateInBufferDim() {
+    if (inBufferRow && inSilence) {
+      inBufferRow.style.opacity = inSilence.checked ? "" : "0.5";
+    }
+  }
+  if (inBufferRange) {
+    inBufferRange.addEventListener("input", function () { setInBuffer(inBufferRange.value); });
+    inBufferRange.addEventListener("change", function () { setInBuffer(inBufferRange.value); });
+  }
+  if (inBufferNum) {
+    inBufferNum.addEventListener("input", function () { setInBuffer(inBufferNum.value); });
+    inBufferNum.addEventListener("change", function () { setInBuffer(inBufferNum.value); });
+  }
+  if (inSilence) { inSilence.addEventListener("change", updateInBufferDim); }
+  updateInBufferDim();
+
+  function applyIntakeSettings(fd) {
+    if (!fd) { return; }
+    if (inRetakes && typeof fd.remove_retakes === "boolean") { inRetakes.checked = fd.remove_retakes; }
+    if (inSilence && typeof fd.cut_silence === "boolean") { inSilence.checked = fd.cut_silence; }
+    if (typeof fd.buffer_s === "number") { setInBuffer(fd.buffer_s); }
+    if (fd.keep_mode) { setInKeepMode(fd.keep_mode); }
+    if (fd.breaths) { setInBreaths(fd.breaths); }
+    if (inFillers && typeof fd.remove_fillers === "boolean") { inFillers.checked = fd.remove_fillers; }
+    updateInBufferDim();
+  }
+
+  function collectIntakeSettings() {
+    return {
+      remove_retakes: inRetakes ? !!inRetakes.checked : true,
+      cut_silence: inSilence ? !!inSilence.checked : true,
+      buffer_s: inBufferNum ? clampBuffer(inBufferNum.value) : 0.2,
+      keep_mode: inKeepMode,
+      breaths: inBreaths,
+      remove_fillers: inFillers ? !!inFillers.checked : false
+    };
+  }
+
+  function loadStateFrontDoor() {
+    return fetch("/api/job").then(function (r) { return r.json(); }).then(function (data) {
+      if (data && data.front_door) {
+        stateFrontDoor = data.front_door;
+        applyIntakeSettings(data.front_door);
+      }
+    }).catch(function () {});
+  }
+  loadStateFrontDoor();
 
   function firstEditSay(text) {
     if (firstEditStatus) { firstEditStatus.textContent = text; }
@@ -2658,7 +3383,8 @@
       showFirstEditProgress("Starting…", 0, 0);
       postJson("/api/intake/first-edit", {
         intake_id: currentIntakeId,
-        direction: intakeDirectionEl ? intakeDirectionEl.value : ""
+        direction: intakeDirectionEl ? intakeDirectionEl.value : "",
+        settings: collectIntakeSettings()
       }).then(function (res) {
         var data = (res && res.data) || {};
         if (!data.ok) {
@@ -2792,6 +3518,8 @@
         currentIntakeId = dropIntakeId;
         if (firstEditBlock && data.can_first_edit) {
           firstEditBlock.hidden = false;
+          if (stateFrontDoor) { applyIntakeSettings(stateFrontDoor); }
+          else { loadStateFrontDoor(); }
         }
         if (data.playback && data.playback !== "ready") {
           // The watchable copy is still being made; the raw file

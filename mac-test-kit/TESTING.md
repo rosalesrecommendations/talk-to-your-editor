@@ -66,13 +66,14 @@ Things worth noticing while you test this: whether the progress wording keeps up
 
 New in 0.6.0. A single raw video can become a job by itself.
 
-1. Drop one video file (or pick it with **choose files**). Below it a small block appears: a direction box and the **Make the first edit** button. If the video is one this browser cannot play as-is (an iPhone video, most often), the card first says **Getting your video ready to watch…**: a watchable copy is made in the background, at a size that finishes, and the preview swaps in when it lands. You do not have to wait for the copy to make the first edit. If the copy cannot be made on this Mac, the card says so in plain words; the edit still works.
-2. **Give direction first, if you have any.** Type it in plain words, or press **Dictate** and speak it (see "Dictating" below). Try: "remove retakes, keep the first clean take." Words that name a control the app has (retakes on or off, which take stays, silence on or off, a buffer like 0.2 seconds, breaths kept or trimmed) set that run's switches, and what you say wins over the saved settings for this video. Anything else rides along as overall guidance.
-3. Press **Make the first edit**. A progress block fills the card: the current stage in plain words, which step of how many, and a moving bar. The stages: listening to your video, writing the words down, measuring the silences from the sound itself, laying out the first plan, checking for retakes, cutting the silence, building your review video.
+1. Drop one video file (or pick it with **choose files**). Below it a block appears: the **Remove** choices, a direction box, and the **Make the first edit** button. If the video is one this browser cannot play as-is (an iPhone video, most often), the card first says **Getting your video ready to watch…**: a watchable copy is made in the background, at a size that finishes, and the preview swaps in when it lands. You do not have to wait for the copy to make the first edit. If the copy cannot be made on this Mac, the card says so in plain words; the edit still works.
+2. **Set the Remove choices for this video.** One block headed **Remove** holds the three removals: **Retakes** (and which take stays), **Silence** (the buffer, and whether the natural breath is kept), and **Filler words**: "Take out the ums and uhs." They arrive already set to **your usual**: the choices you used last time, remembered across videos in a small private file in your home folder. Flip any of them for this video and the flip becomes your usual for next time. Changing a choice on the **Make the edit** card (step 3) updates the same usual.
+3. **Give direction first, if you have any.** Type it in plain words, or press **Dictate** and speak it (see "Dictating" below). Try: "remove retakes, keep the first clean take." Words that name a control the app has (retakes on or off, which take stays, silence on or off, a buffer like 0.2 seconds, breaths kept or trimmed) set that run's switches, and what you say wins over the saved settings for this video. Anything beyond the switches ("keep it tight and keep the story moving") is read by a model pass over the whole transcript when a Meta key is saved (see step 4); with no key saved, it waits as overall guidance, and the recap says so in one sentence.
+4. Press **Make the first edit**. A progress block fills the card: the current stage in plain words, which step of how many, and a moving bar. The stages: listening to your video, writing the words down, measuring the silences from the sound itself, laying out the first plan, checking for retakes, cutting the silence, building your review video.
    - **First run on this Mac, and it can take a while:** with no ElevenLabs key saved, the words are written down on this Mac by a speech model the app downloads the first time (about 150 MB). The progress block says so. Later runs skip the download; the writing-down itself still takes some minutes for a long video on a laptop, and a video of 5 minutes or more says to expect that.
    - **A video with no speech** (music only, say) ends with a plain "no words were found" note and no job. That is the honest answer, not an error.
-4. When it lands, a short recap names what the direction set, how many retakes came out and how many were set aside for your call, and how many silence joins were trimmed. A few seconds later the page reloads on the new job: video, transcript, dots, counts, exactly like a runner job. Steps 3 to 7 below all apply from here.
-5. **Captions:** under **Revised edit**, a link downloads the caption file, built from the words that stayed in the edit, on the edit's own timing. Beside it, the **Hide ums and uhs in captions** switch (on unless you turn it off) leaves the fillers (um, uh, and friends) out of the caption text only. Your video's sound and the written-down words keep everything. Flipping the switch rebuilds the caption file, or removes it, right away. The same switch sits on the **Finished edit** card (step 7) when it appears.
+5. When it lands, a short recap names what the direction set, how many retakes came out and how many were set aside for your call, how many filler words came out, and how many silence joins were trimmed. When a Meta key is saved and your direction said more than the switches hold, the recap adds what the direction pass made of it ("Read your direction and made N changes"), and any **Also noticed** lines: a point made again, a thread never returned to, a strong line buried in flatter material. Those flags never cut anything; they are there for your call. A few seconds later the page reloads on the new job: video, transcript, dots, counts, exactly like a runner job. Steps 3 to 7 below all apply from here.
+6. **Captions:** under **Revised edit**, a link downloads the caption file, built from the words that stayed in the edit, on the edit's own timing. Beside it, the **Hide ums and uhs in captions** switch (on unless you turn it off) leaves the fillers (um, uh, and friends) out of the caption text only. Your video's sound and the written-down words keep everything. Flipping the switch rebuilds the caption file, or removes it, right away. The same switch sits on the **Finished edit** card (step 7) when it appears.
 
 **Dictating.** Every feedback box now has a **Dictate** button: the front-door direction box, a pinned comment, the overall feedback box, the note on an edit, and the direction box above. Press it and the button turns into a red recording indicator counting the seconds while you speak; press it again to stop, and the button and its box show **Writing your words…** until Meta's voice transcription lands your words in the box. Read them over and fix anything before you save, because the box is what counts. With no Meta key saved on this Mac and none pasted on the page, the button answers with one plain sentence saying dictation needs the Meta sign-in, and typing carries on as always. In the note on an edit, a second button, **Use the browser's voice typing instead**, appears when your browser offers it; it is the fallback, never the default.
 
@@ -80,16 +81,17 @@ New in 0.6.0. A single raw video can become a job by itself.
 
 Under the video is the card that matters most: **Make the edit**.
 
-Two choices sit there, both on:
+Three choices sit there under the heading **Remove**, all on:
 
 - **Remove retakes.** When a line is said more than once, the earlier tries come out. The app now measures this itself, on your own computer, before any model is asked: clear retakes (the same line said again right after, the later take complete) are taken out through the same safety checks as every other change, even when you have pinned no comments at all. The take that completes its sentence cleanly beats a broken or trailing one; among complete takes, the last one stays.
 - **Cut silence.** Long silences are trimmed down toward the buffer.
+- **Take out the ums and uhs.** The filler words come out of the sound itself. The list is fixed and conservative (um, uh, er, ah, hmm, and their stretched spellings), the same list the captions use; protected moments are never touched, and every filler removed lands as a transcript dot you can bring back.
 
 Pairs that are close but not clear are judged by the model in one call, flow first: which delivery finishes the sentence, which one carries the story forward, and whether keeping both would pull attention away from it. Pairs carrying a "not", and short lines said twice that could be emphasis, are never cut by the machine; they are left in the transcript for you to decide, with the reason in plain words. With no model available, the near pairs become flags with the match explained, never silence. A line is never cut just for failing to serve the direction; story questions become flags, not cuts.
 
 The **silence buffer** is how much silence stays between one word and the next. Slide it or type the number. It starts at **0.1 seconds**. Cutting silence only ever trims; it never adds quiet back, and it goes through the same safety checks as every other change.
 
-Press **Make the edit**. That is the whole front door. The app checks retakes, runs direction with those two choices, trims the silences, and tells you the result: words kept before and after, how many retakes came out, how many were left for you to decide, and how many pauses were trimmed.
+Press **Make the edit**. That is the whole front door. The app checks retakes, takes out the fillers, trims the silences, and tells you the result: words kept before and after, how many retakes came out, how many were left for you to decide, how many filler words came out, and how many pauses were trimmed.
 
 Behind the **More choices** fold, for the days you want them:
 
@@ -104,7 +106,7 @@ Behind the **More choices** fold, for the days you want them:
   - Either way, every trimmed join lands as a transcript dot with its reason and can be brought back, and the recap names the state in plain words.
 - **Spoken direction:** anything else this video needs, in your own words. What you say adds to the choices; it does not replace them. Say **"unless"** when you want one spot treated differently, like "keep the last take, unless the first try has the real laugh in it." Breaths can be set by voice too: "keep the breaths natural" or "cut the breaths too."
 
-Your choices are remembered in the session, so the card opens the way you left it.
+Your choices are remembered as your usual, in a small private file in your home folder, so the card opens the way you left it on every video, and the drop block at step 2b starts from the same usual.
 
 ### 4. Watch and scrub
 
@@ -138,15 +140,18 @@ The reason is always in plain language. If a status surprises you, that surprise
 
 ### 6. Read the transcript: every removal explains itself
 
-Open the **Transcript** section. Kept words read normally; cut words are struck through and dimmed.
+Open the **Transcript** section. The words live in their own scrolling panel now, grouped into lines, each line opening with a small time chip. Kept words read normally; cut words are struck through and dimmed.
 
-Every span this app has taken out carries a small **dot** after it. Click the dot:
+- **Following the video.** While the video plays, the line and word you are hearing light up, and the panel keeps them in view: that is **Follow the video**, the switch at the panel's head, on unless you turn it off. Scroll the panel yourself and following hands control back to you until you press play again. Tap a line's time chip to jump the video to that line.
+- **Picking words.** Click a word and the video jumps to it and picks it (Shift and click picks a stretch). A strip pinned at the panel's foot offers **Cut these words**, **Bring these words back**, and **Fix the words** for the pick, through the same safety checks as every other change.
+- **The dots.** Every span this app has taken out carries a small **dot** after it. Rest on it (Mac) or tap it (phone) and a small card opens beside the dot, never covering the words it explains:
+  - The card names the words that were removed and **why**, in one plain sentence, with the note that asked for it when there is one.
+  - When the removed words were a retake, the card also shows **the take that stayed**, and two buttons: **Bring these words back** and **Swap takes**. Swap takes puts the removed take back and takes the stayed one out instead, in one checked step.
+  - You can **leave a note on that edit** right there. Type it, or dictate it. The note is stored against the edit itself, not against a timestamp, so it keeps meaning the same thing even after the timing shifts. It is listed under that edit from then on, and the next direction run receives it labeled with what was removed. No note is ever lost.
+  - Esc closes the card; scrolling the panel closes it too.
+- **The amber markers.** An amber flag marker is an **Also noticed** flag from the direction pass (step 2b): something the app noticed that you did not ask about. Its card quotes the words and says the notice in one sentence. Flags never removed anything; there is nothing to bring back, only something to see.
 
-- A panel names the words that were removed and **why**, in one plain sentence, with the note that asked for it when there is one.
-- When the removed words were a retake, the panel also shows **the take that stayed**, and two buttons: **Bring these words back** and **Swap takes**. Swap takes puts the removed take back and takes the stayed one out instead, in one checked step.
-- You can **leave a note on that edit** right there. Type it, or press **Speak the note** where the browser offers voice typing (Chrome does; on an iPhone, the keyboard's own microphone works in the typing box). The note is stored against the edit itself, not against a timestamp, so it keeps meaning the same thing even after the timing shifts. It is listed under that edit from then on, and the next direction run receives it labeled with what was removed. No note is ever lost.
-
-Clicking a word still cuts it or brings it back, through the same safety checks, and **Fix words** still repairs words the transcript heard wrong. Fixing words changes the transcript text only; the sound and the timing never change.
+**Fix words** still repairs words the transcript heard wrong, from the word strip or the button under the panel. Fixing words changes the transcript text only; the sound and the timing never change.
 
 ### 7. Build the fixed video, then grade the changes
 

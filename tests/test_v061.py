@@ -91,6 +91,16 @@ class ServerCase(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="tye-v061-"))
         self.job = self.tmp / "job"
         self.job.mkdir()
+        # v0.7.0: front-door saves also write the creator's usual
+        # (~/.talk-to-your-editor/usual.json); each test gets its own
+        # HOME so one test's choices cannot seed the next test's job.
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        env = mock.patch.dict(
+            os.environ, {"HOME": str(self.home)}, clear=False
+        )
+        env.start()
+        self.addCleanup(env.stop)
         self.build_job(self.job)
         self.server = create_server(
             WebAppConfig(self.job), host="127.0.0.1", port=0
@@ -781,9 +791,10 @@ class FirstEditProgressTests(unittest.TestCase):
             self.assertIsNotNone(seen, "no numbered stage was reported")
             self.assertEqual(seen["status"], "working")
             self.assertEqual(seen["stage_index"], 2)
-            # Retakes and silence on by default, H.264 source:
-            # 4 + 1 + 1 + 1 = 7 stages, no watchable-copy stage.
-            self.assertEqual(seen["stage_total"], 7)
+            # Retakes, fillers, and silence on by default, H.264
+            # source: 4 + 1 + 1 + 1 + 1 = 8 stages (v0.7.0 added
+            # the filler pass stage), no watchable-copy stage.
+            self.assertEqual(seen["stage_total"], 8)
             self.assertIn("Writing the words down", seen["stage"])
             release.set()
             state = None
@@ -797,8 +808,8 @@ class FirstEditProgressTests(unittest.TestCase):
                     break
                 time.sleep(0.2)
         self.assertEqual(state["status"], "done", state)
-        self.assertEqual(state["stage_index"], 7)
-        self.assertEqual(state["stage_total"], 7)
+        self.assertEqual(state["stage_index"], 8)
+        self.assertEqual(state["stage_total"], 8)
 
 
 # ---------------------------------------------------------------------------

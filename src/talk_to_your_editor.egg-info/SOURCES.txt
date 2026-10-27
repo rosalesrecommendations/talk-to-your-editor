@@ -15,6 +15,7 @@ src/talk_to_your_editor/retakes.py
 src/talk_to_your_editor/schema.py
 src/talk_to_your_editor/timeline.py
 src/talk_to_your_editor/transcribe.py
+src/talk_to_your_editor/usual.py
 src/talk_to_your_editor/verifier.py
 src/talk_to_your_editor/webapp.py
 src/talk_to_your_editor/word_corrections.py
@@ -22,6 +23,7 @@ src/talk_to_your_editor.egg-info/PKG-INFO
 src/talk_to_your_editor.egg-info/SOURCES.txt
 src/talk_to_your_editor.egg-info/dependency_links.txt
 src/talk_to_your_editor.egg-info/entry_points.txt
+src/talk_to_your_editor.egg-info/requires.txt
 src/talk_to_your_editor.egg-info/top_level.txt
 tests/test_after_learning.py
 tests/test_core.py
@@ -31,4 +33,7 @@ tests/test_retakes.py
 tests/test_take_modes.py
 tests/test_v04.py
 tests/test_v06.py
+tests/test_v061.py
+tests/test_v07.py
+tests/test_v07_backend.py
 tests/test_webapp.py

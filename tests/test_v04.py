@@ -10,6 +10,7 @@ approximate timeline mapping is covered with plain unit tests.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sys
@@ -19,6 +20,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -55,6 +57,16 @@ class V04Tests(unittest.TestCase):
     # so isolation keeps every baseline the job's own.
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="tye-v04-"))
+        # v0.7.0: front-door saves also write the creator's usual
+        # (~/.talk-to-your-editor/usual.json); each test gets its own
+        # HOME so one test's choices cannot seed the next test's job.
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        env = mock.patch.dict(
+            os.environ, {"HOME": str(self.home)}, clear=False
+        )
+        env.start()
+        self.addCleanup(env.stop)
         self.job = self.tmp / "job"
         self.job.mkdir()
         for name in (
@@ -148,6 +160,9 @@ class V04Tests(unittest.TestCase):
                 # v0.6.1: the breaths choice rides along too;
                 # keeping the natural breath is the default.
                 "breaths": "keep",
+                # v0.7.0: the filler choice rides along too; taking
+                # out the ums and uhs is the default.
+                "remove_fillers": True,
             },
         )
         self.assertEqual(summary["saved_rules"], [])

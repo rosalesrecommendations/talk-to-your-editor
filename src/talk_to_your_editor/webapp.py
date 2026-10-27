@@ -52,7 +52,7 @@ from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import captions as clean_captions
-from . import checkpoints, creator_rules, retakes
+from . import checkpoints, creator_rules, retakes, usual
 from . import direction_parse, intake_build
 from . import transcribe as speech
 from .after_review import generate_after_review
@@ -798,6 +798,7 @@ FRONT_DOOR_DEFAULTS = {
     "buffer_s": 0.1,
     "keep_mode": "last",
     "breaths": "keep",
+    "remove_fillers": True,
 }
 BUFFER_MIN_S = 0.05
 BUFFER_MAX_S = 0.50
@@ -869,13 +870,26 @@ def _front_door_settings(config: WebAppConfig) -> dict:
     the standing profile's retakes knob when the job carries one,
     and from the last take otherwise; a changed mode is a session
     choice like the rest, and the job's own files are never touched.
+
+    Seeding order (v0.7.0): the built-in defaults, then the
+    creator's usual (the choices carried across jobs, see
+    ``usual.py``), then the profile keeper seed, then this
+    session's own saved choices, which always win. The profile seed
+    keeps its standing precedence for the keeper mode: it outranks
+    the usual, so one job's profile can never be silently flipped
+    by a usual another job wrote. With no job loaded the config is
+    the launch home's, so the same read gives the launch session's
+    choices, which is how the drop block pre-sets itself before a
+    job exists.
     """
     saved = _load_session_json(config, FRONT_DOOR_FILENAME, {})
     settings = dict(FRONT_DOOR_DEFAULTS)
-    profile = _load_optional_file(config.job_dir / "profile.json")
-    settings["keep_mode"] = retakes.settings_from_profile(profile)["keep"]
+    settings = usual.load_usual(settings)
+    if config.job_dir is not None:
+        profile = _load_optional_file(config.job_dir / "profile.json")
+        settings["keep_mode"] = retakes.settings_from_profile(profile)["keep"]
     if isinstance(saved, dict):
-        for key in ("remove_retakes", "cut_silence"):
+        for key in ("remove_retakes", "cut_silence", "remove_fillers"):
             if isinstance(saved.get(key), bool):
                 settings[key] = saved[key]
         buffer = saved.get("buffer_s")
@@ -914,6 +928,11 @@ def _keep_mode_recap(settings: dict) -> Optional[str]:
 def _save_front_door_settings(config: WebAppConfig, settings: dict) -> dict:
     config.session_dir.mkdir(parents=True, exist_ok=True)
     _write_json(config.session_dir / FRONT_DOOR_FILENAME, settings)
+    # The same choices become the creator's usual, so the next job
+    # (and the drop block before any job) starts where this one
+    # settled. The usual is a convenience copy; the session file
+    # above stays this job's own record.
+    usual.save_usual(settings)
     return settings
 
 
@@ -1337,10 +1356,26 @@ def _transcript_entries(config: WebAppConfig) -> tuple[list, list]:
     word_timeline = Timeline(transcript, _effective_cuts(config))
     statuses = [word_timeline.word_status(i) for i in range(len(words))]
     corrections = _session_corrections(config, len(words))
-    return (
-        transcript_display_entries(words, statuses, corrections),
-        corrections,
-    )
+    entries = transcript_display_entries(words, statuses, corrections)
+    # The display entries carry no times (word_corrections is a
+    # text-only view), so the source-clock seconds are laid on here,
+    # from the words each entry stands for: an ordinary entry is its
+    # one word, and a corrected span entry runs from its first
+    # word's start to its last word's end.
+    for entry in entries:
+        start = entry.get("index")
+        end = entry.get("word_end")
+        if (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and 0 <= start < end <= len(words)
+        ):
+            entry["start"] = float(words[start]["start"])
+            entry["end"] = float(words[end - 1]["end"])
+        else:
+            entry["start"] = 0.0
+            entry["end"] = 0.0
+    return (entries, corrections)
 
 
 AFTER_REVIEW_VISITED_FILENAME = "after_review_visited.json"
@@ -1430,7 +1465,13 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "comments": [],
         "overall_feedback": [],
         "edit_spans": [],
-        "front_door": dict(FRONT_DOOR_DEFAULTS),
+        # With no job, this config is the launch home's own, so its
+        # front door settings are the launch session's: the defaults
+        # overlaid with the creator's usual and any launch-session
+        # choices. That is what pre-sets the drop block before a job
+        # exists.
+        "front_door": _front_door_settings(config),
+        "flags": [],
         "beta": {
             "flips": 0,
             "settled": 0,
@@ -1485,6 +1526,19 @@ def _incomplete_job_summary(config: WebAppConfig, missing: list) -> dict:
         }
     )
     return summary
+
+
+def _session_flags(config: WebAppConfig) -> list:
+    """The direction pass's surviving flags, as the page shows them.
+
+    Read from the session's flags file each time, so the summary
+    always carries the latest pass's flags and nothing stale when
+    no pass has run.
+    """
+    payload = _load_session_json(config, FLAGS_FILENAME, {})
+    if isinstance(payload, dict) and isinstance(payload.get("flags"), list):
+        return [flag for flag in payload["flags"] if isinstance(flag, dict)]
+    return []
 
 
 def _job_summary(config: WebAppConfig) -> dict:
@@ -1549,6 +1603,7 @@ def _job_summary(config: WebAppConfig) -> dict:
         "overall_feedback": overall_feedback,
         "edit_spans": _edit_spans(config),
         "front_door": _front_door_settings(config),
+        "flags": _session_flags(config),
         "beta": _beta_score(config),
         "saved_rules": _saved_rules_view(config),
         "rule_suggestions": _rule_suggestions(config),
@@ -2116,6 +2171,513 @@ def _record_silence_pass(config: WebAppConfig, summary: dict) -> None:
     _write_json(path, {"runs": runs})
 
 
+def _merge_page_operations(config: WebAppConfig, audit: dict, tmp: Path) -> list:
+    """Merge one pass's verified result into the session.
+
+    The pass ran ``_verify_and_apply`` into its own temp folder;
+    this is the step every pass shares afterwards: the temp revised
+    plan becomes the session's current plan, and the pass's page
+    operations are appended to the session audit (or the pass's own
+    audit becomes the session audit when there is none yet), so the
+    transcript dots and the review page explain every pass's changes
+    in one place. Returns the pass's page operations.
+    """
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    revised_path = session / "revised_cuts.json"
+    shutil.copyfile(Path(tmp) / "revised_cuts.json", revised_path)
+    page_operations = audit.get("operations", [])
+    session_audit_path = session / "operations_audit.json"
+    if session_audit_path.is_file():
+        existing = _load_json(str(session_audit_path))
+        existing.setdefault("operations", []).extend(page_operations)
+        existing["after"] = audit["after"]
+        _write_json(session_audit_path, existing)
+    else:
+        shutil.copyfile(Path(tmp) / "operations_audit.json", session_audit_path)
+    return page_operations
+
+
+# ---------------------------------------------------------------------------
+# The filler pass and the direction pass (v0.7.0)
+#
+# Two more passes over the same ground the retake and silence
+# passes already walk. The filler pass is deterministic: it measures
+# the transcript for pure filler words (the captions module's
+# conservative list) that are still in the edit and outside every
+# protected span, and cuts them through the same verify-and-apply
+# path. The direction pass hands whatever direction the deterministic
+# controls could not map to the model, as a read of the whole
+# transcript: the model proposes ordinary operations (applied the
+# same checked way) plus flags, observations about the talk itself
+# that no operation can carry. Flags are filtered here, against the
+# post-pass plan, so a flag can only point at words that survived,
+# outside protected spans and out of the opening hook.
+# ---------------------------------------------------------------------------
+
+FILLER_PASS_FILENAME = "filler_pass.json"
+DIRECTION_PASS_FILENAME = "direction_pass.json"
+FLAGS_FILENAME = "flags.json"
+FILLER_COMMENT_ID = "filler-pass"
+DIRECTION_COMMENT_ID = "direction-pass"
+
+
+def _filler_operations(
+    timeline: Timeline, settings: dict, profile: Optional[dict] = None
+) -> list:
+    """Cut operations for the kept filler words, one per run.
+
+    A word earns a cut when three things are all true: the current
+    plan keeps it, the captions module's conservative filler check
+    names it a pure filler (um, uh, and their stretched spellings,
+    never a meaning-bearing word), and it sits outside every
+    protected span. Adjacent filler words are proposed as one
+    operation per run, so "um uh" is one cut, not two. The
+    operations carry the pass's comment id, the deterministic-local
+    model marker the schema expects, and a plain reason.
+    """
+    if not settings.get("remove_fillers", True):
+        return []
+    protected: set = set()
+    for span in timeline.protected_spans(profile):
+        protected.update(range(span["word_start"], span["word_end"]))
+    fillers = [
+        index
+        for index, word in enumerate(timeline.words)
+        if timeline.word_status(index) == "kept"
+        and index not in protected
+        and clean_captions.is_filler(str(word.get("word") or ""))
+    ]
+    operations = []
+    for index in fillers:
+        if operations and operations[-1]["word_end"] == index:
+            operations[-1]["word_end"] = index + 1
+            continue
+        operations.append(
+            {
+                "type": "cut_words",
+                "comment_id": FILLER_COMMENT_ID,
+                "word_start": index,
+                "word_end": index + 1,
+                "reason": "Filler word, taken out by the ums and uhs pass.",
+                "confidence": 1.0,
+                "model": "mock",
+                "risk_tier": 1,
+                "wonder_reviewed": False,
+            }
+        )
+    return operations
+
+
+def _run_filler_pass(config: WebAppConfig, settings: dict) -> dict:
+    """Take the kept filler words out of the session's current plan.
+
+    Mirrors the silence pass: build the timeline from the session
+    transcript and the current plan, propose the cuts, run them
+    through verify-and-apply in a temp folder, merge the result
+    into the session, and record the pass in its own session file.
+    ``applied`` counts words removed, not operations, because one
+    operation can carry a run of fillers. When the choice is off,
+    or there is nothing to take out, the pass does not run.
+    """
+    summary = {"ran": False, "applied": 0, "lines": []}
+    if not settings.get("remove_fillers"):
+        return summary
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    timeline = Timeline(transcript, _effective_cuts(config))
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    operations = _filler_operations(timeline, settings, profile)
+    if not operations:
+        return summary
+    summary["ran"] = True
+    feedback = {
+        "comments": [
+            {
+                "id": FILLER_COMMENT_ID,
+                "timestamp": None,
+                "text": "Take out the ums and uhs",
+                "scope": "both",
+            }
+        ],
+        "overall": [],
+    }
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    revised_path = session / "revised_cuts.json"
+    base_cuts_path = (
+        revised_path if revised_path.is_file() else config.job_dir / "cuts.json"
+    )
+    profile_path = config.job_dir / "profile.json"
+    tmp = session / ".filler-tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    args = SimpleNamespace(
+        transcript=str(config.job_dir / "transcript.json"),
+        cuts=str(base_cuts_path),
+        profile=str(profile_path) if profile_path.is_file() else None,
+    )
+    try:
+        audit = _verify_and_apply(args, {"operations": operations}, tmp)
+    except (SchemaError, ApplyError) as exc:
+        _log_raw_error("filler pass", exc)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return summary
+    page_operations = _merge_page_operations(config, audit, tmp)
+    shutil.rmtree(tmp, ignore_errors=True)
+    applied = sum(
+        int(op.get("word_end") or 0) - int(op.get("word_start") or 0)
+        for op in page_operations
+        if op.get("status") == "applied" and op.get("type") == "cut_words"
+    )
+    summary["applied"] = applied
+    if applied > 0:
+        summary["lines"] = [
+            f"Took out {applied} filler word"
+            f"{'s' if applied != 1 else ''} (ums and uhs)."
+        ]
+    _write_json(
+        session / FILLER_PASS_FILENAME,
+        {"applied": applied, "feedback": feedback},
+    )
+    return summary
+
+
+def _direction_provider(config: WebAppConfig):
+    """The provider a direction pass reads with.
+
+    The same construction ``_run_direction`` uses for "meta": the
+    Meta provider keyed by the session sign-in. Kept as one small
+    helper so the pass has a single provider seam.
+    """
+    return MetaProvider(api_key=config.signin_key(), allow_wonder=True)
+
+
+def _format_flag_time(time_s: float) -> str:
+    """A flag's time as minutes:seconds, seconds zero-padded."""
+    total = int(float(time_s))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+_FLAG_RECAPS = {
+    "repeated_point": "One thing to see: you make the same point again at {t}.",
+    "dropped_thread": (
+        "One thing to see: you open a thread at {t} and never come back to it."
+    ),
+    "buried_line": "A strong line is buried at {t}: '{quote}'",
+    "drifted_repeat": (
+        "These two lines at {t} say almost the same thing. "
+        "Retake, or said twice on purpose?"
+    ),
+    "wording_fights": (
+        "One word fights the sentence around it at {t}: '{quote}'."
+    ),
+    "halfway_thought": (
+        "This thought stops halfway at {t} and nothing finishes it."
+    ),
+}
+
+
+def _opening_hook_end(words: list) -> int:
+    """The word index just past the opening hook (the first sentence).
+
+    The hook is the words up to and including the first word whose
+    token ends a sentence, scanning at most the first 60 words;
+    when no sentence ends there, the hook is the first 10 words.
+    """
+    for index in range(min(60, len(words))):
+        token = str(words[index].get("word") or "").rstrip()
+        if token.endswith((".", "?", "!")):
+            return index + 1
+    return min(10, len(words))
+
+
+def _spans_overlap(start: int, end: int, other_start: int, other_end: int) -> bool:
+    return start < other_end and other_start < end
+
+
+def _filter_direction_flags(
+    raw_flags: list, words: list, protected: list, post_timeline: Timeline
+) -> list:
+    """The flags that may be shown, filtered and formatted.
+
+    A flag survives only when every span it names is outside the
+    protected spans and still kept in the post-pass plan (a flag
+    must point at words the listener will actually hear), and, for
+    the two kinds that lose their meaning at the very start, when
+    its span does not start inside the opening hook. Survivors are
+    sorted by where they start, and any flag overlapping one
+    already kept is dropped, so the creator sees each spot once.
+    """
+    hook_end = _opening_hook_end(words)
+
+    def span_survives(start, end) -> bool:
+        if not isinstance(start, int) or isinstance(start, bool):
+            return False
+        if not isinstance(end, int) or isinstance(end, bool):
+            return False
+        if not 0 <= start < end <= len(words):
+            return False
+        for span in protected:
+            if _spans_overlap(start, end, span["word_start"], span["word_end"]):
+                return False
+        for index in range(start, end):
+            if post_timeline.word_status(index) == "cut":
+                return False
+        return True
+
+    candidates = []
+    for flag in raw_flags:
+        if not isinstance(flag, dict):
+            continue
+        kind = flag.get("type")
+        if kind not in _FLAG_RECAPS:
+            continue
+        start, end = flag.get("word_start"), flag.get("word_end")
+        if not span_survives(start, end):
+            continue
+        start2, end2 = flag.get("word_start2"), flag.get("word_end2")
+        if kind == "drifted_repeat":
+            if not span_survives(start2, end2):
+                continue
+        else:
+            start2, end2 = None, None
+        if kind in ("repeated_point", "buried_line") and start < hook_end:
+            continue
+        candidates.append(
+            {
+                "type": kind,
+                "word_start": start,
+                "word_end": end,
+                "word_start2": start2,
+                "word_end2": end2,
+                "reason": str(flag.get("reason") or ""),
+            }
+        )
+    candidates.sort(key=lambda item: item["word_start"])
+    kept: list = []
+    kept_spans: list = []
+    for candidate in candidates:
+        spans = [(candidate["word_start"], candidate["word_end"])]
+        if candidate["word_start2"] is not None:
+            spans.append((candidate["word_start2"], candidate["word_end2"]))
+        if any(
+            _spans_overlap(start, end, other_start, other_end)
+            for start, end in spans
+            for other_start, other_end in kept_spans
+        ):
+            continue
+        kept.append(candidate)
+        kept_spans.extend(spans)
+    flags = []
+    for candidate in kept:
+        start = candidate["word_start"]
+        time_s = float(words[start]["start"])
+        if candidate["type"] == "wording_fights":
+            quote = str(words[start].get("word") or "")
+        else:
+            quote = " ".join(
+                str(words[i].get("word") or "")
+                for i in range(start, candidate["word_end"])
+            )
+        recap = _FLAG_RECAPS[candidate["type"]].format(
+            t=_format_flag_time(time_s), quote=quote
+        )
+        flags.append(
+            {
+                "type": candidate["type"],
+                "word_start": start,
+                "word_end": candidate["word_end"],
+                "word_start2": candidate["word_start2"],
+                "word_end2": candidate["word_end2"],
+                "time_s": time_s,
+                "quote": quote,
+                "reason": candidate["reason"],
+                "recap": recap,
+            }
+        )
+    return flags
+
+
+def _run_direction_pass(
+    config: WebAppConfig, remainder: str, settings: dict
+) -> dict:
+    """Read the leftover direction against the whole transcript.
+
+    The deterministic controls have already taken what they could
+    map; what is left is a reading task, so it goes to the model
+    with the cleaned state of the edit (the plan after the retake,
+    filler, and silence passes) plus the session's overall notes
+    and saved rules. The model's operations are applied through the
+    same verify-and-apply path as every other pass, and its flags
+    are filtered against the post-pass plan before they are saved
+    or shown. With no Meta sign-in there is nothing to read with,
+    and the pass says so in one line instead of failing.
+    """
+    summary = {
+        "ran": False,
+        "reason": "",
+        "applied": 0,
+        "flagged_ops": 0,
+        "flags": [],
+        "lines": [],
+        "usage": [],
+    }
+    if not config.signin_key():
+        summary["reason"] = "no_key"
+        summary["lines"] = [
+            "Your direction will be read when a key is saved."
+        ]
+        return summary
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    words = transcript.get("words", [])
+    timeline = Timeline(transcript, _effective_cuts(config))
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    feedback_path = _feedback_path(config)
+    overall_texts: list = []
+    if feedback_path is not None:
+        try:
+            payload = _load_json(str(feedback_path))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            overall_texts = [
+                note["text"] for note in _overall_notes(payload)
+            ]
+    kept = timeline.kept_word_indices()
+    packet = {
+        "direction": remainder,
+        "overall": overall_texts,
+        "saved_rules": creator_rules.active_rule_statements(
+            _rules_store(config)
+        ),
+        "plan_state": {
+            "kept_words": len(kept),
+            "cut_words": len(words) - len(kept),
+        },
+    }
+    provider = _direction_provider(config)
+    operations, _routing, raw_flags = provider.direct_transcript(
+        packet, timeline, profile
+    )
+    # The provider's operations carry a routing-only
+    # ``target_comment_id`` beside the schema's ``comment_id``; the
+    # apply path validates strictly and refuses unknown fields, so
+    # the routing key comes off here and only the schema shape goes
+    # forward. The feedback comment below keeps the same id the
+    # operations carry, "direction-pass".
+    operations = [
+        {
+            key: value
+            for key, value in op.items()
+            if key != "target_comment_id"
+        }
+        if isinstance(op, dict)
+        else op
+        for op in operations
+    ]
+    summary["ran"] = True
+    feedback = {
+        "comments": [
+            {
+                "id": DIRECTION_COMMENT_ID,
+                "timestamp": None,
+                "text": remainder,
+                "scope": "both",
+            }
+        ],
+        "overall": [],
+    }
+    page_operations: list = []
+    if operations:
+        session = config.session_dir
+        session.mkdir(parents=True, exist_ok=True)
+        revised_path = session / "revised_cuts.json"
+        base_cuts_path = (
+            revised_path
+            if revised_path.is_file()
+            else config.job_dir / "cuts.json"
+        )
+        profile_path = config.job_dir / "profile.json"
+        tmp = session / ".direction-tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        args = SimpleNamespace(
+            transcript=str(config.job_dir / "transcript.json"),
+            cuts=str(base_cuts_path),
+            profile=str(profile_path) if profile_path.is_file() else None,
+        )
+        try:
+            audit = _verify_and_apply(
+                args, {"operations": operations}, tmp
+            )
+        except (SchemaError, ApplyError) as exc:
+            # The batch as a whole did not pass the safety check, so
+            # nothing in it is applied; every proposal counts as set
+            # aside rather than silently vanishing.
+            _log_raw_error("direction pass", exc)
+            shutil.rmtree(tmp, ignore_errors=True)
+            audit = None
+            summary["flagged_ops"] = len(operations)
+        if audit is not None:
+            page_operations = _merge_page_operations(config, audit, tmp)
+            shutil.rmtree(tmp, ignore_errors=True)
+    summary["applied"] = sum(
+        1 for op in page_operations if op.get("status") == "applied"
+    )
+    if page_operations:
+        # Set aside means the proposal came back as, or was turned
+        # into, a flag for review, plus anything the verifier
+        # rejected outright. (When the apply failed as a whole,
+        # flagged_ops was already set to the full proposal count.)
+        summary["flagged_ops"] = sum(
+            1
+            for op in page_operations
+            if op.get("status") in ("flagged", "rejected")
+        )
+    drain = getattr(provider, "drain_usage", None)
+    if callable(drain):
+        summary["usage"] = drain() or []
+    post_timeline = Timeline(transcript, _effective_cuts(config))
+    flags = _filter_direction_flags(
+        raw_flags or [],
+        words,
+        timeline.protected_spans(profile),
+        post_timeline,
+    )
+    summary["flags"] = flags
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    _write_json(session / FLAGS_FILENAME, {"flags": flags})
+    _write_json(
+        session / DIRECTION_PASS_FILENAME,
+        {
+            "ran": True,
+            "applied": summary["applied"],
+            "flagged_ops": summary["flagged_ops"],
+            "flags": flags,
+            "usage": summary["usage"],
+            "feedback": feedback,
+        },
+    )
+    lines: list = []
+    if summary["applied"] > 0:
+        lines.append(
+            f"Read your direction and made {summary['applied']} "
+            f"change{'s' if summary['applied'] != 1 else ''}."
+        )
+    if summary["flagged_ops"] > 0:
+        lines.append(
+            f"{summary['flagged_ops']} suggestion"
+            f"{'s' if summary['flagged_ops'] != 1 else ''} set aside "
+            "for your review."
+        )
+    lines.extend(flag["recap"] for flag in flags)
+    if not lines:
+        lines = ["Read your direction. Nothing to change."]
+    summary["lines"] = lines
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # The retake pass (v0.5.0)
 #
@@ -2326,6 +2888,7 @@ def _run_shadow(
     swap already recorded on a pair survives the refresh.
     """
     counts = {"scored": 0, "flips": 0, "ties": 0, "excluded": 0}
+    counts["usage"] = []
     decisions = record.get("decisions") or {}
     existing = {
         entry.get("pair_key"): entry
@@ -2389,6 +2952,9 @@ def _run_shadow(
             except ProviderError as exc:
                 _log_raw_error("retake shadow judgment", exc)
                 judged = {}
+            drain = getattr(provider, "drain_usage", None)
+            if callable(drain):
+                counts["usage"] = drain() or []
     for pair in candidates:
         answer = judged.get(pair["pair_id"])
         if answer is None:
@@ -2469,6 +3035,7 @@ def _run_retake_pass(
         "applied": 0,
         "flagged": 0,
         "kept_both": 0,
+        "usage": [],
     }
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     profile = _load_optional_file(config.job_dir / "profile.json")
@@ -2497,6 +3064,7 @@ def _run_retake_pass(
             key: shadow[key]
             for key in ("scored", "flips", "ties", "excluded")
         }
+        summary["usage"].extend(shadow.get("usage") or [])
     summary["pairs"] = len(pairs)
     summary["band_a"] = len(
         [pair for pair in pairs if pair["band"] == "a"]
@@ -2546,6 +3114,9 @@ def _run_retake_pass(
                 # provider at all.
                 _log_raw_error("retake judgment", exc)
                 judged = None
+            drain = getattr(provider, "drain_usage", None)
+            if callable(drain):
+                summary["usage"].extend(drain() or [])
         if judged is not None:
             judged_ops, verdicts = judged
         for pair in borderline:
@@ -2698,6 +3269,9 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "buffer_s": min(BUFFER_MAX_S, max(BUFFER_MIN_S, buffer_s)),
         "keep_mode": keep_mode,
         "breaths": breaths,
+        "remove_fillers": bool(
+            body.get("remove_fillers", defaults.get("remove_fillers", True))
+        ),
     }
     scope = str(body.get("format_scope") or "both").strip().lower()
     if scope not in ("both", "vertical", "landscape"):
@@ -2779,6 +3353,14 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
                 _write_json(session_audit_path, existing)
             else:
                 _write_json(session_audit_path, retake_audit)
+    # The filler pass runs after the retake pass (and after the
+    # direction runs and the retake merge, which replace the session
+    # audit) and before the silence pass, so its cuts land on the
+    # plan the retakes left and its page operations merge into the
+    # audit the direction runs settled.
+    filler = None
+    if settings["remove_fillers"]:
+        filler = _run_filler_pass(config, settings)
     silence = None
     if settings["cut_silence"]:
         silence = _run_silence_pass(
@@ -2795,6 +3377,8 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "format_scope": scope,
         "direction_runs": direction_runs,
         "retakes": retake_summary,
+        "filler": filler,
+        "lines": list(filler["lines"]) if filler else [],
         "silence": silence,
         "saved_rules": creator_rules.active_rule_statements(
             _rules_store(config)
@@ -2869,14 +3453,81 @@ def _adopt_job(httpd, job_root: Path) -> WebAppConfig:
     return config
 
 
+def _validated_drop_settings(body) -> Optional[dict]:
+    """The per-drop front door settings in a first-edit request.
+
+    The drop block can carry the creator's choices for this one
+    video. Only the six front door keys are taken, and each is
+    validated the way the front door itself validates it: booleans
+    must be JSON booleans, the buffer is a number clamped to the
+    front door's range, and the two word choices must be known
+    words. Anything else in the object is ignored, and a request
+    with no settings object at all returns None.
+    """
+    if not isinstance(body, dict):
+        return None
+    raw = body.get("settings")
+    if not isinstance(raw, dict):
+        return None
+    validated: dict = {}
+    for key in ("remove_retakes", "cut_silence", "remove_fillers"):
+        if isinstance(raw.get(key), bool):
+            validated[key] = raw[key]
+    buffer = raw.get("buffer_s")
+    if isinstance(buffer, (int, float)) and not isinstance(buffer, bool):
+        validated["buffer_s"] = min(
+            BUFFER_MAX_S, max(BUFFER_MIN_S, float(buffer))
+        )
+    if raw.get("keep_mode") in retakes.KEEP_MODES:
+        validated["keep_mode"] = raw["keep_mode"]
+    if raw.get("breaths") in BREATH_MODES:
+        validated["breaths"] = raw["breaths"]
+    return validated
+
+
+def _state_summary(summary: Optional[dict]) -> dict:
+    """One pass's summary, safe to serve in the first-edit state.
+
+    Pass summaries are plain JSON by construction; if one ever
+    grows a value JSON cannot carry, the state falls back to the
+    summary's scalar counts and lines rather than failing the poll
+    the page is waiting on. A pass that did not run reads as
+    ``{"ran": False}``.
+    """
+    if summary is None:
+        return {"ran": False}
+    try:
+        json.dumps(summary)
+        return summary
+    except (TypeError, ValueError):
+        return {
+            key: value
+            for key, value in summary.items()
+            if isinstance(value, (bool, int, float, str, list))
+            and all(
+                isinstance(item, (bool, int, float, str))
+                for item in (value if isinstance(value, list) else [value])
+            )
+        }
+
+
 def _run_first_edit(httpd, intake_id: str, direction_text: str,
-                    captions_on: bool) -> None:
+                    captions_on: bool,
+                    drop_settings: Optional[dict] = None) -> None:
     """Build a job from one staged video and make its first edit.
 
     Runs in its own thread; progress lands in the first-edit state
     the status endpoint serves, in plain words at every stage. The
     job becomes the server's job only once its files exist, so a
     failure leaves the app exactly as it was.
+
+    The passes run in the front door's order: retakes, then the
+    filler pass, then the silence sweep (pauses over the buffer are
+    shortened toward the buffer by default; keeping breaths natural
+    is the one named exception), then the direction pass reads
+    whatever direction the deterministic controls could not map.
+    Per-drop settings outrank the saved ones, and spoken or typed
+    direction outranks both.
     """
     registry = httpd.intakes  # type: ignore[attr-defined]
     states = httpd.first_edit_jobs  # type: ignore[attr-defined]
@@ -2893,11 +3544,13 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
         state["stage_index"] = index
         state["stage_total"] = total
 
-    def stage_total(settings: dict) -> int:
+    def stage_total(settings: dict, has_direction: bool = False) -> int:
         return (
             4
             + (1 if settings.get("remove_retakes") else 0)
+            + (1 if settings.get("remove_fillers") else 0)
             + (1 if settings.get("cut_silence") else 0)
+            + (1 if has_direction else 0)
             + 1
         )
 
@@ -2909,9 +3562,9 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
     standing = (
         _front_door_settings(httpd.config)  # type: ignore[attr-defined]
         if httpd.config.has_job  # type: ignore[attr-defined]
-        else dict(FRONT_DOOR_DEFAULTS)
+        else usual.load_usual(dict(FRONT_DOOR_DEFAULTS))
     )
-    total = stage_total(standing)
+    total = stage_total(standing, bool(direction_text.strip()))
 
     try:
         stage("Listening to your video…", 1, total)
@@ -2977,7 +3630,12 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
         config = _adopt_job(httpd, job_root)
         parsed = direction_parse.parse_direction(direction_text)
         settings = _front_door_settings(config)
+        if drop_settings:
+            settings.update(drop_settings)
         settings.update(parsed["overrides"])
+        # Saving the settled settings here is also the write-back
+        # that updates the creator's usual, so the drop block starts
+        # from these choices next time.
         _save_front_door_settings(config, settings)
         session = config.session_dir
         session.mkdir(parents=True, exist_ok=True)
@@ -3007,7 +3665,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             )
             _write_json(feedback_path, payload)
         kept_before = len(words)
-        total = stage_total(settings)
+        total = stage_total(settings, bool(parsed["remainder"]))
         state["stage_total"] = total
         checkpoints.begin(config)
         next_index = 5
@@ -3017,7 +3675,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             next_index += 1
             retake_summary = _run_retake_pass(
                 config,
-                "mock",
+                "meta" if config.signin_key() else "mock",
                 spoken_direction=direction_text,
                 keep_mode=settings["keep_mode"],
             )
@@ -3033,6 +3691,11 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                     _write_json(audit_path, existing)
                 else:
                     _write_json(audit_path, retake_audit)
+        filler_summary = None
+        if settings.get("remove_fillers"):
+            stage("Taking out the ums and uhs…", next_index, total)
+            next_index += 1
+            filler_summary = _run_filler_pass(config, settings)
         silence_summary = None
         if settings["cut_silence"]:
             stage("Cutting the silence…", next_index, total)
@@ -3040,6 +3703,28 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             silence_summary = _run_silence_pass(
                 config, settings["buffer_s"], settings["breaths"]
             )
+        direction_summary = None
+        if parsed["remainder"]:
+            stage("Reading your direction…", next_index, total)
+            next_index += 1
+            try:
+                direction_summary = _run_direction_pass(
+                    config, parsed["remainder"], settings
+                )
+            except Exception as exc:  # the reading never fails the edit
+                _log_raw_error("direction pass", exc)
+                direction_summary = {
+                    "ran": False,
+                    "reason": "error",
+                    "applied": 0,
+                    "flagged_ops": 0,
+                    "flags": [],
+                    "lines": [
+                        "The rest of your direction was saved as "
+                        "overall guidance for the model."
+                    ],
+                    "usage": [],
+                }
         checkpoints.commit(config, "First edit")
         transcript = _load_json(str(job_root / "transcript.json"))
         timeline = Timeline(transcript, _effective_cuts(config))
@@ -3075,6 +3760,8 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 f"{retake_summary.get('flagged', 0)} set aside for "
                 "your call."
             )
+        if filler_summary is not None:
+            recap.extend(filler_summary.get("lines", []))
         if silence_summary is not None:
             recap.append(
                 "Silence: "
@@ -3086,11 +3773,21 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             # recap above already names it; otherwise the recap
             # still names the state the first edit ran with.
             recap.append(_breaths_recap(settings))
-        if parsed["remainder"]:
+        if direction_summary is not None:
+            # The direction lines come last: they end with the flag
+            # recaps, the things left for the creator to see.
+            recap.extend(direction_summary.get("lines", []))
+        elif parsed["remainder"]:
             recap.append(
                 "The rest of your direction was saved as overall "
                 "guidance for the model."
             )
+        passes = {
+            "retakes": _state_summary(retake_summary),
+            "filler": _state_summary(filler_summary),
+            "silence": _state_summary(silence_summary),
+            "direction": _state_summary(direction_summary),
+        }
         state.update(
             {
                 "status": "done",
@@ -3102,6 +3799,13 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "kept_after": kept_after,
                 "settings": settings,
                 "recap": recap,
+                "lines": recap,
+                "passes": passes,
+                "flags": (
+                    direction_summary.get("flags", [])
+                    if direction_summary
+                    else []
+                ),
                 "render_note": render_note,
                 "captions": caption_info,
             }
@@ -4277,6 +4981,7 @@ class _Handler(BaseHTTPRequestHandler):
                 intake_id,
                 str(body.get("direction") or ""),
                 bool(body.get("clean_captions", True)),
+                _validated_drop_settings(body),
             ),
             daemon=True,
         )
