@@ -165,7 +165,14 @@ class V04Tests(unittest.TestCase):
         self.assertIn("c1", applied)
         self.assertIsNotNone(result["silence"])
         self.assertTrue(result["silence"]["ran"])
-        self.assertGreaterEqual(result["silence"]["joins_trimmed"], 1)
+        # v0.6.1: breaths are kept by default, so the pass runs
+        # with the natural-breath floor in force; every join on
+        # this fixture sits at or under that floor, and none is
+        # trimmed. The trimming mechanics themselves are covered
+        # under the trim choice (test_v061, and the silence-only
+        # test below).
+        self.assertEqual(result["silence"]["floor_s"], 0.3)
+        self.assertEqual(result["silence"]["joins_trimmed"], 0)
         after = self.summary()
         self.assertLess(after["words_kept"], 32)
         # A second read of the job shows the choices the run saved.
@@ -183,15 +190,27 @@ class V04Tests(unittest.TestCase):
         self.assertEqual(result["settings"]["buffer_s"], 0.05)
 
     def test_front_door_silence_only_without_comments(self):
+        # v0.6.1: the pass runs, and on this fixture it trims
+        # nothing, under either breaths choice: joins 0 and 1 sit
+        # beside the signature insert, and joins 2, 3, and 4 border
+        # protected words (the prayer hold and the closing call to
+        # action), and a protected join is never trimmed now. The
+        # trimming mechanics themselves, the same join under both
+        # settings with the protected join untouched, are covered
+        # on a purpose-built fixture in test_v061.
         status, result = self.call(
             "/api/front-door",
-            {"remove_retakes": False, "cut_silence": True},
+            {
+                "remove_retakes": False,
+                "cut_silence": True,
+                "breaths": "trim",
+            },
         )
         self.assertEqual(status, 200, result)
         self.assertTrue(result["ok"])
         self.assertIsNotNone(result["silence"])
         self.assertTrue(result["silence"]["ran"])
-        self.assertGreaterEqual(result["silence"]["joins_trimmed"], 1)
+        self.assertEqual(result["silence"]["joins_trimmed"], 0)
 
     # -- edit spans and notes ----------------------------------------------
 

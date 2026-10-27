@@ -1520,14 +1520,31 @@ class SigninTests(unittest.TestCase):
     # -- tests ---------------------------------------------------------------
 
     def test_state_reports_unset_then_server_set(self):
+        # v0.6.1: the state also reports the ElevenLabs sign-in
+        # and whether each key is saved on this Mac; both are
+        # unset in this scrubbed environment.
         state = self.get_json("/api/signin")
         self.assertEqual(
-            state, {"meta_signin_set": False, "source": None}
+            state,
+            {
+                "meta_signin_set": False,
+                "source": None,
+                "meta_saved_on_mac": False,
+                "elevenlabs_signin_set": False,
+                "elevenlabs_saved_on_mac": False,
+            },
         )
         os.environ["MODEL_API_KEY"] = "sk-server-side-key"
         state = self.get_json("/api/signin")
         self.assertEqual(
-            state, {"meta_signin_set": True, "source": "server"}
+            state,
+            {
+                "meta_signin_set": True,
+                "source": "server",
+                "meta_saved_on_mac": False,
+                "elevenlabs_signin_set": False,
+                "elevenlabs_saved_on_mac": False,
+            },
         )
 
     def test_page_has_signin_controls(self):
@@ -1603,7 +1620,14 @@ class SigninTests(unittest.TestCase):
 
         state = self.get_json("/api/signin")
         self.assertEqual(
-            state, {"meta_signin_set": True, "source": "session"}
+            state,
+            {
+                "meta_signin_set": True,
+                "source": "session",
+                "meta_saved_on_mac": False,
+                "elevenlabs_signin_set": False,
+                "elevenlabs_saved_on_mac": False,
+            },
         )
 
         seen = []
