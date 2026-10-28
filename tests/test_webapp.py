@@ -386,7 +386,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("renderDots", page)
         self.assertIn("tl-dot", page)
         self.assertIn("tl-tip", page)
-        self.assertIn("seekTo(c.ts, c.fmt)", page)
+        # v2: a dot click jumps on the edited clock and opens the
+        # comment it points at.
+        self.assertIn("seekToEdited(g.ts, c.fmt)", page)
         self.assertIn('tlTrack.addEventListener("pointerdown"', page)
         self.assertIn('tlTrack.addEventListener("pointermove"', page)
 

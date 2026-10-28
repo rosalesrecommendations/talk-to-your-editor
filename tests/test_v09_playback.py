@@ -239,7 +239,10 @@ class TemplatePlaybackTests(unittest.TestCase):
     def test_timeline_markers_stay_inside_the_strip(self):
         self.assertIn("function tlInsetLeft(frac, insetPx)", self.page)
         self.assertIn("tlInsetLeft(frac, 6)", self.page)
-        self.assertIn("tlInsetLeft(c.ts / d, 8)", self.page)
+        # v2: dots sit on the edited clock and merge where comments
+        # land on top of each other, so the placed time is the
+        # group's edited time.
+        self.assertIn("tlInsetLeft(g.ts / d, 8)", self.page)
         self.assertIn("tlInsetLeft(frac, halfBubble)", self.page)
         self.assertNotIn(
             'tlPlayhead.style.left = Math.max(0, Math.min(100, pct))',
@@ -285,18 +288,32 @@ class TemplatePlaybackTests(unittest.TestCase):
 
     # Item 17 ---------------------------------------------------------
 
-    def test_forward_buttons_beside_the_back_buttons(self):
-        row = self.slice('id="fmtRow"', 'id="fmtNote"')
-        self.assertIn('id="back5"', row)
-        self.assertIn('id="fwd1"', row)
-        self.assertIn('id="fwd5"', row)
-        self.assertLess(row.index('id="back5"'), row.index('id="fwd1"'))
-        self.assertLess(row.index('id="fwd1"'), row.index('id="fwd5"'))
-        self.assertIn(">Forward 1s<", row)
-        self.assertIn(">Forward 5s<", row)
+    def test_transport_row_is_the_v2_row(self):
+        # v2 transport (spec-timeline-controls-v2, section 2): one
+        # centered row, Go to start / Back 5 / Play-Pause /
+        # Forward 5 / Go to end, a short word under every button,
+        # and Previous/Next change set apart and hidden until a
+        # cut or a pinned comment exists. The 1-second buttons are
+        # gone; the arrow keys still step 1 second.
+        row = self.slice('id="fmtRow"', 'id="tlbar"')
+        for btn in ('id="goStartBtn"', 'id="back5"', 'id="playPauseBtn"',
+                    'id="fwd5"', 'id="goEndBtn"'):
+            self.assertIn(btn, row)
+        order = [row.index('id="goStartBtn"'), row.index('id="back5"'),
+                 row.index('id="playPauseBtn"'), row.index('id="fwd5"'),
+                 row.index('id="goEndBtn"')]
+        self.assertEqual(order, sorted(order))
+        for label in (">Start<", ">Back 5<", ">Fwd 5<", ">End<"):
+            self.assertIn(label, row)
+        self.assertIn('id="prevChangeSlot" hidden', row)
+        self.assertIn('id="nextChangeSlot" hidden', row)
+        self.assertIn(">Prev change<", row)
+        self.assertIn(">Next change<", row)
+        self.assertNotIn('id="back1"', row)
+        self.assertNotIn('id="fwd1"', row)
         self.assertIn(
-            'document.getElementById("fwd1").addEventListener('
-            '"click", function () { stepBy(1); });',
+            'document.getElementById("back5").addEventListener('
+            '"click", function () { stepBy(-5); });',
             self.page,
         )
         self.assertIn(

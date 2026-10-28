@@ -780,9 +780,11 @@ class TemplateTests(ServerCase):
     def test_split_layout_wide_and_stacked_narrow(self):
         html = self.page()
         self.assertIn("review-split", html)
-        self.assertIn("@media (min-width: 1024px)", html)
+        # v2: the stacked layout now starts below about 1100px
+        # (the round 2 workspace spec), not below 1024px.
+        self.assertIn("@media (min-width: 1100px)", html)
         self.assertIn(".review-right #transcriptPanel", html)
-        self.assertIn("@media (max-width: 1023.98px)", html)
+        self.assertIn("@media (max-width: 1099.98px)", html)
 
     def test_phrase_editing_is_wired(self):
         html = self.page()

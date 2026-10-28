@@ -28,20 +28,22 @@ USUAL_KEYS = (
     "cut_silence",
     "buffer_s",
     "keep_mode",
-    "breaths",
     "remove_fillers",
     "mode",
     "spark_route",
+    "style",
 )
 
 _BOOL_KEYS = ("remove_retakes", "cut_silence", "remove_fillers")
 _KEEP_MODES = ("last", "first", "best")
-_BREATH_MODES = ("keep", "trim")
 _INVOLVEMENT_MODES = ("cleanest", "tailor")
 # Which route Spark-tier model work rides (v0.8.1): the Meta
 # Model API, or one of the hosted partner credit pools. Wonder
 # always stays on Meta; this choice is Spark's alone.
 _SPARK_ROUTES = ("meta", "baseten", "fireworks")
+# The editing styles a run can pick (v0.10): the starter know-how
+# packs the direction and retake reads use.
+_STYLE_IDS = ("justins-way", "keep-it-simple", "hands-off")
 BUFFER_MIN_S = 0.05
 BUFFER_MAX_S = 0.50
 
@@ -53,10 +55,10 @@ _FALLBACKS = {
     "cut_silence": True,
     "buffer_s": 0.1,
     "keep_mode": "last",
-    "breaths": "keep",
     "remove_fillers": True,
     "mode": "cleanest",
     "spark_route": "meta",
+    "style": "justins-way",
 }
 
 USUAL_DIR_NAME = ".talk-to-your-editor"
@@ -89,12 +91,12 @@ def _clean_value(key: str, value, fallback):
         return fallback
     if key == "keep_mode":
         return value if value in _KEEP_MODES else fallback
-    if key == "breaths":
-        return value if value in _BREATH_MODES else fallback
     if key == "mode":
         return value if value in _INVOLVEMENT_MODES else fallback
     if key == "spark_route":
         return value if value in _SPARK_ROUTES else fallback
+    if key == "style":
+        return value if value in _STYLE_IDS else fallback
     return fallback
 
 

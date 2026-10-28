@@ -100,30 +100,12 @@ _RULES = [
         {"cut_silence": True},
         "Silence will be cut.",
     ),
-    # Breaths: the wordings that keep them are tried before the
-    # wordings that trim them, so "don't cut the breaths" can
-    # never read as "cut the breaths".
-    (
-        re.compile(
-            r"\bkeep\s+(?:the\s+)?breaths?\s+natural\b"
-            r"|\bkeep\s+(?:the\s+)?natural\s+breaths?\b"
-            r"|\bkeep\s+(?:the\s+)?breaths?\b"
-            r"|\bleave\s+(?:the\s+)?breaths?\b"
-            r"|\b(?:don'?t|do not|never)\s+(?:cut|trim|remove)\s+"
-            r"(?:the\s+)?breaths?\b",
-            re.I,
-        ),
-        {"breaths": "keep"},
-        "Breaths will be kept natural.",
-    ),
-    (
-        re.compile(
-            r"\b(?:cut|trim|remove|take out)\s+(?:the\s+)?breaths?\b",
-            re.I,
-        ),
-        {"breaths": "trim"},
-        "Breaths will be trimmed with the pauses.",
-    ),
+    # Breaths are not a setting anymore (removed in v0.10, the
+    # creator's call): when the app cuts quiet between words, the
+    # breath sounds inside that quiet are cut too. Direction that
+    # mentions breaths matches no rule here, so it never sets
+    # anything and never fails; the words ride along as plain
+    # guidance for the model, like any other words.
 ]
 
 _BUFFER_PATTERNS = [

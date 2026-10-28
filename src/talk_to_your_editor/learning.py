@@ -110,6 +110,8 @@ def extract_patterns(records: list[dict]) -> list[dict]:
                 "verdicts": [],
                 "sample_feedback": [],
                 "pattern_description": None,
+                "why_choices": Counter(),
+                "why_notes": [],
             },
         )
         record_id = record_id_for(entry, position)
@@ -117,6 +119,18 @@ def extract_patterns(records: list[dict]) -> list[dict]:
         op_type = entry.get("operation_type")
         if op_type:
             group["operation_types"][str(op_type)] += 1
+        why = entry.get("why")
+        if isinstance(why, dict):
+            choice = why.get("choice")
+            if choice and str(choice).strip():
+                group["why_choices"][str(choice)] += 1
+            note = why.get("note")
+            if (
+                note
+                and str(note).strip()
+                and len(group["why_notes"]) < 3
+            ):
+                group["why_notes"].append(str(note))
         verdict = entry.get("verdict")
         if verdict:
             group["verdicts"].append(str(verdict))
@@ -133,6 +147,7 @@ def extract_patterns(records: list[dict]) -> list[dict]:
     for group in groups.values():
         op_types = group.pop("operation_types")
         group["operation_type"] = op_types.most_common(1)[0][0] if op_types else None
+        group["why_choices"] = dict(group["why_choices"])
         patterns.append(group)
     patterns.sort(key=lambda g: (-g["support_count"], g["pattern_key"]))
     return patterns

@@ -157,9 +157,6 @@ class V04Tests(unittest.TestCase):
                 # v0.5.1: the keeper mode rides with the front-door
                 # choices; the last take is the default.
                 "keep_mode": "last",
-                # v0.6.1: the breaths choice rides along too;
-                # keeping the natural breath is the default.
-                "breaths": "keep",
                 # v0.7.0: the filler choice rides along too; taking
                 # out the ums and uhs is the default.
                 "remove_fillers": True,
@@ -169,6 +166,9 @@ class V04Tests(unittest.TestCase):
                 # v0.8.1: the Spark route rides along too; Meta
                 # is the default route.
                 "spark_route": "meta",
+                # v0.10: the editing style rides along too;
+                # Justin's way is the default style.
+                "style": "justins-way",
             },
         )
         self.assertEqual(summary["saved_rules"], [])
@@ -186,13 +186,13 @@ class V04Tests(unittest.TestCase):
         self.assertIn("c1", applied)
         self.assertIsNotNone(result["silence"])
         self.assertTrue(result["silence"]["ran"])
-        # v0.6.1: breaths are kept by default, so the pass runs
-        # with the natural-breath floor in force; every join on
-        # this fixture sits at or under that floor, and none is
+        # v0.10: there is no breaths floor anymore; the summary
+        # carries no floor at all. Every join on this fixture is
+        # protected or beside the signature insert, so none is
         # trimmed. The trimming mechanics themselves are covered
-        # under the trim choice (test_v061, and the silence-only
-        # test below).
-        self.assertEqual(result["silence"]["floor_s"], 0.3)
+        # in test_v061, and the silence-only test below.
+        self.assertNotIn("floor_s", result["silence"])
+        self.assertNotIn("breaths", result["silence"])
         self.assertEqual(result["silence"]["joins_trimmed"], 0)
         after = self.summary()
         self.assertLess(after["words_kept"], 32)
@@ -211,20 +211,18 @@ class V04Tests(unittest.TestCase):
         self.assertEqual(result["settings"]["buffer_s"], 0.05)
 
     def test_front_door_silence_only_without_comments(self):
-        # v0.6.1: the pass runs, and on this fixture it trims
-        # nothing, under either breaths choice: joins 0 and 1 sit
-        # beside the signature insert, and joins 2, 3, and 4 border
-        # protected words (the prayer hold and the closing call to
-        # action), and a protected join is never trimmed now. The
-        # trimming mechanics themselves, the same join under both
-        # settings with the protected join untouched, are covered
-        # on a purpose-built fixture in test_v061.
+        # The pass runs, and on this fixture it trims nothing:
+        # joins 0 and 1 sit beside the signature insert, and joins
+        # 2, 3, and 4 border protected words (the prayer hold and
+        # the closing call to action), and a protected join is
+        # never trimmed. The trimming mechanics themselves, with
+        # the protected join untouched, are covered on a
+        # purpose-built fixture in test_v061.
         status, result = self.call(
             "/api/front-door",
             {
                 "remove_retakes": False,
                 "cut_silence": True,
-                "breaths": "trim",
             },
         )
         self.assertEqual(status, 200, result)

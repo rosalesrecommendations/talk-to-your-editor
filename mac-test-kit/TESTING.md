@@ -12,6 +12,24 @@ This version is built around one idea: keep the front door simple. Two choices, 
 
 ## Mac test
 
+### 0. New in 0.10.0: the player shows your edit, and the app learns out loud
+
+This version answers your 0.9.0 test from the same morning, and adds the learning build. Test it against the same moves.
+
+1. Drop a real daily video and press **Make the first edit**. When the run finishes, the player switches to the edited video ON ITS OWN, no reload, and the line above it reads **You are watching: the edited video**. The length under the player is the edited length, not the original. While it is being made, the line reads **Building your edited video…**. The recap's first line says the change out loud: "Your video was 10:16. The edit is 3:07."
+2. Make a change the video does not cover yet (bring a cut word back). The line flips to **You are watching: the original video** and says your newest cuts are not in a video yet. Use the build/render action and it returns to the edited video.
+3. Look at the screen itself: everything fits with NO page scrolling. The transcript scrolls inside its own panel; the video column is never cut off at the bottom. Try it at your normal window size. Open **Settings**: it is a pop up over the page now, the page behind does not move, and it closes with its button, a click outside, or Esc.
+4. Arrange the screen your way: swap the video and transcript sides, hide the transcript, then bring it back; make the transcript take the full width, then shrink it back. Close the app and reopen it: your arrangement is still there. The **Money details** line on the Make the edit card opens Settings at the money section; the money card is not on the main screen anymore.
+5. Read the transcript: it is flowing paragraphs now, one quiet time per paragraph, and the times match the video you are watching. Cut words stay visible, struck through. On the timeline, a blue dot means a comment is still waiting on your call; decide it and the dot goes away.
+6. At the start of a job, pick a starter style, or pick nothing: the app says it uses **Justin's way**. The card says your own saved rules win over the style when they disagree. After the run, the recap names the style used.
+7. Bring back a cut word. One short question may appear: why did you bring it back? Tap an answer, or Skip. It appears once, never blocks, and never comes back for that same action. Do the same with **Leave it** on a held (light red) part.
+8. When a learned rule is offered, read its label. A **story rule** says it can change what a video means and needs your clear yes; it comes one at a time. Small rules read as learned, with a remove option.
+9. Mark a video as a test video when you drop it (the checkbox under the drop spot). The job screen says **Test video: the app will not learn from this one.** Edit it, grade things, then check: nothing from it was learned.
+10. Try teaching the app (optional, only if you feel like it): drop a short screen recording of yourself editing while talking through your choices. Draft rules come back with the moment in the recording and your words attached, marked not tested yet. Nothing applies until you say yes. Or drop a before-and-after pair by itself and read how the drafts describe where they came from.
+11. Open **Settings** and press **Problem report**. One zip lands in the job's folder, and the page names it. That zip is the file to send back if anything ever looks wrong: it holds the step-by-step session log, the playback log, the run records, what it cost, and the cut counts, with anything key-shaped taken out.
+12. There is no Breaths choice anywhere anymore. When quiet is cut, breaths inside it are cut too. The one setting reads **Quiet between your words**. A moment you pinned to keep is still kept whole.
+
+
 ### 0. New in 0.9.0: your feedback video, answered
 
 This version is your 15-minute walkthrough of 0.8.0, item by item. Test it against the same moves you made in that video.

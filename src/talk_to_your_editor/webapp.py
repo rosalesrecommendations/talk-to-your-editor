@@ -34,6 +34,7 @@ Wi-Fi, and drop a job folder on the page. ``tye serve --job-dir
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 from difflib import SequenceMatcher
@@ -47,6 +48,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -55,7 +57,7 @@ from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import captions as clean_captions
-from . import checkpoints, costs, creator_rules, retakes, usual
+from . import checkpoints, costs, creator_rules, retakes, session_log, skills, teaching, usual
 from . import direction_parse, intake_build
 from . import transcribe as speech
 from .after_review import generate_after_review
@@ -233,7 +235,10 @@ PLAYBACK_BUILDING_MESSAGE = (
 )
 PLAYBACK_FAILED_MESSAGE = (
     "This video could not be made watchable here, so it cannot be "
-    "shown yet. The edit still works from the words."
+    "shown yet. The edit still works from the words. The details "
+    "were saved in a file called playback.log, in the playback "
+    "folder inside this job's tye-session folder. Send that file "
+    "back so the real cause can be found."
 )
 PLAYBACK_GETTING_READY = "Getting your video ready to watch…"
 
@@ -498,6 +503,13 @@ def _run_ffmpeg_attempt(command, duration_s, attempt_cap_s, report):
             except subprocess.SubprocessError:
                 proc.kill()
             ok = proc.returncode == 0
+        # Close the progress pipe so its handle does not linger
+        # (the drain thread already guards its own read errors).
+        if proc is not None and proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
         try:
             tail = log_path.read_text(
                 encoding="utf-8", errors="replace"
@@ -709,6 +721,15 @@ def _ensure_playback_copy_for(source: Path, copy_path: Path) -> None:
         _log_playback_event(
             copy_path, "building", source=source.name
         )
+        log_session_dir = (
+            copy_path.parent.parent
+            if copy_path.parent.name == "playback"
+            and copy_path.parent.parent.name == "tye-session"
+            else None
+        )
+        session_log.log_stage(
+            log_session_dir, "playback build", "start", source.name
+        )
         try:
             ok = _convert_playback_copy(
                 source, copy_path, progress=report
@@ -725,6 +746,10 @@ def _ensure_playback_copy_for(source: Path, copy_path: Path) -> None:
         _log_playback_event(
             copy_path, "ready" if ok else "failed",
             source=source.name,
+        )
+        session_log.log_stage(
+            log_session_dir, "playback build",
+            "finish" if ok else "fail", source.name,
         )
 
     threading.Thread(target=build, daemon=True).start()
@@ -810,6 +835,179 @@ def _playback_target(config: "WebAppConfig", name: str) -> Optional[Path]:
     if _copy_ready(copy_path):
         return copy_path
     _ensure_playback_copy(config, name)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Which video the review player shows (FIX A, v0.10)
+#
+# The 0.9.0 player was only ever pointed at the job folder's own
+# videos, so after Make the edit it went on playing the original
+# at full length while the words showed the cuts. The edited video
+# is the session's splice; whether the player may show it as "the
+# edited video" is decided by a stamp: every build of the splice
+# records a hash of the plan it was built from, and the splice is
+# current only while the plan still hashes the same. Anything
+# else (no splice, a stale splice, a failed build) is shown for
+# what it is, in plain words, never quietly dressed as the edit.
+# ---------------------------------------------------------------------------
+
+SPLICE_STAMP_FILENAME = "splice_stamp.json"
+SPLICE_FAILED_FILENAME = "splice_failed.json"
+
+
+def _plan_stamp(config: WebAppConfig) -> str:
+    """A short hash of the plan the editor would build from now."""
+    blob = json.dumps(
+        _effective_cuts(config), sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_splice_built(config: WebAppConfig) -> None:
+    """Stamp the session splice as built from the current plan."""
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        session / SPLICE_STAMP_FILENAME,
+        {"stamp": _plan_stamp(config), "at": _utc_now()},
+    )
+    (session / SPLICE_FAILED_FILENAME).unlink(missing_ok=True)
+
+
+def _record_splice_failed(config: WebAppConfig, reason: str) -> None:
+    """Remember, in plain words, why the edited video is missing."""
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        session / SPLICE_FAILED_FILENAME,
+        {"reason": reason, "at": _utc_now()},
+    )
+
+
+def _render_session_splice(
+    config: WebAppConfig, source_video: Path, has_audio: bool
+) -> Optional[str]:
+    """Build the session splice from the current plan, and stamp it.
+
+    Returns None when the video was built, or the plain sentence
+    saying why it could not be. The failure is recorded either
+    way, so the page can say it out loud instead of quietly
+    showing the original as if it were the edit.
+    """
+    session_log.log_stage(config.session_dir, "render", "start")
+    try:
+        intake_build.render_splice(
+            source_video,
+            _effective_cuts(config),
+            config.session_dir / SESSION_VIDEO_NAME,
+            has_audio=has_audio,
+        )
+    except speech.TranscribeError as exc:
+        _record_splice_failed(config, str(exc))
+        session_log.log_stage(
+            config.session_dir, "render", "fail", str(exc)
+        )
+        return str(exc)
+    _record_splice_built(config)
+    session_log.log_stage(config.session_dir, "render", "finish")
+    return None
+
+
+def _splice_state(config: WebAppConfig) -> dict:
+    """The session splice: whether it exists, and whether it is
+    still the video of the current plan."""
+    session = config.session_dir
+    exists = (session / SESSION_VIDEO_NAME).is_file()
+    current = False
+    stamp = None
+    if exists:
+        record = _load_session_json(config, SPLICE_STAMP_FILENAME, {})
+        if isinstance(record, dict):
+            stamp = record.get("stamp")
+        if stamp is not None:
+            try:
+                current = stamp == _plan_stamp(config)
+            except (OSError, ValueError):
+                current = False
+    failed = None
+    failed_record = _load_session_json(config, SPLICE_FAILED_FILENAME, {})
+    if isinstance(failed_record, dict) and failed_record.get("reason"):
+        failed = str(failed_record["reason"])
+    return {
+        "exists": exists,
+        "current": current,
+        "stamp": stamp if current else None,
+        "failed": failed,
+    }
+
+
+def _watching_state(config: WebAppConfig) -> dict:
+    """What the review player should show, and what it is called.
+
+    "edited" only when a splice exists and is current. Otherwise
+    the job's own first video, named the original, with plain
+    flags for the two honest extras: the plan has moved since the
+    splice was built (stale), or the plan was changed in the app
+    and no edited video was ever built (not_built), or the last
+    build failed (failed, with its plain reason).
+    """
+    videos = _job_videos(config.job_dir) if config.has_job else []
+    state = {
+        "kind": "original",
+        "name": videos[0] if videos else None,
+        "stale": False,
+        "not_built": False,
+        "failed": None,
+        "stamp": None,
+        "building": False,
+    }
+    if not config.has_job:
+        return state
+    try:
+        splice = _splice_state(config)
+    except (OSError, ValueError):
+        return state
+    state["failed"] = splice["failed"]
+    if splice["exists"] and splice["current"]:
+        state.update(
+            kind="edited", name=SESSION_VIDEO_NAME, stamp=splice["stamp"]
+        )
+        # The edit is ready as a plan, but the file the player
+        # can show may still be being made. That is a building
+        # state, named plainly, so the page never calls what is
+        # on screen the edited video before it is ready (FIX A).
+        splice_source = config.session_dir / SESSION_VIDEO_NAME
+        state["building"] = (
+            _playback_state_for(
+                splice_source, _playback_copy_path(config, SESSION_VIDEO_NAME)
+            )
+            != "ready"
+        )
+    elif splice["exists"]:
+        state["stale"] = True
+    elif (config.session_dir / "revised_cuts.json").is_file():
+        state["not_built"] = True
+    return state
+
+
+def _session_video_target(config: WebAppConfig) -> Optional[Path]:
+    """The file to serve for the session splice, or None.
+
+    The same discipline as a job video: the splice itself when it
+    needs no copy (it is built browser-safe), its finished
+    watchable copy when one is needed, and None while that copy
+    is being made or could not be made.
+    """
+    source = config.session_dir / SESSION_VIDEO_NAME
+    if not source.is_file():
+        return None
+    if not _needs_copy(source):
+        return source
+    copy_path = _playback_copy_path(config, SESSION_VIDEO_NAME)
+    if _copy_ready(copy_path):
+        return copy_path
+    _ensure_playback_copy_for(source, copy_path)
     return None
 
 
@@ -1193,11 +1391,15 @@ FRONT_DOOR_DEFAULTS = {
     "cut_silence": True,
     "buffer_s": 0.1,
     "keep_mode": "last",
-    "breaths": "keep",
     "remove_fillers": True,
     "mode": "cleanest",
     "spark_route": "meta",
+    "style": "justins-way",
 }
+# The editing styles (v0.10): which starter know-how packs the
+# direction and retake reads use. The ids and labels live with the
+# packs themselves, in skills.py. No pick means Justin's way.
+EDITING_STYLES = skills.STYLES
 # How involved the creator wants to be (v0.7.1). "cleanest" is the
 # Cleanest cut: the editor finishes what it is sure about and the
 # spots it is unsure about wait in gold. "tailor" is Tailor it with
@@ -1211,27 +1413,14 @@ MODE_LABELS = {
 }
 BUFFER_MIN_S = 0.05
 BUFFER_MAX_S = 0.50
-# Breaths are a choice, not a law (v0.6.1). "keep" leaves the
-# natural breath before a sentence alone; "trim" lets the buffer
-# rule the whole join, breath and all. The keep floor comes from
-# the app's own waveform measurement: ``measure_speech_spans``
-# bridges quiet gaps of up to 0.30 seconds as part of one stretch
-# of speech, so 0.30 seconds is the longest quiet this app itself
-# still calls speaking. Keeping breaths therefore never trims a
-# join below 0.30 seconds of quiet: the in-breath that starts the
-# next sentence lives in the last stretch of the pause, and the
-# floor is set conservatively at that measured line. Where a plan
-# was built from measured speech spans (an intake job), the join
-# being trimmed is exactly a measured gap between spans; the same
-# floor applies to runner jobs, whose joins are measured the same
-# two ways (the quiet tail of one piece plus the lead-in to the
-# next word).
-BREATH_MODES = ("keep", "trim")
-BREATH_FLOOR_S = 0.30
-BREATHS_RECAP = {
-    "keep": "Breaths are being kept natural.",
-    "trim": "Breaths are trimmed with the pauses.",
-}
+# Breaths are not a choice anymore (removed in v0.10, the
+# creator's call): when the silence pass cuts quiet between
+# words, the breath sounds inside that quiet are cut too, and
+# the pass simply shortens the pause to the set buffer. There
+# is no keep-breaths branch and no floor. A moment a person has
+# marked to keep (a protected span or a pinned comment) is still
+# never trimmed, because it is marked, not because it is a
+# breath; see ``_protected_join_indices``.
 RETAKES_GUIDANCE = (
     "Remove retakes: when the same line is said more than once, keep "
     "the last take and take the earlier tries out."
@@ -1308,18 +1497,76 @@ def _front_door_settings(config: WebAppConfig) -> dict:
             )
         if saved.get("keep_mode") in retakes.KEEP_MODES:
             settings["keep_mode"] = saved["keep_mode"]
-        if saved.get("breaths") in BREATH_MODES:
-            settings["breaths"] = saved["breaths"]
         if saved.get("mode") in INVOLVEMENT_MODES:
             settings["mode"] = saved["mode"]
         if saved.get("spark_route") in HOSTED_SPARK_ROUTES + ("meta",):
             settings["spark_route"] = saved["spark_route"]
+        if saved.get("style") in EDITING_STYLES:
+            settings["style"] = saved["style"]
     return settings
 
 
-def _breaths_recap(settings: dict) -> str:
-    """The breaths state, named in plain words in every recap."""
-    return BREATHS_RECAP[settings.get("breaths", "keep")]
+def _picked_style(config: WebAppConfig, settings: Optional[dict] = None) -> str:
+    """The editing style for a run: the run's own pick when it has
+    one, else the saved front door pick, else Justin's way."""
+    if settings is not None and settings.get("style") in EDITING_STYLES:
+        return str(settings["style"])
+    try:
+        saved = _front_door_settings(config)
+    except Exception:
+        saved = {}
+    if saved.get("style") in EDITING_STYLES:
+        return str(saved["style"])
+    return "justins-way"
+
+
+def _provider_skill_versions(provider, style: Optional[str] = None) -> dict:
+    """A provider's record of the know-how it used.
+
+    A provider that can say what it loaded (the live provider and
+    the mock both can) is taken at its word. Any other provider
+    stand-in is recorded as having used the built-in words, which
+    is the only thing such a stand-in ever reads.
+    """
+    method = getattr(provider, "skill_versions", None)
+    if callable(method):
+        try:
+            record = method()
+        except Exception:
+            record = None
+        if (
+            isinstance(record, dict)
+            and isinstance(record.get("direction"), dict)
+            and isinstance(record.get("retake"), dict)
+        ):
+            return record
+    return skills.builtin_versions(style or "justins-way")
+
+
+def _skills_recap_lines(record: dict) -> list:
+    """The direction recap's know-how line, in plain words.
+
+    Names the style and the starter pack version that ran, and
+    adds one more line when the creator's own added know-how was
+    used too.
+    """
+    style_id = record.get("style") if isinstance(record, dict) else None
+    label = EDITING_STYLES.get(style_id, EDITING_STYLES["justins-way"])
+    version = None
+    yours = False
+    for kind in ("direction", "retake"):
+        entry = record.get(kind) if isinstance(record, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        if version is None and entry.get("version") is not None:
+            version = entry.get("version")
+        if entry.get("source") == "pack+yours":
+            yours = True
+    shown = version if version is not None else "built-in"
+    lines = [f"Know-how used: {label}, starter pack version {shown}."]
+    if yours:
+        lines.append("Your own added know-how was used too.")
+    return lines
 
 
 def _keep_mode_recap(settings: dict) -> Optional[str]:
@@ -1387,6 +1634,44 @@ def _edit_guidance(config: WebAppConfig) -> list:
     return guidance
 
 
+TEST_VIDEO_FILENAME = "test_video.json"
+
+
+# The reader for the mark (_is_test_video) lives further down,
+# beside the suggestions it gates; the mark's file sits on purpose
+# outside the checkpointed state files, so undoing a change never
+# changes whether the job is a test video.
+
+
+def _set_test_video(config: WebAppConfig, on: bool) -> None:
+    """Write this session's test-video mark, on or off."""
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        config.session_dir / TEST_VIDEO_FILENAME,
+        {"test_video": bool(on)},
+    )
+
+
+def _carry_launch_test_video(config: WebAppConfig) -> None:
+    """Copy the launch session's test-video mark onto a new job.
+
+    A mark set at the front door, before any job exists, lives in
+    the launch home's session. When a drop becomes the job, that
+    mark moves with it, so the choice made before the drop still
+    counts for the job the drop turned into. If no mark was set at
+    the front door, the new job's session is left alone.
+    """
+    launch_mark = (
+        config.launch_home / SESSION_DIR_NAME / TEST_VIDEO_FILENAME
+    )
+    if not launch_mark.is_file():
+        return
+    launch = WebAppConfig(None, launch_home=config.launch_home)
+    if launch.session_dir == config.session_dir:
+        return
+    _set_test_video(config, _is_test_video(launch))
+
+
 def _load_grades(config: WebAppConfig) -> list:
     payload = _load_session_json(config, GRADES_FILENAME, {"entries": []})
     if isinstance(payload, dict) and isinstance(payload.get("entries"), list):
@@ -1395,8 +1680,81 @@ def _load_grades(config: WebAppConfig) -> list:
 
 
 def _save_grades(config: WebAppConfig, entries: list) -> None:
+    # A test video teaches the app nothing: every grade writer
+    # (the grades endpoint, a gold verdict, any other) comes
+    # through here, so this one check turns them all off. Grades
+    # saved before the mark was set stay on disk as they are.
+    if _is_test_video(config):
+        return
     config.session_dir.mkdir(parents=True, exist_ok=True)
     _write_json(config.session_dir / GRADES_FILENAME, {"entries": entries})
+
+
+# The choices the why question offers, by the key the page sends.
+WHY_CHOICES = frozenset({"story", "sound", "say_it", "other"})
+
+
+def _record_restore_grade(
+    config: WebAppConfig, word_start: int, word_end: int, via: str
+) -> Optional[str]:
+    """Write the grade record for words the creator brought back.
+
+    On a test video nothing is recorded (the app does not learn
+    from a test), and the return is None so no why question is
+    offered for a record that was never written.
+
+    Bringing words back means the cut of those words did not
+    work, so the record's verdict is ``did_not_work`` and it can
+    never count as support for the cut. The record is keyed by
+    the words brought back, and its pattern names the change
+    that cut them when the session's record of changes has an
+    applied cut covering them (the last such change wins);
+    words cut outside a recorded change are ``restore:by-hand``.
+    The record goes through the same grades store as every
+    other grade. Returns the record's id, so the page can ask
+    the why question about this exact record.
+    """
+    if _is_test_video(config):
+        return None
+    pattern_key = "restore:by-hand"
+    operations = _audit_operations(config)
+    covering = []
+    overlapping = []
+    for op in operations:
+        if op.get("status") != "applied":
+            continue
+        if op.get("type") != "cut_words":
+            continue
+        if not op.get("comment_id"):
+            continue
+        op_start, op_end = op.get("word_start"), op.get("word_end")
+        if not isinstance(op_start, int) or not isinstance(op_end, int):
+            continue
+        if op_start <= word_start and word_end <= op_end:
+            covering.append(op)
+        elif op_start < word_end and word_start < op_end:
+            overlapping.append(op)
+    matches = covering or overlapping
+    if matches:
+        pattern_key = f"restore:{matches[-1].get('comment_id')}"
+    entry = {
+        "id": f"restore-grade-{word_start}-{word_end}",
+        "record_id": f"restore-grade-{word_start}-{word_end}",
+        "comment_id": "restore",
+        "operation_type": "restore_words",
+        "verdict": "did_not_work",
+        "pattern_key": pattern_key,
+        "pattern_description": "Bringing back words the editor had cut",
+        "word_start": word_start,
+        "word_end": word_end,
+        "source": via,
+        "created_at": _utc_now(),
+    }
+    entries = creator_rules.merge_grade_entries(
+        _load_grades(config), [entry]
+    )
+    _save_grades(config, entries)
+    return entry["record_id"]
 
 
 def _rules_store(config: WebAppConfig) -> dict:
@@ -1411,9 +1769,85 @@ def _save_rules_store(config: WebAppConfig, store: dict) -> None:
     )
 
 
+def _rule_class_for(pattern, entries: list) -> str:
+    """A suggestion's speed class, from item 3's classifier.
+
+    The classifier lives in creator_rules in its own build; this
+    copy may not have it yet, so it is called when present and the
+    answer falls back to "story" (the careful class) when it is
+    absent or cannot say.
+    """
+    classifier = getattr(creator_rules, "rule_class_for", None)
+    if callable(classifier):
+        try:
+            result = classifier(pattern, entries)
+        except Exception:
+            result = None
+        if result in ("small", "story"):
+            return result
+    return "story"
+
+
+# The two plain sentences a teaching drop can end in (v0.10, item
+# 5). They are the whole answer when a link or a recording cannot
+# be learned from: never an error screen, never a fake success.
+TEACH_LINK_MESSAGE = (
+    "The app could not get that video from the link. Drop the "
+    "video file here instead."
+)
+TEACH_NO_SPEECH_MESSAGE = (
+    "The app could not learn from that recording. It needs to "
+    "hear you talking through your choices."
+)
+
+
 def _rule_suggestions(config: WebAppConfig) -> list:
-    """Patterns in the grades that are ready to offer as rules."""
-    return creator_rules.suggestions_for(_load_grades(config), _rules_store(config))
+    """Patterns in the grades that are ready to offer as rules.
+
+    The session's teaching drafts ride in the same list, through
+    the same candidate path: each is offered as a suggestion with
+    source "teaching", and none applies until the creator saves
+    it. A draft already saved as a rule is not offered again.
+    """
+    # A test video offers no rules, even from grades saved before
+    # the mark was set: those grades stay on disk, but nothing
+    # surfaces from them while the job is marked as a test.
+    # Teaching drafts wait too: a test job is for checking the
+    # app, not for teaching it.
+    if _is_test_video(config):
+        return []
+    entries = _load_grades(config)
+    store = _rules_store(config)
+    suggestions = creator_rules.suggestions_for(entries, store)
+    saved_keys = {
+        rule.get("pattern_key")
+        for rule in store.get("rules", [])
+        if isinstance(rule, dict)
+    }
+    for draft in teaching.load_drafts(config.session_dir):
+        key = draft.get("pattern_key")
+        if not key or key in saved_keys:
+            continue
+        basis = draft.get("basis")
+        if basis == "recording" and not draft.get("proof"):
+            source_note = "From your teaching video. Not tested yet."
+        else:
+            source_note = draft.get("source_note") or ""
+        suggestions.append(
+            {
+                "pattern_key": key,
+                "statement": draft.get("statement"),
+                "support_count": 0,
+                "explicit": True,
+                "rule_class": _rule_class_for(draft, entries),
+                "source": "teaching",
+                "source_note": source_note,
+                "proof": draft.get("proof"),
+                "basis": basis,
+                "kind": draft.get("kind"),
+            }
+        )
+    return suggestions
 
 
 def _saved_rules_view(config: WebAppConfig) -> list:
@@ -1423,10 +1857,178 @@ def _saved_rules_view(config: WebAppConfig) -> list:
             "rule_id": rule.get("rule_id"),
             "pattern_key": rule.get("pattern_key"),
             "statement": rule.get("statement"),
+            "rule_class": rule.get("rule_class"),
+            "source": rule.get("source"),
+            "tested": rule.get("tested"),
         }
         for rule in _rules_store(config).get("rules", [])
         if rule.get("active", True)
     ]
+
+
+def _is_test_video(config: WebAppConfig) -> bool:
+    """Whether this session's job is marked as a test video.
+
+    Reads the session's ``test_video.json`` flag directly; a
+    missing or unreadable flag means a normal job.
+    """
+    payload = _load_session_json(config, TEST_VIDEO_FILENAME, {})
+    return isinstance(payload, dict) and bool(payload.get("test_video"))
+
+
+def _refresh_teaching_tested(config: WebAppConfig) -> bool:
+    """Mark saved teaching rules as tested once a run proves them.
+
+    A teaching rule counts as tested when a finished direction
+    run includes it and either (a) the job is marked as a test
+    video, or (b) the job is a normal one and its grades hold at
+    least one change that worked or partly worked. Returns True
+    when the store changed.
+    """
+    store = _rules_store(config)
+    pending = [
+        rule
+        for rule in store.get("rules", [])
+        if rule.get("source") == "teaching" and not rule.get("tested")
+    ]
+    if not pending:
+        return False
+    record = _load_session_json(config, DIRECTION_PASS_FILENAME, {})
+    if not (isinstance(record, dict) and record.get("ran")):
+        return False
+    if not _is_test_video(config):
+        grades = _load_grades(config)
+        if not any(
+            entry.get("verdict") in ("worked", "partly")
+            for entry in grades
+        ):
+            return False
+    for rule in pending:
+        rule["tested"] = True
+    _save_rules_store(config, store)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Teaching intake (v0.10, item 5): the fast way to teach the app
+#
+# A teaching drop is staged under ~/.talk-to-your-editor/teaching/
+# (see the teaching module), the same way a job drop is staged by
+# the intake. A run turns whatever arrived (a recording with
+# talking, a raw/finished pair, a lone finished video) into draft
+# rules for the current session; the drafts surface through
+# _rule_suggestions and nothing applies without the creator's yes.
+# ---------------------------------------------------------------------------
+
+TEACH_FILE_SUFFIXES = teaching.VIDEO_SUFFIXES + (
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".aac",
+    ".ogg",
+)
+
+
+def _teaching_provider(config: WebAppConfig):
+    """The provider a teaching read uses.
+
+    The same construction the retake pass uses: the live provider
+    when a Meta sign-in is here, the mock when there is no key.
+    """
+    if config.signin_key():
+        return _live_provider(config)
+    return MockProvider()
+
+
+def _teach_staged_file(record: dict, role: str) -> Optional[Path]:
+    """One staged teaching file by role, or None when it is absent."""
+    name = record.get(role)
+    if not name:
+        return None
+    path = Path(record["dir"]) / str(name)
+    return path if path.is_file() else None
+
+
+def _teach_words(config: WebAppConfig, path: Optional[Path]) -> Optional[list]:
+    """The words of one staged teaching file, or None when the app
+    could not hear usable talking in it."""
+    if path is None:
+        return None
+    try:
+        return teaching.transcribe_media(path, config.elevenlabs_key())
+    except teaching.TeachingError:
+        return None
+
+
+def _run_teaching(config: WebAppConfig, record: dict) -> dict:
+    """Do one teaching run over whatever the drop brought in.
+
+    A recording's talking drafts rules through the provider; a
+    raw/finished pair proves those drafts against the real cuts,
+    or drafts from the cuts alone when there is no recording; a
+    lone finished video drafts only what a finished video can
+    show. The drafts land in the current session's teaching
+    drafts, and the answer says how many were made. When nothing
+    could be learned, the answer is the one plain message.
+    """
+    session_log.log_stage(config.session_dir, "teaching", "start")
+    kind = record.get("kind") or "mine"
+    recording = _teach_staged_file(record, "recording")
+    raw = _teach_staged_file(record, "raw")
+    finished = _teach_staged_file(record, "finished")
+    if recording is None and raw is None and finished is None:
+        return {
+            "ok": True,
+            "drafts": [],
+            "message": (
+                "Add a recording, a raw video and its finished "
+                "edit, or a link first, then choose Teach from this."
+            ),
+        }
+    diff = None
+    raw_words = None
+    finished_words = None
+    if raw is not None and finished is not None:
+        raw_words = _teach_words(config, raw)
+        finished_words = _teach_words(config, finished)
+        if raw_words and finished_words:
+            diff = teaching.pair_diff(raw_words, finished_words)
+    drafts: list = []
+    recording_words = _teach_words(config, recording)
+    if recording_words:
+        provider = _teaching_provider(config)
+        drafts = teaching.finalize_drafts(
+            provider.draft_rules_from_teaching(recording_words),
+            basis="recording",
+            kind=kind,
+            source_note=teaching.RECORDING_SOURCE_NOTE,
+        )
+        if diff is not None:
+            teaching.attach_proof(drafts, diff, raw_words)
+    if not drafts and diff is not None:
+        drafts = teaching.drafts_from_pair(diff, raw_words, kind=kind)
+    if not drafts and finished is not None:
+        if finished_words is None:
+            finished_words = _teach_words(config, finished)
+        if finished_words:
+            drafts = teaching.surface_drafts(finished_words, kind=kind)
+    if not drafts:
+        return {
+            "ok": True,
+            "drafts": [],
+            "message": TEACH_NO_SPEECH_MESSAGE,
+        }
+    teaching.add_drafts(config.session_dir, drafts)
+    count = len(drafts)
+    return {
+        "ok": True,
+        "drafts": drafts,
+        "message": (
+            f"Made {count} draft rule{'s' if count != 1 else ''}. "
+            "Find them with your other rule suggestions. Nothing "
+            "applies until you say yes."
+        ),
+    }
 
 
 def _audit_operations(config: WebAppConfig) -> list:
@@ -1757,6 +2359,75 @@ def _session_corrections(config: WebAppConfig, word_count: int) -> list:
     )
 
 
+def _paragraph_indices(words: list) -> list:
+    """Paragraph index per word, computed once from the original
+    recording's word times (v2 workspace spec, section: transcript
+    as flowing paragraphs).
+
+    A new paragraph starts on a speaker change, on a pause of
+    0.8 seconds or more between one word's end and the next word's
+    start in the ORIGINAL recording, or after about 6 sentences or
+    about 50 seconds, broken at the nearest sentence end. Because
+    the indices come only from the original word times, edits never
+    move a paragraph break.
+    """
+    indices: list = []
+    current = -1
+    para_start = 0.0
+    sentences = 0
+    prev = None
+    for i, word in enumerate(words):
+        try:
+            start = float(word.get("start") or 0.0)
+        except (TypeError, ValueError):
+            start = 0.0
+        brk = current < 0
+        if prev is not None and not brk:
+            try:
+                prev_end = float(prev.get("end") or 0.0)
+            except (TypeError, ValueError):
+                prev_end = start
+            if word.get("speaker") != prev.get("speaker"):
+                brk = True
+            elif start - prev_end >= 0.8:
+                brk = True
+            else:
+                prev_text = str(prev.get("word") or "").rstrip()
+                if prev_text.endswith((".", "!", "?")) and (
+                    sentences >= 6 or start - para_start >= 50.0
+                ):
+                    brk = True
+        if brk:
+            current += 1
+            para_start = start
+            sentences = 0
+        text = str(word.get("word") or "").rstrip()
+        if text.endswith((".", "!", "?")):
+            sentences += 1
+        indices.append(current)
+        prev = word
+    return indices
+
+
+def _edited_time_for_source(timeline: Timeline, source_t: float) -> float:
+    """One source-recording time on the edited video's clock.
+
+    Kept pieces map by their offset inside the piece; a time inside
+    a cut part lands on the join where that part was taken out, so
+    the result never runs backwards as source time grows.
+    """
+    t = float(source_t or 0.0)
+    for segment in timeline.segments:
+        rng = segment["range"]
+        r_start = float(rng["start"])
+        r_end = float(rng["end"])
+        if t < r_start:
+            return round(segment["output_start"], 4)
+        if t <= r_end:
+            return round(segment["output_start"] + (t - r_start), 4)
+    return round(timeline.output_duration, 4)
+
+
 def _transcript_entries(config: WebAppConfig) -> tuple[list, list]:
     """Display entries for the transcript view, plus the corrections.
 
@@ -1775,6 +2446,7 @@ def _transcript_entries(config: WebAppConfig) -> tuple[list, list]:
     # from the words each entry stands for: an ordinary entry is its
     # one word, and a corrected span entry runs from its first
     # word's start to its last word's end.
+    paragraphs = _paragraph_indices(words)
     for entry in entries:
         start = entry.get("index")
         end = entry.get("word_end")
@@ -1785,9 +2457,22 @@ def _transcript_entries(config: WebAppConfig) -> tuple[list, list]:
         ):
             entry["start"] = float(words[start]["start"])
             entry["end"] = float(words[end - 1]["end"])
+            entry["paragraph"] = paragraphs[start]
+            speaker = words[start].get("speaker")
+            if speaker:
+                entry["speaker"] = speaker
         else:
             entry["start"] = 0.0
             entry["end"] = 0.0
+            entry["paragraph"] = paragraphs[start] if (
+                isinstance(start, int) and 0 <= start < len(words)
+            ) else 0
+        entry["edited_start"] = _edited_time_for_source(
+            word_timeline, entry["start"]
+        )
+        entry["edited_end"] = _edited_time_for_source(
+            word_timeline, entry["end"]
+        )
     return (entries, corrections)
 
 
@@ -1872,6 +2557,7 @@ def _no_job_summary(config: WebAppConfig) -> dict:
     """
     return {
         "has_job": False,
+        "test_video": False,
         "job_name": None,
         "source_duration_s": 0,
         "output_duration_s": 0,
@@ -1883,6 +2569,7 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "words_kept": 0,
         "words_cut": 0,
         "transcript_words": [],
+        "timeline_pieces": [],
         "word_corrections": [],
         "videos": [],
         "playback": {},
@@ -1939,10 +2626,12 @@ def _incomplete_job_summary(config: WebAppConfig, missing: list) -> dict:
     summary.update(
         {
             "has_job": True,
+            "test_video": _is_test_video(config),
             "job_name": config.job_dir.name,
             "videos": videos,
             "playback": states,
             "playback_progress": progress,
+            "watching": _watching_state(config),
             "front_door": _front_door_settings(config),
             "render_missing": config.render_missing(),
             "render_ready": False,
@@ -1958,6 +2647,177 @@ def _incomplete_job_summary(config: WebAppConfig, missing: list) -> dict:
     # any) belong in its money block even while it is incomplete.
     summary["money"] = _money_view(config)
     return summary
+
+
+# ---------------------------------------------------------------------------
+# The problem report (v0.10, FIX B): one zip the creator can send back
+# ---------------------------------------------------------------------------
+
+_KEY_SHAPED_RE = re.compile(
+    r"sk-[A-Za-z0-9_\-]{8,}|ghp_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_\-]{8,}"
+)
+_SECRET_PAIR_RE = re.compile(
+    r"((?:api[_-]?key|access[_-]?token|secret|password|authorization)"
+    r"\s*[\"']?\s*[:=]\s*[\"']?)[^\s\"',}]+",
+    re.I,
+)
+
+
+def _scrub_report_text(text: str, secrets: list) -> str:
+    """Take keys and key-shaped values out of one report file.
+
+    The creator's own saved keys go first (an exact match beats
+    any pattern), then anything shaped like a key, then the
+    value half of any key-named pair.
+    """
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[key removed]")
+    text = _KEY_SHAPED_RE.sub("[key removed]", text)
+    text = _SECRET_PAIR_RE.sub(r"\1[key removed]", text)
+    return text
+
+
+def _problem_report_costs(config: WebAppConfig) -> str:
+    """The costs-and-rounds page of the report, in plain words."""
+    lines = ["Costs and rounds", ""]
+    view = None
+    try:
+        view = _money_view(config)
+    except Exception:
+        view = None
+    if view:
+        job = view.get("job")
+        if job:
+            lines.append("This job:")
+            for line in job.get("recap_lines", []):
+                lines.append(f"  {line}")
+        mac = view.get("mac") or {}
+        lines.append(
+            "On this computer so far: "
+            f"{mac.get('total_text', '$0')} across "
+            f"{mac.get('entries', 0)} recorded runs."
+        )
+    if config.has_job:
+        retake = _load_session_json(config, RETAKE_PASS_FILENAME, {})
+        runs = retake.get("runs") if isinstance(retake, dict) else None
+        if isinstance(runs, list) and runs:
+            lines.append(
+                f"Retake check rounds on this job: {len(runs)}."
+            )
+        direction = _load_session_json(
+            config, DIRECTION_PASS_FILENAME, {}
+        )
+        usage = (
+            direction.get("usage") if isinstance(direction, dict)
+            else None
+        )
+        if isinstance(usage, list) and usage:
+            lines.append(
+                f"Direction reads on this job: {len(usage)}."
+            )
+    if len(lines) <= 2:
+        lines.append("No costs were recorded for this job.")
+    return "\n".join(lines) + "\n"
+
+
+def _problem_report_counts(config: WebAppConfig) -> str:
+    """The cut-counts page of the report, in plain words."""
+    lines = ["Cut counts", ""]
+    if not config.has_job:
+        lines.append("No job is open.")
+        return "\n".join(lines) + "\n"
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        timeline = Timeline(transcript, _effective_cuts(config))
+        kept = timeline.kept_word_indices()
+        lines.append(
+            f"Words in the edit: {len(kept)} of "
+            f"{len(timeline.words)}."
+        )
+        lines.append(
+            f"Finished length: "
+            f"{_format_clock(timeline.output_duration)} "
+            f"(the recording was "
+            f"{_format_clock(timeline.source_duration)})."
+        )
+    except Exception:
+        lines.append("The cut counts could not be read for this job.")
+    return "\n".join(lines) + "\n"
+
+
+def _build_problem_report(config: WebAppConfig) -> Path:
+    """Make the problem report zip and return its path.
+
+    The zip lands in the job's folder, or in the app's home
+    folder when no job is open. Its contents are a fixed list,
+    nothing else: a first page, the session log, the playback
+    log when there is one, the run audit files that exist, a
+    costs-and-rounds page, and a cut-counts page. Every text
+    file passes through the scrub before it is zipped.
+    """
+    from . import __version__ as app_version
+
+    if config.has_job:
+        base = config.job_dir
+        job_label = config.job_dir.name
+    else:
+        base = config.launch_home
+        job_label = "no-job"
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    name = f"problem-report-{job_label}-{stamp}.zip"
+    secrets = []
+    for getter in (config.signin_key, config.elevenlabs_key):
+        try:
+            value = getter()
+        except Exception:
+            value = None
+        if value:
+            secrets.append(value)
+    pages = {
+        "report.txt": (
+            "Talk to Your Editor: problem report\n"
+            f"App version: {app_version}\n"
+            f"Job: {job_label if config.has_job else 'no job open'}\n"
+            f"Made: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}\n"
+        ),
+        "costs-and-rounds.txt": _problem_report_costs(config),
+        "cut-counts.txt": _problem_report_counts(config),
+    }
+    if config.has_job:
+        session = config.session_dir
+        log_text = session_log.read_log(session)
+        if log_text:
+            pages[session_log.SESSION_LOG_NAME] = log_text
+        playback_logs = sorted(session.glob(f"playback/{PLAYBACK_LOG_NAME}"))
+        if playback_logs:
+            try:
+                pages[PLAYBACK_LOG_NAME] = playback_logs[0].read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError:
+                pass
+        for filename in (
+            "operations_audit.json",
+            DIRECTION_PASS_FILENAME,
+            RETAKE_PASS_FILENAME,
+        ):
+            path = session / filename
+            if path.is_file():
+                try:
+                    pages[filename] = path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                except OSError:
+                    pass
+    base.mkdir(parents=True, exist_ok=True)
+    target = base / name
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+        for arcname, text in pages.items():
+            archive.writestr(
+                arcname, _scrub_report_text(text, secrets)
+            )
+    return target
 
 
 def _session_flags(config: WebAppConfig) -> list:
@@ -2009,8 +2869,54 @@ def _job_summary(config: WebAppConfig) -> dict:
                     if isinstance(c, dict)
                 ]
             overall_feedback = _overall_notes(payload)
+    # A comment's stored time is already on the edited video's
+    # clock: it was pinned while watching the edited video, and
+    # the machinery has always read it that way (the protected
+    # joins resolve it with map_output_time_approx, and the
+    # direction pass anchors comments by it). So the page's
+    # edited-clock field is the stored time itself, unconverted;
+    # converting it again would move every dot and seek. (The
+    # transcript entries above are the opposite case: their times
+    # are the recording's, and they do get converted.)
+    for comment in comments:
+        try:
+            comment["edited_ts"] = float(comment.get("ts") or 0.0)
+        except (TypeError, ValueError):
+            comment["edited_ts"] = 0.0
+    timeline_pieces = []
+    for segment in timeline.segments:
+        if segment["duration"] <= 0:
+            continue
+        piece_words = timeline.words_in_range(segment["range"])
+        timeline_pieces.append(
+            {
+                "output_start": round(segment["output_start"], 4),
+                "output_end": round(segment["output_end"], 4),
+                "word_start": piece_words[0] if piece_words else None,
+                "word_end": (
+                    piece_words[-1] + 1 if piece_words else None
+                ),
+            }
+        )
+    playback_states, playback_progress = _playback_view(config, videos)
+    splice_path = config.session_dir / SESSION_VIDEO_NAME
+    if splice_path.is_file():
+        splice_copy = _playback_copy_path(config, SESSION_VIDEO_NAME)
+        splice_state = _playback_state_for(splice_path, splice_copy)
+        if splice_state == "unstarted":
+            # Same discipline as the job's own videos: a copy
+            # nobody has started must be started here, on the
+            # poll the page already runs, so the edited video's
+            # swap-in can actually land (FIX A).
+            _ensure_playback_copy_for(splice_path, splice_copy)
+            splice_state = _playback_state_for(splice_path, splice_copy)
+        playback_states[SESSION_VIDEO_NAME] = splice_state
+        playback_progress[SESSION_VIDEO_NAME] = _playback_progress_for(
+            splice_path, splice_copy
+        )
     return {
         "has_job": True,
+        "test_video": _is_test_video(config),
         "job_name": config.job_dir.name,
         "source_duration_s": timeline.source_duration,
         "output_duration_s": round(timeline.output_duration, 4),
@@ -2024,10 +2930,12 @@ def _job_summary(config: WebAppConfig) -> dict:
         "words_kept": len(kept),
         "words_cut": len(timeline.words) - len(kept),
         "transcript_words": transcript_entries,
+        "timeline_pieces": timeline_pieces,
         "word_corrections": corrections,
         "videos": videos,
-        "playback": _playback_view(config, videos)[0],
-        "playback_progress": _playback_view(config, videos)[1],
+        "playback": playback_states,
+        "playback_progress": playback_progress,
+        "watching": _watching_state(config),
         "video_shapes": video_shapes,
         "feedback_exists": feedback_exists,
         "comments": comments,
@@ -2349,20 +3257,29 @@ def _archive_direction_round(config: WebAppConfig, number: int) -> None:
             shutil.copyfile(source, target / name)
 
 
-def _live_provider(config: WebAppConfig) -> MetaProvider:
+def _live_provider(
+    config: WebAppConfig, style: Optional[str] = None
+) -> MetaProvider:
     """The live provider, built the one way every run builds it.
 
     The Meta sign-in keys it; the creator's chosen Spark route
     and any hosted keys ride along, so Spark-tier work (the
     direction reads, the retake judge and its shadow) runs on
-    the chosen pool while Wonder stays on Meta.
+    the chosen pool while Wonder stays on Meta. A style is passed
+    only by the passes that pick one (the direction pass and the
+    retake pass); with no style named, the provider loads its
+    default style, as it always has.
     """
+    kwargs: dict = {}
+    if style is not None:
+        kwargs["style"] = style
     return MetaProvider(
         api_key=config.signin_key(),
         allow_wonder=True,
         spark_route=config.spark_route(),
         baseten_key=config.baseten_key(),
         fireworks_key=config.fireworks_key(),
+        **kwargs,
     )
 
 
@@ -2604,7 +3521,7 @@ def _first_edit_cost_entries(
 
 
 def _protected_join_indices(config: WebAppConfig, timeline: Timeline) -> set:
-    """Joins the silence pass must never trim, under either breaths choice.
+    """Joins the silence pass must never trim.
 
     A join is protected when one of the two words that border it is
     inside a protected span (a protected moment from the profile or
@@ -2662,7 +3579,7 @@ def _protected_join_indices(config: WebAppConfig, timeline: Timeline) -> set:
 
 
 def _silence_operations(
-    config: WebAppConfig, buffer_s: float, breaths: str = "keep"
+    config: WebAppConfig, buffer_s: float
 ) -> list:
     """Join-pause operations that trim silence toward the buffer.
 
@@ -2675,19 +3592,15 @@ def _silence_operations(
     applier decide what actually changes, exactly as they do for a
     note that asks for a shorter pause.
 
-    Breaths (v0.6.1): with ``breaths`` "keep", a join is never
-    trimmed below ``BREATH_FLOOR_S`` of quiet, so the natural
-    breath before the next sentence survives even when the buffer
-    is tighter; with "trim", the buffer alone rules and the breath
-    inside a trimmed gap goes with it. Joins a pinned comment or a
-    protected moment covers are never proposed under either choice
-    (see ``_protected_join_indices``); every trim that does land
-    stays a transcript dot with its reason, and restorable.
+    Breath sounds inside a trimmed gap go with the quiet: there
+    is no keep-breaths branch (removed in v0.10). Joins a pinned
+    comment or a protected moment covers are never proposed (see
+    ``_protected_join_indices``); every trim that does land stays
+    a transcript dot with its reason, and restorable.
     """
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     timeline = Timeline(transcript, _effective_cuts(config))
-    floor_s = BREATH_FLOOR_S if breaths == "keep" else 0.0
-    effective_s = max(buffer_s, floor_s)
+    effective_s = buffer_s
     protected = _protected_join_indices(config, timeline)
     operations = []
     for join in timeline.joins():
@@ -2716,17 +3629,10 @@ def _silence_operations(
         target = min(target, MAX_JOIN_PAUSE_S)
         if target >= head - 1e-3:
             continue  # This join cannot get any tighter from its head.
-        if breaths == "keep" and floor_s > buffer_s:
-            reason = (
-                "front door: trim the silence at this join "
-                f"toward {effective_s:g} seconds, keeping the "
-                "natural breath"
-            )
-        else:
-            reason = (
-                "front door: trim the silence at this join "
-                f"toward {effective_s:g} seconds"
-            )
+        reason = (
+            "front door: trim the silence at this join "
+            f"toward {effective_s:g} seconds"
+        )
         operations.append(
             {
                 "type": "set_join_pause",
@@ -2746,7 +3652,7 @@ def _silence_operations(
 
 
 def _run_silence_pass(
-    config: WebAppConfig, buffer_s: float, breaths: str = "keep"
+    config: WebAppConfig, buffer_s: float
 ) -> dict:
     """Trim the session plan's long silences toward ``buffer_s``.
 
@@ -2754,21 +3660,19 @@ def _run_silence_pass(
     path as a direction run, against the session's current plan. The
     pass is recorded in its own session file, and its page
     operations are merged into the session audit so the removed and
-    shortened moments stay explained in one place. ``breaths`` is
-    the front door's breaths choice, passed through to the
-    operations and named in the summary.
+    shortened moments stay explained in one place.
     """
+    session_log.log_stage(config.session_dir, "silence", "start")
     summary = {
         "ran": True,
         "buffer_s": buffer_s,
-        "breaths": breaths,
-        "floor_s": BREATH_FLOOR_S if breaths == "keep" else None,
         "joins_trimmed": 0,
         "operations": [],
     }
-    operations = _silence_operations(config, buffer_s, breaths)
+    operations = _silence_operations(config, buffer_s)
     if not operations:
         _record_silence_pass(config, summary)
+        session_log.log_stage(config.session_dir, "silence", "finish")
         return summary
     session = config.session_dir
     session.mkdir(parents=True, exist_ok=True)
@@ -2795,6 +3699,10 @@ def _run_silence_pass(
         _log_raw_error("silence pass", exc)
         shutil.rmtree(tmp, ignore_errors=True)
         _record_silence_pass(config, summary)
+        session_log.log_stage(
+            config.session_dir, "silence", "fail",
+            "the pass could not run; the plan was left as it was",
+        )
         return summary
     shutil.copyfile(tmp / "revised_cuts.json", revised_path)
     page_operations = audit.get("operations", [])
@@ -2812,6 +3720,7 @@ def _run_silence_pass(
         shutil.copyfile(tmp / "operations_audit.json", session_audit_path)
     shutil.rmtree(tmp, ignore_errors=True)
     _record_silence_pass(config, summary)
+    session_log.log_stage(config.session_dir, "silence", "finish")
     return summary
 
 
@@ -2826,7 +3735,6 @@ def _record_silence_pass(config: WebAppConfig, summary: dict) -> None:
         {
             "at": _utc_now(),
             "buffer_s": summary["buffer_s"],
-            "breaths": summary.get("breaths", "keep"),
             "joins_trimmed": summary["joins_trimmed"],
         }
     )
@@ -2943,14 +3851,17 @@ def _run_filler_pass(config: WebAppConfig, settings: dict) -> dict:
     operation can carry a run of fillers. When the choice is off,
     or there is nothing to take out, the pass does not run.
     """
+    session_log.log_stage(config.session_dir, "filler", "start")
     summary = {"ran": False, "applied": 0, "lines": []}
     if not settings.get("remove_fillers"):
+        session_log.log_stage(config.session_dir, "filler", "finish")
         return summary
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     timeline = Timeline(transcript, _effective_cuts(config))
     profile = _load_optional_file(config.job_dir / "profile.json")
     operations = _filler_operations(timeline, settings, profile)
     if not operations:
+        session_log.log_stage(config.session_dir, "filler", "finish")
         return summary
     summary["ran"] = True
     feedback = {
@@ -2984,6 +3895,10 @@ def _run_filler_pass(config: WebAppConfig, settings: dict) -> dict:
     except (SchemaError, ApplyError) as exc:
         _log_raw_error("filler pass", exc)
         shutil.rmtree(tmp, ignore_errors=True)
+        session_log.log_stage(
+            config.session_dir, "filler", "fail",
+            "the pass could not run; the plan was left as it was",
+        )
         return summary
     page_operations = _merge_page_operations(config, audit, tmp)
     shutil.rmtree(tmp, ignore_errors=True)
@@ -3002,18 +3917,20 @@ def _run_filler_pass(config: WebAppConfig, settings: dict) -> dict:
         session / FILLER_PASS_FILENAME,
         {"applied": applied, "feedback": feedback},
     )
+    session_log.log_stage(config.session_dir, "filler", "finish")
     return summary
 
 
-def _direction_provider(config: WebAppConfig):
+def _direction_provider(config: WebAppConfig, style: Optional[str] = None):
     """The provider a direction pass reads with.
 
     The same construction every live run uses (see
     ``_live_provider``): the Meta provider keyed by the session
     sign-in, riding the creator's chosen Spark route. Kept as
     one small helper so the pass has a single provider seam.
+    The pass's picked style rides along, and nothing else changes.
     """
-    return _live_provider(config)
+    return _live_provider(config, style=_picked_style(config, {"style": style}))
 
 
 def _format_flag_time(time_s: float) -> str:
@@ -3189,12 +4106,17 @@ def _run_direction_pass(
         "mode": settings.get("mode", "cleanest"),
         "negation_applied": 0,
         "gold": 0,
+        "skills": skills.builtin_versions(_picked_style(config, settings)),
     }
+    session_log.log_stage(config.session_dir, "direction", "start")
     if not config.signin_key():
         summary["reason"] = "no_key"
         summary["lines"] = [
             "Your direction will be read when a key is saved."
         ]
+        session_log.log_stage(
+            config.session_dir, "direction", "finish", "no key saved"
+        )
         return summary
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     words = transcript.get("words", [])
@@ -3223,7 +4145,10 @@ def _run_direction_pass(
             "cut_words": len(words) - len(kept),
         },
     }
-    provider = _direction_provider(config)
+    provider = _direction_provider(config, style=settings.get("style"))
+    summary["skills"] = _provider_skill_versions(
+        provider, _picked_style(config, settings)
+    )
     operations, _routing, raw_flags = provider.direct_transcript(
         packet, timeline, profile
     )
@@ -3376,6 +4301,7 @@ def _run_direction_pass(
             "mode": summary["mode"],
             "negation_applied": summary["negation_applied"],
             "gold": summary["gold"],
+            "skills": summary["skills"],
         },
     )
     lines: list = []
@@ -3400,7 +4326,12 @@ def _run_direction_pass(
     lines.extend(flag["recap"] for flag in flags)
     if not lines:
         lines = ["Read your direction. Nothing to change."]
+    lines.extend(_skills_recap_lines(summary["skills"]))
     summary["lines"] = lines
+    # A finished direction run is one of the two moments a saved
+    # teaching rule can turn tested (the other is a grade landing).
+    _refresh_teaching_tested(config)
+    session_log.log_stage(config.session_dir, "direction", "finish")
     return summary
 
 
@@ -4149,7 +5080,7 @@ def _gold_verdict(
         if decision == "cut"
         else "Spot recommended to remove, left in",
     )
-    return {
+    result = {
         "ok": True,
         "gold_id": gold_id,
         "changed": changed,
@@ -4157,6 +5088,14 @@ def _gold_verdict(
         "gold": _open_gold_spans(config),
         "suggestions": _rule_suggestions(config),
     }
+    if decision == "leave" and not _is_test_video(config):
+        # Leaving the words in is a choice the app can learn
+        # from, so the page asks the why question about the
+        # grade record this verdict just wrote. On a test video
+        # the verdict wrote no record, so there is nothing to
+        # ask about.
+        result["why_prompt"] = {"entry_id": f"gold-grade-{gold_id}"}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -4352,6 +5291,8 @@ def _run_shadow(
     timeline: Timeline,
     spoken_direction: str,
     record: dict,
+    style: Optional[str] = None,
+    provider=None,
 ) -> dict:
     """Best delivery (Beta), in shadow: record picks, change nothing.
 
@@ -4416,11 +5357,11 @@ def _run_shadow(
         if not retakes.deliveries_identical(pair, timeline)
     ]
     if to_judge:
-        provider = None
-        if provider_name == "meta":
-            provider = _live_provider(config)
-        elif provider_name == "mock":
-            provider = MockProvider()
+        if provider is None:
+            if provider_name == "meta":
+                provider = _live_provider(config, style=style)
+            elif provider_name == "mock":
+                provider = MockProvider(style=style)
         if provider is not None:
             guidance = creator_rules.active_rule_statements(
                 _rules_store(config)
@@ -4492,6 +5433,7 @@ def _run_retake_pass(
     provider_name: str,
     spoken_direction: str = "",
     keep_mode: Optional[str] = None,
+    style: Optional[str] = None,
 ) -> dict:
     """Measure the edit for retakes and act on what the bands allow.
 
@@ -4510,6 +5452,7 @@ def _run_retake_pass(
     records the keeper it would have chosen on every pair where
     there is a genuine choice.
     """
+    session_log.log_stage(config.session_dir, "retake", "start")
     summary = {
         "ran": True,
         "provider": provider_name,
@@ -4523,6 +5466,16 @@ def _run_retake_pass(
         "usage": [],
         "route_events": [],
     }
+    # The pass's provider is built once, with the picked style, and
+    # reused for the shadow and the judgment, so the run record's
+    # know-how record is the provider this pass actually used.
+    style_id = _picked_style(config, {"style": style})
+    retake_provider = None
+    if provider_name == "meta":
+        retake_provider = _live_provider(config, style=style_id)
+    elif provider_name == "mock":
+        retake_provider = MockProvider(style=style_id)
+    summary["skills"] = _provider_skill_versions(retake_provider, style_id)
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     profile = _load_optional_file(config.job_dir / "profile.json")
     base_cuts = _effective_cuts(config)
@@ -4545,6 +5498,7 @@ def _run_retake_pass(
         shadow = _run_shadow(
             config, provider_name, all_pairs, pairs, timeline,
             spoken_direction, record,
+            style=style_id, provider=retake_provider,
         )
         summary["shadow"] = {
             key: shadow[key]
@@ -4562,6 +5516,7 @@ def _run_retake_pass(
         record["runs"].append({**summary, "at": _utc_now()})
         record["pairs"] = []
         _save_retake_record(config, record)
+        session_log.log_stage(config.session_dir, "retake", "finish")
         return summary
 
     operations = retakes.band_a_operations(
@@ -4579,11 +5534,7 @@ def _run_retake_pass(
     judged_ops: list = []
     verdicts: dict = {}
     if borderline:
-        provider = None
-        if provider_name == "meta":
-            provider = _live_provider(config)
-        elif provider_name == "mock":
-            provider = MockProvider()
+        provider = retake_provider
         judged = None
         if provider is not None:
             guidance = creator_rules.active_rule_statements(
@@ -4727,6 +5678,7 @@ def _run_retake_pass(
             ],
         ),
     )
+    session_log.log_stage(config.session_dir, "retake", "finish")
     return summary
 
 
@@ -4757,20 +5709,20 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
             "Choose the last take, the first clean take, or best "
             "delivery (Beta)."
         )
-    breaths = str(
-        body.get("breaths", defaults["breaths"]) or "keep"
-    ).strip().lower()
-    if breaths not in BREATH_MODES:
-        raise ValueError(
-            "Choose keeping the natural breath, or trimming "
-            "breaths with the pause."
-        )
     mode = str(
         body.get("mode", defaults.get("mode", "cleanest")) or "cleanest"
     ).strip().lower()
     if mode not in INVOLVEMENT_MODES:
         raise ValueError(
             "Choose the Cleanest cut, or Tailor it with me."
+        )
+    style = str(
+        body.get("style", defaults.get("style", "justins-way"))
+        or "justins-way"
+    ).strip().lower()
+    if style not in EDITING_STYLES:
+        raise ValueError(
+            "Choose Justin's way, Keep it simple, or Hands off."
         )
     settings = {
         "remove_retakes": bool(
@@ -4779,29 +5731,17 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "cut_silence": bool(body.get("cut_silence", defaults["cut_silence"])),
         "buffer_s": min(BUFFER_MAX_S, max(BUFFER_MIN_S, buffer_s)),
         "keep_mode": keep_mode,
-        "breaths": breaths,
         "remove_fillers": bool(
             body.get("remove_fillers", defaults.get("remove_fillers", True))
         ),
         "mode": mode,
+        "style": style,
     }
     scope = str(body.get("format_scope") or "both").strip().lower()
     if scope not in ("both", "vertical", "landscape"):
         raise ValueError("Choose both formats, vertical only, or landscape only.")
     direction_text = str(body.get("direction_text") or "").strip()
-    # Spoken direction in the box can set the breaths choice too,
-    # through the same deterministic mapping intake uses; what it
-    # sets wins for this video and is named in the result.
     direction_recap: list = []
-    if direction_text:
-        spoken = direction_parse.parse_direction(direction_text)
-        if "breaths" in spoken["overrides"]:
-            settings["breaths"] = spoken["overrides"]["breaths"]
-            direction_recap = [
-                line
-                for line in spoken["recap"]
-                if line.startswith("Breaths will be")
-            ]
     provider_name = str(body.get("provider") or "").strip().lower()
     if provider_name not in ("mock", "meta"):
         provider_name = "meta" if config.signin_key() else "mock"
@@ -4811,6 +5751,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
             "so direction cannot run with it."
         )
     _save_front_door_settings(config, settings)
+    session_log.log_stage(config.session_dir, "front door", "start")
     retake_summary = None
     if settings["remove_retakes"]:
         retake_summary = _run_retake_pass(
@@ -4818,6 +5759,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
             provider_name,
             spoken_direction=direction_text,
             keep_mode=settings["keep_mode"],
+            style=settings["style"],
         )
     extras = []
     if settings["remove_retakes"]:
@@ -4877,9 +5819,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         filler = _run_filler_pass(config, settings)
     silence = None
     if settings["cut_silence"]:
-        silence = _run_silence_pass(
-            config, settings["buffer_s"], settings["breaths"]
-        )
+        silence = _run_silence_pass(config, settings["buffer_s"])
     # What this run cost, per feature, from the passes' own
     # records (v0.7.2). The deterministic passes are $0 and say
     # so; the model work prices from its captured usage.
@@ -4900,12 +5840,48 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         )
     _account_costs(config, cost_entries)
     cost_block = costs.job_cost_block(cost_entries)
+    render_note = None
+    if config.is_intake_job:
+        # An edit run on a job born here rebuilds the review
+        # video from the new plan, so the player shows this edit
+        # and not an older one (FIX A). A build that fails says
+        # so here and in the watching state, never silently.
+        source_name = intake_build.intake_source_video(config.job_dir)
+        if source_name:
+            try:
+                media = speech.probe_media(config.job_dir / source_name)
+                has_audio = bool(media.get("has_audio", True))
+            except speech.TranscribeError:
+                has_audio = True
+            render_note = _render_session_splice(
+                config, config.job_dir / source_name, has_audio
+            )
+    session_log.log_stage(config.session_dir, "front door", "finish")
+    # The length change, said plainly in its own line: the edit
+    # can be much shorter than the recording (only the talking
+    # parts are kept), and the creator should never have to
+    # discover that from the player.
+    length_line = None
+    try:
+        _fd_timeline = Timeline(
+            _load_json(str(config.job_dir / "transcript.json")),
+            _effective_cuts(config),
+        )
+        length_line = (
+            f"Your video was "
+            f"{_format_clock(_fd_timeline.source_duration)}. "
+            f"The edit is "
+            f"{_format_clock(_fd_timeline.output_duration)}."
+        )
+    except Exception:
+        length_line = None
     return {
         "ok": True,
         "provider": provider_name,
         "settings": settings,
+        "render_note": render_note,
+        "length_recap": length_line,
         "recap": _keep_mode_recap(settings),
-        "breaths_recap": _breaths_recap(settings),
         "direction_recap": direction_recap,
         "beta": _beta_score(config),
         "format_scope": scope,
@@ -4996,6 +5972,9 @@ def _adopt_job(httpd, job_root: Path) -> WebAppConfig:
         "session_fireworks_key",
         getattr(current, "session_fireworks_key", None),
     )
+    # A test-video mark set at the front door carries into the
+    # job this first edit creates, the same as a dropped job.
+    _carry_launch_test_video(config)
     httpd.config = config  # type: ignore[attr-defined]
     _kick_playback_copies(config)
     return config
@@ -5028,10 +6007,10 @@ def _validated_drop_settings(body) -> Optional[dict]:
         )
     if raw.get("keep_mode") in retakes.KEEP_MODES:
         validated["keep_mode"] = raw["keep_mode"]
-    if raw.get("breaths") in BREATH_MODES:
-        validated["breaths"] = raw["breaths"]
     if raw.get("mode") in INVOLVEMENT_MODES:
         validated["mode"] = raw["mode"]
+    if raw.get("style") in EDITING_STYLES:
+        validated["style"] = raw["style"]
     return validated
 
 
@@ -5150,8 +6129,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
 
     The passes run in the front door's order: retakes, then the
     filler pass, then the silence sweep (pauses over the buffer are
-    shortened toward the buffer by default; keeping breaths natural
-    is the one named exception), then the direction pass reads
+    shortened toward the buffer), then the direction pass reads
     whatever direction the deterministic controls could not map.
     Per-drop settings outrank the saved ones, and spoken or typed
     direction outranks both.
@@ -5267,6 +6245,9 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
         stage("Measuring the silences from the sound itself…", 3, total)
         spans = speech.measure_speech_spans(wav_path)
         stage("Laying out the first plan…", 4, total)
+        session_log.log_stage(
+            job_root / "tye-session", "intake", "start"
+        )
         intake_build.build_job_files(
             job_root,
             video_path.name,
@@ -5276,6 +6257,11 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             captions_on=captions_on,
         )
         config = _adopt_job(httpd, job_root)
+        session_log.log_stage(
+            config.session_dir, "intake", "finish",
+            "the job was built from the dropped video",
+        )
+        session_log.log_stage(config.session_dir, "first edit", "start")
         parsed = direction_parse.parse_direction(direction_text)
         settings = _front_door_settings(config)
         if drop_settings:
@@ -5326,6 +6312,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "meta" if config.signin_key() else "mock",
                 spoken_direction=direction_text,
                 keep_mode=settings["keep_mode"],
+                style=settings.get("style"),
             )
             retake_audit = retake_summary.pop("audit", None)
             if retake_audit is not None:
@@ -5349,7 +6336,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             stage("Cutting the silence…", next_index, total)
             next_index += 1
             silence_summary = _run_silence_pass(
-                config, settings["buffer_s"], settings["breaths"]
+                config, settings["buffer_s"]
             )
         direction_summary = None
         if parsed["remainder"]:
@@ -5378,16 +6365,9 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
         timeline = Timeline(transcript, _effective_cuts(config))
         kept_after = len(timeline.kept_word_indices())
         stage("Building your review video…", total, total)
-        render_note = None
-        try:
-            intake_build.render_splice(
-                video_path,
-                _effective_cuts(config),
-                session / SESSION_VIDEO_NAME,
-                has_audio=bool(media.get("has_audio", True)),
-            )
-        except speech.TranscribeError as exc:
-            render_note = str(exc)
+        render_note = _render_session_splice(
+            config, video_path, bool(media.get("has_audio", True))
+        )
         caption_info = None
         if captions_on:
             try:
@@ -5401,6 +6381,16 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 caption_info = None
         shutil.rmtree(work, ignore_errors=True)
         recap = list(parsed["recap"])
+        # The length change, said plainly at the head of the
+        # recap (Justin's call): the splice keeps only the
+        # talking parts, so the edit can be much shorter than
+        # the recording, and the creator should never have to
+        # discover that from the player.
+        recap.insert(
+            0,
+            f"Your video was {_format_clock(timeline.source_duration)}. "
+            f"The edit is {_format_clock(timeline.output_duration)}.",
+        )
         if retake_summary is not None:
             recap.append(
                 "Retakes: "
@@ -5422,11 +6412,6 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 f"{silence_summary.get('joins_trimmed', 0)} joins "
                 f"trimmed toward {settings['buffer_s']:g} seconds."
             )
-        if "breaths" not in parsed["overrides"]:
-            # When the direction set the breaths choice, the parsed
-            # recap above already names it; otherwise the recap
-            # still names the state the first edit ran with.
-            recap.append(_breaths_recap(settings))
         if direction_summary is not None:
             # The direction lines come last: they end with the flag
             # recaps, the things left for the creator to see.
@@ -5489,6 +6474,9 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "render_note": render_note,
                 "captions": caption_info,
             }
+        )
+        session_log.log_stage(
+            config.session_dir, "first edit", "finish"
         )
     except speech.TranscribeError as exc:
         state.update({"status": "failed", "message": str(exc)})
@@ -5590,17 +6578,31 @@ def _toggle_word(config: WebAppConfig, word_index: int) -> dict:
     revised, _audit = apply_verdicts(base_cuts, timeline, [verdict])
     session = config.session_dir
     session.mkdir(parents=True, exist_ok=True)
+    new_status = Timeline(transcript, revised).word_status(word_index)
+    why_prompt = None
     checkpoints.begin(config)
+    if status == "cut" and new_status == "kept":
+        # The click brought a cut word back: that is a grade on
+        # the cut, and the page asks why about this record. The
+        # record is written before the checkpoint lands, so it
+        # is part of this change's checkpoint like the words.
+        entry_id = _record_restore_grade(
+            config, word_index, word_index + 1, "word-toggle"
+        )
+        if entry_id:
+            why_prompt = {"entry_id": entry_id}
     _write_json(session / "revised_cuts.json", revised)
     checkpoints.commit(config, "Transcript word change")
-    new_status = Timeline(transcript, revised).word_status(word_index)
-    return {
+    result = {
         "ok": True,
         "word_index": word_index,
         "status": new_status,
         "changed": new_status != status,
         "message": None,
     }
+    if why_prompt is not None:
+        result["why_prompt"] = why_prompt
+    return result
 
 
 def _apply_word_range(
@@ -5742,6 +6744,7 @@ def _apply_word_range(
     flush_special()
 
     moved = 0
+    why_prompt = None
     if runs:
         current_cuts = base_cuts
         current_timeline = timeline
@@ -5794,6 +6797,15 @@ def _apply_word_range(
             session = config.session_dir
             session.mkdir(parents=True, exist_ok=True)
             checkpoints.begin(config)
+            if action == "restore" and moved > 0:
+                # One grade record for the whole phrase the
+                # creator asked to bring back, covering the full
+                # range they picked, however many runs moved.
+                entry_id = _record_restore_grade(
+                    config, word_start, word_end, "word-range"
+                )
+                if entry_id:
+                    why_prompt = {"entry_id": entry_id}
             _write_json(session / "revised_cuts.json", current_cuts)
             checkpoints.commit(
                 config,
@@ -5802,12 +6814,15 @@ def _apply_word_range(
                 else "Transcript phrase brought back",
             )
     stayed.sort(key=lambda entry: entry["word_start"])
-    return {
+    result = {
         "ok": True,
         "changed": moved > 0,
         "moved": moved,
         "stayed": stayed,
     }
+    if why_prompt is not None:
+        result["why_prompt"] = why_prompt
+    return result
 
 
 def _edit_action(config: WebAppConfig, edit_id: str, action: str) -> dict:
@@ -5889,7 +6904,14 @@ def _edit_action(config: WebAppConfig, edit_id: str, action: str) -> dict:
     revised, _audit = apply_verdicts(base_cuts, timeline, [verdict])
     session = config.session_dir
     session.mkdir(parents=True, exist_ok=True)
+    why_prompt = None
     checkpoints.begin(config)
+    if action == "restore":
+        # Bringing an edit back is a grade on the cut that made
+        # it, over the edit's own span.
+        entry_id = _record_restore_grade(config, start, end, "edit-action")
+        if entry_id:
+            why_prompt = {"entry_id": entry_id}
     _write_json(session / "revised_cuts.json", revised)
     checkpoints.commit(config, label)
     if action == "swap":
@@ -5901,7 +6923,10 @@ def _edit_action(config: WebAppConfig, edit_id: str, action: str) -> dict:
             record = _load_retake_record(config)
             if _resolve_shadow_match(record, pair, "other", "swap"):
                 _save_retake_record(config, record)
-    return {"ok": True, "changed": True, "message": done_message}
+    result = {"ok": True, "changed": True, "message": done_message}
+    if why_prompt is not None:
+        result["why_prompt"] = why_prompt
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -6067,6 +7092,9 @@ def _detect_intake(base: Path) -> dict:
 # are refused with NO_JOB_MESSAGE before any handler runs. Intake,
 # the sample load, and the sign-in routes stay open at the front
 # door: they are how a job (or a sign-in) arrives in the first place.
+# The test-video route stays open there too, on purpose: the mark
+# can be set before a job exists, in the launch session, and a drop
+# that becomes the job carries it into the job's own session.
 _JOB_REQUIRED_POSTS = frozenset({
     "/api/comments",
     "/api/direct",
@@ -6080,6 +7108,7 @@ _JOB_REQUIRED_POSTS = frozenset({
     "/api/word-range",
     "/api/edit-action",
     "/api/gold-verdict",
+    "/api/why",
     "/api/word-correct",
     "/api/word-correct-remove",
     "/api/captions-pref",
@@ -6331,6 +7360,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_intake_finish()
         elif path == "/api/intake/first-edit":
             self._post_intake_first_edit()
+        elif path == "/api/teach/begin":
+            self._post_teach_begin()
+        elif path == "/api/teach/file":
+            self._post_teach_file()
+        elif path == "/api/teach/link":
+            self._post_teach_link()
+        elif path == "/api/teach/run":
+            self._post_teach_run()
         elif path == "/api/cost-estimate":
             self._post_cost_estimate()
         elif path == "/api/money-reset":
@@ -6353,6 +7390,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_direct()
         elif path == "/api/front-door":
             self._post_front_door()
+        elif path == "/api/test-video":
+            self._post_test_video()
+        elif path == "/api/problem-report":
+            self._post_problem_report()
         elif path == "/api/edit-note":
             self._post_edit_note()
         elif path == "/api/grades":
@@ -6371,6 +7412,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_edit_action()
         elif path == "/api/gold-verdict":
             self._post_gold_verdict()
+        elif path == "/api/why":
+            self._post_why()
         elif path == "/api/word-correct":
             self._post_word_correct()
         elif path == "/api/word-correct-remove":
@@ -6467,6 +7510,33 @@ class _Handler(BaseHTTPRequestHandler):
             )
 
     def _serve_video(self, name: str) -> None:
+        if name == SESSION_VIDEO_NAME:
+            # The edited video lives in the session, not the job
+            # folder; it is served under the same discipline as a
+            # job video (its watchable copy while one is needed).
+            target = _session_video_target(self.config)
+            if target is None:
+                source = self.config.session_dir / SESSION_VIDEO_NAME
+                if not source.is_file():
+                    self._send_plain_page(
+                        404,
+                        "That video is not here",
+                        "The edited video has not been built yet. "
+                        "Make an edit first, and it will be here.",
+                    )
+                    return
+                copy_path = _playback_copy_path(
+                    self.config, SESSION_VIDEO_NAME
+                )
+                self._send_playback_pending(
+                    _playback_state_for(source, copy_path),
+                    _playback_progress_for(source, copy_path),
+                )
+                return
+            self._serve_file_with_range(
+                target, _video_content_type(target)
+            )
+            return
         if name not in _job_videos(self.config.job_dir):
             self._send_plain_page(
                 404,
@@ -6589,6 +7659,14 @@ class _Handler(BaseHTTPRequestHandler):
         if registry is None:
             registry = {}
             self.server.first_edit_jobs = registry  # type: ignore[attr-defined]
+        return registry
+
+    def _teachings(self) -> dict:
+        """The teaching drop registry (teach id to staging record)."""
+        registry = getattr(self.server, "teachings", None)
+        if registry is None:
+            registry = {}
+            self.server.teachings = registry  # type: ignore[attr-defined]
         return registry
 
     def _serve_intake_video(self, rest: str) -> None:
@@ -6806,6 +7884,9 @@ class _Handler(BaseHTTPRequestHandler):
         if kind == "job":
             job_root = detected["job_root"]
             self._become_job(job_root)
+            # A test-video mark set at the front door, in the
+            # launch session, carries into this job's session.
+            _carry_launch_test_video(self.config)
             self._send_json(
                 200,
                 {
@@ -6859,6 +7940,193 @@ class _Handler(BaseHTTPRequestHandler):
             200,
             {"ok": True, "kind": "not_a_job", "message": NOT_A_JOB_MESSAGE},
         )
+
+    def _post_teach_begin(self) -> None:
+        """Open a teaching session folder and hand back its id.
+
+        Files then arrive one by one at /api/teach/file, a link at
+        /api/teach/link, and /api/teach/run does the learning.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        kind = str(body.get("kind") or "mine")
+        if kind not in ("mine", "style"):
+            kind = "mine"
+        try:
+            teach_id, folder = teaching.new_teaching_session(kind)
+        except OSError as exc:
+            _log_raw_error("teach begin", exc)
+            self._error(
+                500,
+                "The teaching drop could not be taken in. Try "
+                "again in a moment.",
+            )
+            return
+        self._teachings()[teach_id] = {"dir": str(folder), "kind": kind}
+        self._send_json(200, {"ok": True, "teach_id": teach_id})
+
+    def _post_teach_file(self) -> None:
+        """Receive one file of a teaching drop, byte for byte.
+
+        The role (recording, raw, or finished) and the file's own
+        name ride the query string; the body is the file itself,
+        streamed to disk under the role's name, with the same
+        safety pattern as the intake's file route.
+        """
+        query = parse_qs(urlsplit(self.path).query)
+        teach_id = (query.get("teach") or [""])[0]
+        role = (query.get("role") or [""])[0]
+        record = self._teachings().get(teach_id)
+        if record is None:
+            self._error(
+                400,
+                "That teaching drop is not on record anymore. "
+                "Add the files again.",
+            )
+            return
+        if role not in ("recording", "raw", "finished"):
+            self._error(
+                400,
+                "That part of the teaching drop is not one the "
+                "app takes.",
+            )
+            return
+        raw_name = (query.get("name") or [""])[0]
+        parts = _safe_relative_parts(raw_name)
+        if parts is None or len(parts) != 1:
+            self._error(
+                400,
+                "That file's name could not be used, so it was "
+                "not taken in.",
+            )
+            return
+        suffix = Path(parts[0]).suffix.lower()
+        if suffix not in TEACH_FILE_SUFFIXES:
+            self._error(
+                400,
+                "That file is not a video or sound file the app "
+                "can use.",
+            )
+            return
+        base = Path(record["dir"]).resolve()
+        target = (base / f"{role}{suffix}").resolve()
+        if not target.is_relative_to(base):
+            self._error(
+                400,
+                "That file's name could not be used, so it was "
+                "not taken in.",
+            )
+            return
+        length_header = self.headers.get("Content-Length")
+        if length_header is None:
+            self._error(400, "The file arrived without a size.")
+            return
+        try:
+            remaining = int(length_header)
+        except ValueError:
+            self._error(400, "The file arrived without a size.")
+            return
+        try:
+            with open(target, "wb") as handle:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+        except OSError as exc:
+            _log_raw_error("teach file", exc)
+            self._error(
+                500,
+                "That file could not be saved. Nothing was "
+                "learned from it.",
+            )
+            return
+        record[role] = target.name
+        self._send_json(
+            200,
+            {"ok": True, "role": role, "size": target.stat().st_size},
+        )
+
+    def _post_teach_link(self) -> None:
+        """Bring in the finished video at a pasted link.
+
+        A link the app cannot get a video from is not an error:
+        the answer says so in plain words and asks for the file
+        instead. It is never a fake success.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        teach_id = str(body.get("teach_id") or "")
+        record = self._teachings().get(teach_id)
+        if record is None:
+            self._error(
+                400,
+                "That teaching drop is not on record anymore. "
+                "Add the files again.",
+            )
+            return
+        folder = Path(record["dir"])
+        try:
+            landed = teaching.fetch_link(
+                str(body.get("url") or ""), folder
+            )
+        except teaching.TeachingLinkError:
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "landed": False,
+                    "message": TEACH_LINK_MESSAGE,
+                },
+            )
+            return
+        target = folder / ("finished" + landed.suffix.lower())
+        if landed != target:
+            landed.replace(target)
+        record["finished"] = target.name
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "landed": True,
+                "message": (
+                    "The video from that link is in. Choose Teach "
+                    "from this when you are ready."
+                ),
+            },
+        )
+
+    def _post_teach_run(self) -> None:
+        """Run the learning over one teaching drop.
+
+        The drafts land in the current session's teaching drafts
+        and come back with the rule suggestions they now join, so
+        the page can show them in place.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        teach_id = str(body.get("teach_id") or "")
+        record = self._teachings().get(teach_id)
+        if record is None:
+            self._error(
+                400,
+                "That teaching drop is not on record anymore. "
+                "Add the files again.",
+            )
+            return
+        result = _run_teaching(self.config, record)
+        session_log.log_stage(
+            self.config.session_dir, "teaching", "finish"
+        )
+        result["suggestions"] = _rule_suggestions(self.config)
+        self._send_json(200, result)
 
     def _post_intake_first_edit(self) -> None:
         """Start the first edit for one staged lone video.
@@ -7462,11 +8730,32 @@ class _Handler(BaseHTTPRequestHandler):
         _account_costs(
             self.config, _direction_cost_entries(audit.get("usage"))
         )
+        render_note = None
+        if self.config.is_intake_job and (
+            audit.get("applied_comment_ids")
+            or audit.get("before") != audit.get("after")
+        ):
+            # The run changed the plan: rebuild the review video
+            # so the player shows this edit (FIX A).
+            source_name = intake_build.intake_source_video(
+                self.config.job_dir
+            )
+            if source_name:
+                source = self.config.job_dir / source_name
+                try:
+                    media = speech.probe_media(source)
+                    has_audio = bool(media.get("has_audio", True))
+                except speech.TranscribeError:
+                    has_audio = True
+                render_note = _render_session_splice(
+                    self.config, source, has_audio
+                )
         self._send_json(
             200,
             {
                 "ok": True,
                 "provider": provider_name,
+                "render_note": render_note,
                 "format": fmt,
                 "round": audit.get("round"),
                 "overall_feedback": audit.get("overall_feedback", []),
@@ -7609,6 +8898,108 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, result)
 
+    def _post_test_video(self) -> None:
+        """Mark or unmark the current session's job as a test video.
+
+        The body says whether this is a test video (``test`` true
+        or false). The mark is written to the current session: the
+        launch session when no job is loaded yet, so the choice can
+        be made at the front door, or the job's own session once a
+        job is loaded. The answer carries the mark as it now
+        stands, the same field the job summary carries.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        on = body.get("test")
+        if not isinstance(on, bool):
+            on = body.get("test_video")
+        if not isinstance(on, bool):
+            self._error(400, "Say whether this is a test video.")
+            return
+        _set_test_video(self.config, on)
+        self._send_json(
+            200, {"ok": True, "test_video": _is_test_video(self.config)}
+        )
+
+    def _post_problem_report(self) -> None:
+        """Make the problem report zip (FIX B) and name the file.
+
+        Works with no job open too: the zip then lands in the
+        app's home folder and carries the first page and the
+        costs page only.
+        """
+        try:
+            path = _build_problem_report(self.config)
+        except Exception as exc:  # one plain sentence, never a stack
+            _log_raw_error("problem report", exc)
+            self._error(
+                500, "The problem report could not be made."
+            )
+            return
+        if self.config.has_job:
+            message = (
+                f"Your problem report is saved as {path.name} "
+                "in this job's folder."
+            )
+        else:
+            message = (
+                f"Your problem report is saved as {path.name} "
+                "in the app's home folder."
+            )
+        self._send_json(
+            200, {"ok": True, "file": path.name, "message": message}
+        )
+
+    def _post_why(self) -> None:
+        """Save the answer to the why question on its grade record.
+
+        The body names the grade record (entry_id), the choice
+        picked (story, sound, say_it, or other), and a note,
+        which may be empty unless the creator typed one. The
+        answer rides on the record itself, in the same grades
+        store as everything else; there is no second store.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        entry_id = str(body.get("entry_id") or "")
+        choice = str(body.get("choice") or "")
+        if choice not in WHY_CHOICES:
+            self._error(
+                400,
+                "That answer is not one of the choices. Pick one "
+                "of the answers shown, or skip the question.",
+            )
+            return
+        note = body.get("note")
+        note = note.strip() if isinstance(note, str) else ""
+        entries = _load_grades(self.config)
+        entry = next(
+            (
+                e
+                for e in entries
+                if entry_id
+                and (
+                    e.get("id") == entry_id
+                    or e.get("record_id") == entry_id
+                )
+            ),
+            None,
+        )
+        if entry is None:
+            self._error(
+                400,
+                "That change could not be found, so your answer "
+                "was not saved.",
+            )
+            return
+        entry["why"] = {"choice": choice, "note": note}
+        _save_grades(self.config, entries)
+        self._send_json(200, {"ok": True, "entry_id": entry_id})
+
     def _post_grades(self) -> None:
         """Receive graded changes from the review page.
 
@@ -7636,6 +9027,9 @@ class _Handler(BaseHTTPRequestHandler):
         checkpoints.begin(self.config)
         _save_grades(self.config, entries)
         checkpoints.commit(self.config, "Grades saved")
+        # A worked or partly grade on a job a direction run already
+        # finished is the other moment a teaching rule turns tested.
+        _refresh_teaching_tested(self.config)
         self._send_json(
             200,
             {
@@ -7704,6 +9098,12 @@ class _Handler(BaseHTTPRequestHandler):
         creator_rules.dismiss_suggestion(
             store, pattern_key, suggestion["support_count"]
         )
+        if pattern_key.startswith("teach:"):
+            # A passed-over teaching draft leaves the session's
+            # draft list too, so it does not come back on its own.
+            teaching.remove_draft(
+                self.config.session_dir, pattern_key[len("teach:"):]
+            )
         checkpoints.begin(self.config)
         _save_rules_store(self.config, store)
         checkpoints.commit(self.config, "Rule suggestion passed over")
@@ -7941,6 +9341,18 @@ class _Handler(BaseHTTPRequestHandler):
         if self._read_json_body() is None:
             self._error(400, "request body must be a JSON object")
             return
+
+        def word_statuses() -> list:
+            transcript = _load_json(
+                str(self.config.job_dir / "transcript.json")
+            )
+            timeline = Timeline(transcript, _effective_cuts(self.config))
+            return [
+                timeline.word_status(i)
+                for i in range(len(transcript.get("words", [])))
+            ]
+
+        before_statuses = word_statuses() if undo else None
         moved = (
             checkpoints.undo(self.config)
             if undo
@@ -7961,8 +9373,35 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        response = {"ok": True, **moved}
+        if undo and before_statuses is not None:
+            # An undo that brings back exactly one run of cut
+            # words is a restore like any other: it writes the
+            # same grade record, and the page asks why about it.
+            # An undo that brings back more than one run, or no
+            # words at all, writes no record and asks nothing.
+            after_statuses = word_statuses()
+            brought_back = [
+                index
+                for index, (before, after) in enumerate(
+                    zip(before_statuses, after_statuses)
+                )
+                if before == "cut" and after == "kept"
+            ]
+            runs: list = []
+            for index in brought_back:
+                if runs and index == runs[-1][1]:
+                    runs[-1] = (runs[-1][0], index + 1)
+                else:
+                    runs.append((index, index + 1))
+            if len(runs) == 1:
+                entry_id = _record_restore_grade(
+                    self.config, runs[0][0], runs[0][1], "history-undo"
+                )
+                if entry_id:
+                    response["why_prompt"] = {"entry_id": entry_id}
         _refresh_after_review(self.config)
-        self._send_json(200, {"ok": True, **moved})
+        self._send_json(200, response)
 
     def _post_captions_pref(self) -> None:
         """Set whether ums and uhs are hidden in this job's captions.
@@ -8074,15 +9513,9 @@ class _Handler(BaseHTTPRequestHandler):
             has_audio = bool(media.get("has_audio", True))
         except speech.TranscribeError:
             has_audio = True
-        try:
-            intake_build.render_splice(
-                source,
-                _effective_cuts(self.config),
-                session / SESSION_VIDEO_NAME,
-                has_audio=has_audio,
-            )
-        except speech.TranscribeError as exc:
-            self._send_json(200, {"ok": False, "error": str(exc)})
+        failure = _render_session_splice(self.config, source, has_audio)
+        if failure is not None:
+            self._send_json(200, {"ok": False, "error": failure})
             return
         marker_path = self.config.job_dir / intake_build.INTAKE_MARKER
         try:
@@ -8195,6 +9628,7 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        _record_splice_built(self.config)
         try:
             _regenerate_after_review(self.config)
         except Exception:

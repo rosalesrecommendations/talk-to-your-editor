@@ -59,14 +59,15 @@ class ToolRowTests(unittest.TestCase):
     """Items 11 and 12: compact rows, options on open, off collapses."""
 
     def test_every_tool_row_starts_with_its_options_hidden(self):
-        # Four intake rows (retakes, silence, fillers, mode) and
-        # five review rows (those four plus formats/direction).
-        self.assertEqual(TEMPLATE.count('class="tool-options" hidden'), 9)
-        self.assertEqual(TEMPLATE.count('class="tool-open"'), 9)
+        # Five intake rows (retakes, silence, fillers, mode, and
+        # the v0.10 editing style) and six review rows (those five
+        # plus formats/direction).
+        self.assertEqual(TEMPLATE.count('class="tool-options" hidden'), 11)
+        self.assertEqual(TEMPLATE.count('class="tool-open"'), 11)
 
     def test_rows_open_pre_set_to_the_recommended_choice(self):
         self.assertIn("Last take stays (recommended)", TEMPLATE)
-        self.assertIn("Leave 0.2 seconds (recommended)", TEMPLATE)
+        self.assertIn("Leave 0.1 seconds (recommended)", TEMPLATE)
         self.assertIn("Cleanest cut (recommended)", TEMPLATE)
         # The recommended keep mode and involvement mode are the
         # ones the page selects on load.
@@ -263,6 +264,352 @@ class HierarchyTests(unittest.TestCase):
         self.assertIn("h1 { font-size: 32px; }", TEMPLATE)
         self.assertIn("h2 { font-size: 20px; }", TEMPLATE)
         self.assertIn(".hero-title { font-size: 24px;", TEMPLATE)
+
+
+# ---------------------------------------------------------------------------
+# v2 workspace (round 2 specs, 2026-10-28): the frame, the pop ups,
+# the transport words, the block-only timeline strip, Bigger text,
+# and the server's paragraph grouping on the edited clock.
+# ---------------------------------------------------------------------------
+
+
+class V2FrameTests(unittest.TestCase):
+    """The page fits the window at laptop sizes; panels scroll
+    inside themselves; no page scrollbar."""
+
+    def test_no_page_scrollbar_at_laptop_sizes(self):
+        self.assertIn("body.job-loaded { overflow: hidden; }", TEMPLATE)
+        self.assertIn("height: 100dvh", TEMPLATE)
+        self.assertIn(
+            "grid-template-columns: var(--pane-a, 350px) 10px "
+            "minmax(0, 1fr) 10px var(--pane-c, 310px);",
+            TEMPLATE,
+        )
+        # 1280-wide windows get the narrower columns.
+        self.assertIn("--pane-a: 320px; --pane-c: 280px;", TEMPLATE)
+        # The transcript line is capped, never stretched.
+        self.assertIn("max-width: 68ch", TEMPLATE)
+
+    def test_top_bar_carries_the_three_labelled_buttons(self):
+        head = between('class="app-head"', 'id="popupScrim"')
+        self.assertIn('id="howItWorksToggle"', head)
+        self.assertIn("How this works", head)
+        self.assertIn('id="commentsToggle"', head)
+        self.assertIn('id="commentsCount"', head)
+        self.assertIn('id="settingsToggle"', head)
+        self.assertIn('id="topJobName"', head)
+
+    def test_comments_panel_closes_and_reopens_from_the_top_bar(self):
+        self.assertIn('id="hideCommentsBtn"', TEMPLATE)
+        self.assertIn("Hide comments", TEMPLATE)
+        self.assertIn("function applyCommentsOpen(open)", TEMPLATE)
+        self.assertIn('"tye-comments-open"', TEMPLATE)
+        self.assertIn("body.comments-closed #toolsPane", TEMPLATE)
+
+    def test_left_column_holds_only_the_watching_and_making_tools(self):
+        left = between('class="review-left"', 'id="paneDivider"')
+        order = [
+            left.index('id="vid"'),
+            left.index('id="fmtRow"'),
+            left.index('id="tlbar"'),
+            left.index('id="makeEditCard"'),
+        ]
+        self.assertEqual(order, sorted(order))
+        # The money card and the keyboard list left the column.
+        self.assertNotIn('id="moneyCard"', left)
+        self.assertNotIn('id="shortcutLine"', left)
+
+
+class V2PopupTests(unittest.TestCase):
+    """Settings and How this works are pop ups over a dimmed page."""
+
+    def test_popups_have_a_scrim_and_close_hooks(self):
+        self.assertIn('id="popupScrim" hidden', TEMPLATE)
+        self.assertIn('id="howItWorksPanel" hidden', TEMPLATE)
+        self.assertIn("popup-panel", TEMPLATE)
+        self.assertIn("function closePopups()", TEMPLATE)
+        self.assertIn('e.key === "Escape"', TEMPLATE)
+        self.assertIn(
+            'popupScrim.addEventListener("click", closePopups)',
+            TEMPLATE,
+        )
+        self.assertIn('id="settingsClose"', TEMPLATE)
+        self.assertIn('id="howItWorksClose"', TEMPLATE)
+
+    def test_keyboard_list_and_switch_live_in_how_this_works(self):
+        panel = between('id="howItWorksPanel"', 'id="settingsPanel"')
+        self.assertIn('id="shortcutLine"', panel)
+        self.assertIn('id="shortcutToggle"', panel)
+
+    def test_money_history_renders_inside_settings(self):
+        panel = between('id="settingsPanel"', 'id="jobIncompleteBanner"')
+        self.assertIn('id="moneyCard"', panel)
+        self.assertIn('id="moneyBody"', panel)
+        self.assertIn('id="moneyReset"', panel)
+        self.assertIn('id="moneyStatus"', panel)
+        self.assertIn('id="problemReportBtn"', panel)
+        self.assertIn('id="problemReportNote"', panel)
+
+    def test_money_details_link_opens_settings_at_money(self):
+        self.assertIn('id="moneyDetailsLink"', TEMPLATE)
+        self.assertIn("Money details", TEMPLATE)
+        self.assertIn("function openSettingsAtMoney()", TEMPLATE)
+
+    def test_cost_line_speaks_before_and_after_a_run(self):
+        self.assertIn(
+            'id="fdCostLine">Edits cost a few cents a run.', TEMPLATE)
+        self.assertIn('"Your last edit cost "', TEMPLATE)
+
+    def test_bigger_text_and_reset_layout_live_in_settings(self):
+        panel = between('id="settingsPanel"', 'id="jobIncompleteBanner"')
+        self.assertIn('id="biggerTextToggle"', panel)
+        self.assertIn("Bigger text", panel)
+        self.assertIn('id="resetLayoutBtn"', panel)
+        self.assertIn("body.bigger-text", TEMPLATE)
+        self.assertIn("font-size: 19px", TEMPLATE)
+
+
+class V2TransportTests(unittest.TestCase):
+    """One centered row; a word under every button; Play is the
+    only blue button; the old Now-at readout is gone."""
+
+    def test_words_under_every_button(self):
+        row = between('id="fmtRow"', 'id="tlbar"')
+        for label in (">Start<", ">Back 5<", ">Play<", ">Fwd 5<",
+                      ">End<", ">Prev change<", ">Next change<"):
+            self.assertIn(label, row)
+        self.assertIn('class="tp-label"', row)
+        self.assertIn(".tp-label { font-size: 11px;", TEMPLATE)
+
+    def test_play_is_the_only_blue_button(self):
+        self.assertIn(".tp-play { background: #0064d1;", TEMPLATE)
+        self.assertIn('id="playPauseBtn"', TEMPLATE)
+
+    def test_time_readout_is_the_edited_clock_pair(self):
+        self.assertIn('id="clock">0:00 / 0:00<', TEMPLATE)
+        self.assertIn("function transportReadout()", TEMPLATE)
+        self.assertNotIn("Now at <b", TEMPLATE)
+
+
+class V2TimelineTests(unittest.TestCase):
+    """The strip is blocks only: no word ticks, no watched wash,
+    no cut notches, held is not drawn."""
+
+    def test_strip_is_blocks_and_dots_only(self):
+        panel = between('id="tlbar"', 'id="fmtRow"') \
+            if TEMPLATE.index('id="tlbar"') < TEMPLATE.index('id="fmtRow"') \
+            else between('id="tlbar"', 'id="makeEditCard"')
+        self.assertIn('id="tlRuler"', panel)
+        self.assertIn('id="tlBlocks"', panel)
+        self.assertIn('id="tlDots"', panel)
+        self.assertIn('id="tlCaption"', panel)
+        self.assertIn(".tl-block {", TEMPLATE)
+        self.assertIn("background: #262b33", TEMPLATE)
+        self.assertIn("border-radius: 8px", TEMPLATE)
+
+    def test_captions_use_the_spec_words(self):
+        self.assertIn(
+            "Nothing taken out yet. This is your video as you "
+            "dropped it.",
+            TEMPLATE,
+        )
+        self.assertIn('"Edited: " + fmtTransport(out)', TEMPLATE)
+        self.assertIn('" The dots are your comments."', TEMPLATE)
+
+    def test_dots_follow_the_waiting_rule(self):
+        # Round 2 refinement (Justin's add-on): a timeline dot
+        # marks a spot still waiting on the person's call. Once
+        # the spot is decided the dot goes away; it does not turn
+        # gray. The transcript margin markers keep blue/gray.
+        self.assertNotIn(".tl-dot.done", TEMPLATE)
+        self.assertIn("function renderDots()", TEMPLATE)
+        self.assertIn(
+            'var waiting = g.items.filter(function (x) { return !x.done; });',
+            TEMPLATE,
+        )
+        self.assertIn("if (!waiting.length) { return; }", TEMPLATE)
+        self.assertIn("dot.className = \"tl-dot\";", TEMPLATE)
+        self.assertIn(
+            "count.textContent = waiting.length;", TEMPLATE)
+        self.assertIn('.tx-comment-marker.done { background: #8e8e93; }',
+                      TEMPLATE)
+
+
+class V2TranscriptTests(unittest.TestCase):
+    """Paragraphs, one gutter time each, the one help line."""
+
+    def test_help_line_is_exact_and_instructions_are_gone(self):
+        self.assertIn(
+            "Times match the video you are watching.", TEMPLATE)
+        self.assertNotIn(
+            "The words of the edit, in order. Words that were cut "
+            "are struck through and dimmed. Drag across words",
+            TEMPLATE,
+        )
+
+    def test_paragraph_rendering_uses_the_server_grouping(self):
+        self.assertIn("w.paragraph", TEMPLATE)
+        self.assertIn('className = "tx-para"', TEMPLATE)
+        self.assertIn('className = "tx-time"', TEMPLATE)
+        self.assertIn("fmtTransport(et)", TEMPLATE)
+
+    def test_double_click_pins_a_comment(self):
+        self.assertIn('addEventListener("dblclick"', TEMPLATE)
+
+
+class ParagraphIndexTests(unittest.TestCase):
+    """Server: grouping computed once from the original word
+    times (0.8s pause rule, speaker change, length break at a
+    sentence end); entries carry the edited clock too."""
+
+    def words(self, spec):
+        out = []
+        t = 0.0
+        for text, gap in spec:
+            t += gap
+            out.append({"word": text, "start": round(t, 2),
+                        "end": round(t + 0.3, 2)})
+            t += 0.3
+        return out
+
+    def test_pause_of_point_eight_breaks(self):
+        words = self.words([("One", 0.0), ("two.", 0.2),
+                            ("Three", 0.9), ("four.", 0.2)])
+        idx = webapp._paragraph_indices(words)
+        self.assertEqual(idx, [0, 0, 1, 1])
+
+    def test_short_pause_does_not_break(self):
+        words = self.words([("One", 0.0), ("two.", 0.2),
+                            ("Three", 0.5), ("four.", 0.2)])
+        self.assertEqual(webapp._paragraph_indices(words), [0, 0, 0, 0])
+
+    def test_speaker_change_breaks(self):
+        words = self.words([("Hi.", 0.0), ("There.", 0.2)])
+        words[1]["speaker"] = "Sam"
+        words[0]["speaker"] = "Jo"
+        self.assertEqual(webapp._paragraph_indices(words), [0, 1])
+
+    def test_edited_time_maps_kept_and_cut(self):
+        from talk_to_your_editor.timeline import Timeline
+        words = self.words(
+            [("a", 0.0), ("b", 0.2), ("c", 0.2), ("d", 0.2)])
+        transcript = {"words": words, "duration": 10.0}
+        cuts = {"kept_ranges": [{"start": 0.0, "end": 0.8},
+                                {"start": 1.8, "end": 2.6}],
+                "source_duration_s": 2.6}
+        tl = Timeline(transcript, cuts)
+        # A kept word keeps its offset; a cut word lands on the join.
+        self.assertAlmostEqual(
+            webapp._edited_time_for_source(tl, 0.2), 0.2)
+        self.assertAlmostEqual(
+            webapp._edited_time_for_source(tl, 1.2), 0.8)
+        self.assertAlmostEqual(
+            webapp._edited_time_for_source(tl, 2.0), 1.0)
+
+
+class V2FrontDoorTests(unittest.TestCase):
+    """6b: the staged preview stays small; the how-it-works
+    details starts closed."""
+
+    def test_drop_preview_is_capped(self):
+        self.assertIn("#dropVideo { max-height: 200px;", TEMPLATE)
+
+    def test_how_bringing_in_a_job_works_starts_closed(self):
+        drop = between('id="dropCard"', 'id="dropVideoWrap"')
+        self.assertIn('<details class="more-info">', drop)
+        self.assertNotIn('<details class="more-info" open', drop)
+
+
+class V2ArrangementTests(unittest.TestCase):
+    """Arrangeable panels (Justin's add-on): swap sides, panels
+    off and on, one panel wider, all remembered on this computer,
+    with the one-screen fit kept in every arrangement."""
+
+    def test_plain_controls_exist_in_panel_headers_and_top_bar(self):
+        for marker in (
+            'id="swapSidesBtn"', ">Swap sides<",
+            'id="videoHideBtn"', ">Hide video<",
+            'id="videoExpandBtn"', 'id="transcriptExpandBtn"',
+            'id="commentsExpandBtn"', ">Make wider<",
+            '"Back to normal"',
+            'id="transcriptHideBtn"', ">Hide transcript<",
+            'id="showVideoBtn"', ">Show video<",
+            'id="showTranscriptBtn"', ">Show transcript<",
+        ):
+            self.assertIn(marker, TEMPLATE)
+
+    def test_arrangement_is_remembered_in_the_same_storage_family(self):
+        self.assertIn('"tye-layout"', TEMPLATE)
+        self.assertIn("function applyLayout()", TEMPLATE)
+        self.assertIn("function toggleExpandedPanel(name)", TEMPLATE)
+        # Reset layout clears the arrangement with the sizes.
+        self.assertIn('removeItem("tye-layout")', TEMPLATE)
+
+    def test_swap_keeps_the_timeline_with_the_video_panel(self):
+        # The timeline lives inside the video panel (.review-left),
+        # so it follows the video wherever the arrangement puts it.
+        left = between('class="review-left"', 'id="paneDivider"')
+        self.assertIn('id="tlbar"', left)
+        self.assertIn('id="vid"', left)
+        self.assertIn("body.job-loaded.panels-swapped .review-left "
+                      "{ grid-column: 3; }", TEMPLATE)
+        self.assertIn("body.job-loaded.panels-swapped .review-right "
+                      "{ grid-column: 1; }", TEMPLATE)
+
+    def test_every_arrangement_keeps_the_one_screen_fit(self):
+        for marker in (
+            "body.job-loaded.video-hidden .review-left",
+            "body.job-loaded.transcript-hidden .review-right",
+            "body.job-loaded.expanded-video .review-split",
+            "body.job-loaded.expanded-transcript .review-split",
+            "body.job-loaded.expanded-comments .review-split",
+            "grid-template-columns: minmax(0, 1fr);",
+        ):
+            self.assertIn(marker, TEMPLATE)
+        # Expanding the comments panel reopens it first.
+        self.assertIn(
+            'if (layoutState.expanded === "comments") '
+            '{ applyCommentsOpen(true); }',
+            TEMPLATE,
+        )
+
+
+class V2FixASharpenedTests(unittest.TestCase):
+    """FIX A, sharpened (Justin's add-on): after a run, the open
+    page swaps the player to the new edited video on its own,
+    through the state poll and applyJobState/syncPlayerToWatching,
+    and the watching line is right at all times, mid-build too."""
+
+    def test_building_state_is_named_plainly(self):
+        self.assertIn("function showWatchingBuilding()", TEMPLATE)
+        self.assertIn("Building your edited video", TEMPLATE)
+        self.assertIn(
+            "It will play here on its own when it is ready.",
+            TEMPLATE,
+        )
+        # Building is a branch of the watching sync itself, so the
+        # edited claim cannot print while the copy is not ready.
+        sync = between(
+            "function syncPlayerToWatching(job)",
+            "// ---- What it costs",
+        )
+        self.assertIn("building = true;", sync)
+        self.assertIn("showWatchingBuilding();", sync)
+        self.assertIn('w.building ? "building" : "ready"', sync)
+
+    def test_the_poll_applies_the_fresh_state_when_the_copy_lands(self):
+        self.assertIn("applyJobState(fresh);", TEMPLATE)
+        self.assertIn("syncPlayerToWatching(fresh);", TEMPLATE)
+        # A transcript refresh also syncs the player, and the
+        # render button re-reads the job state when it finishes.
+        self.assertIn("syncPlayerToWatching(job);", TEMPLATE)
+        self.assertIn("reloadJobState();", TEMPLATE)
+
+    def test_the_watching_state_names_building_on_the_server(self):
+        import inspect
+        src = inspect.getsource(webapp._watching_state)
+        self.assertIn('"building": False', src)
+        self.assertIn('state["building"]', src)
 
 
 if __name__ == "__main__":

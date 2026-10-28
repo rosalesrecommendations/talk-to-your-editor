@@ -159,7 +159,7 @@ class TemplateContractTests(unittest.TestCase):
     def test_remove_moment_and_panel_exist(self):
         for needle in ('id="inRetakes"', 'id="inSilence"',
                        'id="inFillers"', 'id="inKeepPills"',
-                       'id="inBreathsPills"', 'id="fdFillers"',
+                       'id="fdFillers"',
                        'id="transcriptPanel"', 'id="txFollow"',
                        'id="txActionStrip"', 'id="txCutBtn"',
                        'id="txRestoreBtn"', 'role="dialog"',
@@ -170,6 +170,20 @@ class TemplateContractTests(unittest.TestCase):
     def test_no_dead_state_route_and_no_feel_pause_copy(self):
         self.assertNotIn("/api/state", TEMPLATE)
         self.assertNotIn("judged by feel", TEMPLATE)
+
+    def test_no_breaths_control_anywhere(self):
+        # v0.10: the breaths choice was removed (the creator's
+        # call). No pill row, no data attribute, no JS for it.
+        for needle in ("BreathsPills", "data-breaths", "setBreaths",
+                       "BREATHS_NOTES", "Silence left between words"):
+            self.assertNotIn(needle, TEMPLATE)
+        # The one remaining silence setting, in the new words.
+        self.assertIn("Quiet between your words", TEMPLATE)
+        self.assertIn(
+            "When you stop talking for a moment, the app cuts "
+            "the quiet down and leaves only this much.",
+            TEMPLATE,
+        )
 
 
 class NoJobSummaryTests(unittest.TestCase):
@@ -205,9 +219,11 @@ class NoJobSummaryTests(unittest.TestCase):
         self.assertEqual(
             set(front_door),
             {"remove_retakes", "cut_silence", "buffer_s", "keep_mode",
-             "breaths", "remove_fillers", "mode",
+             "remove_fillers", "mode",
              # v0.8.1: the chosen Spark route rides the front door.
-             "spark_route"})
+             "spark_route",
+             # v0.10: the editing style rides the front door too.
+             "style"})
         self.assertEqual(summary["flags"], [])
         self.assertEqual(summary["gold"], [])
 

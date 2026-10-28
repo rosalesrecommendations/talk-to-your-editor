@@ -374,7 +374,7 @@
      followed while the video plays. The left column sticks in
      place and scrolls inside itself when it is taller than the
      window, so the video never scrolls away. */
-  @media (min-width: 1024px) {
+  @media (min-width: 1100px) {
     body:not(.no-job) main { max-width: 1280px; }
     .review-split {
       display: grid;
@@ -399,7 +399,7 @@
      the page is the same single stacked column as always; the
      order values put the sections the split moved back into
      exactly today's sequence. */
-  @media (max-width: 1023.98px) {
+  @media (max-width: 1099.98px) {
     main { display: flex; flex-direction: column; }
     .review-split, .review-left, .review-right, .review-tools { display: contents; }
     #pinCard { order: 31; }
@@ -639,6 +639,9 @@
   .badge.flagged { color: #ffb340; background: rgba(255, 159, 10, 0.13); }
   .badge.rejected { color: #ff6961; background: rgba(255, 69, 58, 0.13); }
   .comment-text { font-size: 17px; line-height: 1.5; margin: 5px 0 7px; }
+  #storyRuleSuggestion { margin-top: 16px; }
+  .story-rule { border: 1px solid rgba(255, 159, 10, 0.45); }
+  .story-rule .story-rule-label { font-weight: 600; }
   .action { font-size: 14px; line-height: 1.5; color: var(--muted); margin: 0; }
   .del {
     margin-left: auto;
@@ -796,7 +799,7 @@
   /* One-screen workspace (item 14): the review fits the window,
      panes scroll inside themselves, dividers resize them. */
   .pane-divider { display: none; }
-  @media (min-width: 1024px) {
+  @media (min-width: 1100px) {
     body.job-loaded main {
       max-width: 1600px; height: 100vh; height: 100dvh;
       padding: 16px 18px 12px; display: flex; flex-direction: column; overflow: hidden;
@@ -821,21 +824,252 @@
     }
     body.job-loaded .pane-divider:hover, body.job-loaded .pane-divider:focus-visible { background: var(--accent); }
   }
+
+  /* ==== v2 workspace (round 2 specs): one screen, three panels ==== */
+  :root { --meta-blue: #0064d1; }
+  .topbar-job { color: var(--muted); font-size: 15px; font-weight: 600; text-align: center; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-actions { display: flex; gap: 8px; align-items: center; flex: none; }
+  .topbar-btn { min-height: 40px; padding: 8px 14px; font-size: 14px; }
+  #commentsCount { font-weight: 700; }
+  .popup-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 70; }
+  .popup-panel { position: fixed; top: 56px; right: 10px; width: min(580px, 94vw); max-height: calc(100dvh - 72px); overflow-y: auto; z-index: 80; margin: 0; }
+  .popup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .popup-head h2 { margin: 0; }
+  @media (prefers-reduced-motion: no-preference) {
+    .popup-panel { animation: popupFade 140ms ease-out; }
+    @keyframes popupFade { from { opacity: 0; } to { opacity: 1; } }
+  }
+  /* Transport (v2): one centered row, a word under every button. */
+  .transport { display: flex; align-items: flex-start; gap: 10px; margin: 2px 0 4px; min-width: 0; max-width: 100%; }
+  .transport-clock { flex: none; padding-top: 12px; font-size: 14px; color: var(--muted); }
+  .transport-clock b { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+  .transport-center { display: flex; gap: 4px; align-items: flex-start; margin: 0 auto; }
+  .tp-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 44px; min-height: 44px; padding: 6px 7px; border-radius: 12px; font-weight: 400; }
+  .tp-icon { font-size: 16px; line-height: 1.1; }
+  .tp-label { font-size: 11px; color: var(--muted); line-height: 1.1; white-space: nowrap; }
+  .tp-play { background: #0064d1; border-color: transparent; color: #fff; min-width: 52px; min-height: 52px; border-radius: 999px; box-shadow: 0 6px 18px rgba(0, 100, 209, 0.3); }
+  .tp-play .tp-label { color: #fff; }
+  /* Timeline panel (v2): ruler, one row of piece blocks, dots. */
+  .tl-stack { position: relative; }
+  .tl-ruler { position: relative; height: 16px; }
+  .tl-ruler-label { position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; line-height: 1; white-space: nowrap; }
+  .tl-ruler-tick { position: absolute; bottom: 0; width: 1px; height: 6px; background: rgba(255, 255, 255, 0.25); }
+  .tl-track { height: 30px; background: transparent; border: 0; border-radius: 8px; box-shadow: none; overflow: visible; }
+  .tl-block { position: absolute; top: 0; height: 30px; min-height: 0; padding: 0; background: #262b33; border: 0; border-radius: 8px; cursor: pointer; }
+  .tl-block-ph { background: rgba(120, 120, 128, 0.25); cursor: default; }
+  .tl-caption { font-size: 13px; color: var(--muted); margin: 6px 0 0; line-height: 1.45; }
+  #tlDots { position: absolute; inset: 0; pointer-events: none; }
+  .tl-dot { top: 16px; width: 10px; height: 10px; margin: -5px 0 0 -5px; padding: 0; border: 2px solid #fff; background: #0064d1; pointer-events: auto; display: flex; align-items: center; justify-content: center; }
+  .tl-dot-count { font-size: 7px; font-weight: 700; color: #fff; line-height: 1; }
+  .tl-hover-line { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255, 255, 255, 0.4); pointer-events: none; z-index: 3; }
+  .tl-playhead { top: 0; bottom: 0; width: 2px; margin-left: -1px; z-index: 4; }
+  .tl-playhead::before { top: 2px; width: 12px; height: 12px; }
+  .tl-bubble { bottom: auto; top: -34px; }
+  /* Transcript as flowing paragraphs (v2). */
+  #transcriptPanel .transcript { font-size: 17px; line-height: 1.55; }
+  .tx-para { position: relative; margin: 0 0 14px; padding-right: 28px; }
+  .tx-speaker { font-size: 12px; color: var(--muted); margin: 0 0 2px 48px; }
+  .tx-para-row { display: flex; align-items: flex-start; gap: 10px; }
+  .tx-time { flex: none; width: 38px; text-align: right; min-height: 0; padding: 3px 0; margin: 0; background: none; border: 0; box-shadow: none; font-size: 12px; font-weight: 400; color: var(--faint); font-variant-numeric: tabular-nums; cursor: pointer; }
+  .tx-para-now .tx-time { color: #fff; }
+  .tx-words { flex: 1; min-width: 0; max-width: 68ch; }
+  .tx-margin { position: absolute; right: 0; top: 1px; display: flex; flex-direction: column; gap: 4px; }
+  .tx-comment-marker { width: 18px; height: 18px; min-height: 0; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #0064d1; color: #fff; font-size: 10px; font-weight: 700; line-height: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .tx-comment-marker.done { background: #8e8e93; }
+  .comment-flash { outline: 2px solid #0064d1; outline-offset: 2px; }
+  .tx-comment-marker.comment-flash { outline: 2px solid #fff; }
+  /* Marks order (v2 spec, workspace section 4): the spoken word's
+     wash wins; under it the open comment's dotted underline; under
+     that the held wash; cut strike is the base state. A lower mark
+     steps down while a higher one shows on the same word. */
+  .tw-commented { border-bottom: 2px dotted #0064d1; }
+  .tw.tw-now { background: rgba(0, 100, 209, 0.38); box-shadow: none; border-bottom-color: transparent; }
+  .tw.tw-resting { background: transparent; box-shadow: none; outline: 1px solid rgba(255, 255, 255, 0.55); outline-offset: 1px; }
+  .comments-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 2px 10px; }
+  .comments-head h2 { margin: 0; font-size: 17px; }
+  #hideCommentsBtn { min-height: 36px; padding: 6px 12px; font-size: 13px; }
+  .example-comment { display: block; margin-top: 8px; }
+  /* Front door (v2, 6b): the staged preview stays small. */
+  #dropVideo { max-height: 200px; width: 100%; object-fit: contain; }
+  /* Bigger text (v2): words grow, rows grow, widths stay. */
+  body.bigger-text #transcriptPanel .transcript { font-size: 19px; }
+  body.bigger-text .tx-time { font-size: 14px; }
+  body.bigger-text .tx-counts { font-size: 17px; }
+  body.bigger-text .transport-clock { font-size: 16px; }
+  body.bigger-text .tp-label { font-size: 13px; }
+  body.bigger-text .tp-btn { min-height: 52px; }
+  body.bigger-text .tl-ruler-label { font-size: 13px; }
+  body.bigger-text .tl-ruler { height: 20px; }
+  body.bigger-text .tl-track, body.bigger-text .tl-block { height: 36px; }
+  body.bigger-text .tl-dot { top: 20px; }
+  body.bigger-text button { min-height: 52px; }
+  body.bigger-text .tp-btn, body.bigger-text .tx-time, body.bigger-text .tx-comment-marker, body.bigger-text .tl-dot, body.bigger-text .tdot, body.bigger-text .tflag, body.bigger-text .theld { min-height: 0; }
+  /* The workspace frame (v2): the page fits the window at laptop
+     sizes; panels scroll inside themselves; bottom edges stay on
+     screen. */
+  @media (min-width: 1100px) {
+    body.job-loaded { overflow: hidden; }
+    body.job-loaded main {
+      max-width: none; height: 100dvh; padding: 10px;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    body.job-loaded .app-head { flex: none; height: 48px; align-items: center; }
+    body.job-loaded .app-head h1 { font-size: 18px; margin: 0; }
+    body.job-loaded .subtitle { display: none; }
+    body.job-loaded .review-split {
+      flex: 1 1 auto; min-height: 0; display: grid;
+      grid-template-columns: var(--pane-a, 350px) 10px minmax(0, 1fr) 10px var(--pane-c, 310px);
+      gap: 0; align-items: stretch; margin: 0;
+    }
+    body.job-loaded .review-left {
+      position: static; max-height: none; overflow-y: auto; min-height: 0; min-width: 0;
+      background: var(--panel); border: 0.5px solid var(--line); border-radius: var(--radius-sm);
+      padding: 10px; display: flex; flex-direction: column; gap: 2px;
+    }
+    body.job-loaded .review-left .card { margin-bottom: 10px; }
+    body.job-loaded .review-right { overflow: hidden; min-height: 0; min-width: 0; display: flex; }
+    body.job-loaded .review-right .card {
+      flex: 1; min-height: 0; display: flex; flex-direction: column; margin-bottom: 0;
+      border-radius: var(--radius-sm);
+    }
+    body.job-loaded .review-right #transcriptPanel { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
+    body.job-loaded .review-tools {
+      overflow-y: auto; min-height: 0; min-width: 0;
+      background: var(--panel); border: 0.5px solid var(--line); border-radius: var(--radius-sm);
+      padding: 10px;
+    }
+    body.job-loaded .pane-divider {
+      display: block; width: 6px; justify-self: center; border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14); cursor: col-resize; touch-action: none;
+    }
+    body.comments-closed .review-split {
+      grid-template-columns: var(--pane-a, 350px) 10px minmax(0, 1fr) 0 0;
+    }
+    body.comments-closed #toolsPane, body.comments-closed #toolsDivider { display: none; }
+  }
+  @media (min-width: 1100px) and (max-width: 1400px) {
+    body.job-loaded .review-split { --pane-a: 320px; --pane-c: 280px; }
+  }
+  /* Panel arrangement (v2 addition): a few plain controls swap
+     the video and transcript sides, turn a panel off and back on,
+     or make one panel take the full width for a while. The
+     arrangement is remembered on this computer. Every state keeps
+     the one-screen fit: panels still scroll only inside
+     themselves and no page scrollbar appears. These rules apply
+     to the laptop layout; below 1100px the stacked layout stays
+     as it was. */
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 0 6px; }
+  .panel-head-name { font-size: 13px; font-weight: 700; color: var(--muted); }
+  .panel-head-btns { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+  .panel-head-btns button { min-height: 34px; padding: 5px 10px; font-size: 12px; }
+  @media (min-width: 1100px) {
+    body.job-loaded.panels-swapped .review-split {
+      grid-template-columns: minmax(0, 1fr) 10px var(--pane-a, 350px) 10px var(--pane-c, 310px);
+    }
+    body.job-loaded.panels-swapped .review-right { grid-column: 1; }
+    body.job-loaded.panels-swapped #paneDivider { grid-column: 2; }
+    body.job-loaded.panels-swapped .review-left { grid-column: 3; }
+    body.job-loaded.panels-swapped #toolsDivider { grid-column: 4; }
+    body.job-loaded.panels-swapped #toolsPane { grid-column: 5; }
+    body.job-loaded.panels-swapped.comments-closed .review-split {
+      grid-template-columns: minmax(0, 1fr) 10px var(--pane-a, 350px) 0 0;
+    }
+    body.job-loaded.video-hidden .review-left,
+    body.job-loaded.video-hidden #paneDivider { display: none; }
+    body.job-loaded.video-hidden .review-split {
+      grid-template-columns: minmax(0, 1fr) 10px var(--pane-c, 310px);
+    }
+    body.job-loaded.video-hidden .review-right { grid-column: 1; }
+    body.job-loaded.video-hidden #toolsDivider { grid-column: 2; }
+    body.job-loaded.video-hidden #toolsPane { grid-column: 3; }
+    body.job-loaded.transcript-hidden .review-right,
+    body.job-loaded.transcript-hidden #paneDivider { display: none; }
+    body.job-loaded.transcript-hidden .review-split {
+      grid-template-columns: var(--pane-a, 350px) 10px minmax(0, 1fr);
+    }
+    body.job-loaded.transcript-hidden .review-left { grid-column: 1; }
+    body.job-loaded.transcript-hidden #toolsDivider { grid-column: 2; }
+    body.job-loaded.transcript-hidden #toolsPane { grid-column: 3; }
+    body.job-loaded.video-hidden.transcript-hidden .review-split {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    body.job-loaded.video-hidden.transcript-hidden #toolsDivider { display: none; }
+    body.job-loaded.video-hidden.transcript-hidden #toolsPane { grid-column: 1; }
+    body.job-loaded.comments-closed.video-hidden .review-split {
+      grid-template-columns: minmax(0, 1fr) 0 0;
+    }
+    body.job-loaded.comments-closed.transcript-hidden .review-split {
+      grid-template-columns: var(--pane-a, 350px) 0 0;
+    }
+    body.job-loaded.expanded-video .review-split,
+    body.job-loaded.expanded-transcript .review-split,
+    body.job-loaded.expanded-comments .review-split {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    body.job-loaded.expanded-video .review-right,
+    body.job-loaded.expanded-video #toolsPane,
+    body.job-loaded.expanded-video .pane-divider,
+    body.job-loaded.expanded-transcript .review-left,
+    body.job-loaded.expanded-transcript #toolsPane,
+    body.job-loaded.expanded-transcript .pane-divider,
+    body.job-loaded.expanded-comments .review-left,
+    body.job-loaded.expanded-comments .review-right,
+    body.job-loaded.expanded-comments .pane-divider { display: none; }
+    body.job-loaded.expanded-video .review-left { grid-column: 1; }
+    body.job-loaded.expanded-transcript .review-right { grid-column: 1; }
+    body.job-loaded.expanded-comments #toolsPane { grid-column: 1; display: block; }
+  }
 </style>
 </head>
 <body>
 <main>
   <header class="app-head">
-    <div>
+    <div class="topbar-name">
       <h1>Talk to Your Editor</h1>
-      <p class="subtitle">{{SUBTITLE}}</p>
     </div>
-    <button id="settingsToggle" class="settings-btn" type="button" aria-expanded="false" aria-controls="settingsPanel">&#9881; Settings</button>
+    <div class="topbar-job" id="topJobName">{{JOB_NAME}}</div>
+    <div class="topbar-actions">
+      <button id="showVideoBtn" class="topbar-btn job-only" type="button" hidden>Show video</button>
+      <button id="showTranscriptBtn" class="topbar-btn job-only" type="button" hidden>Show transcript</button>
+      <button id="howItWorksToggle" class="topbar-btn" type="button" aria-expanded="false" aria-controls="howItWorksPanel">How this works</button>
+      <button id="commentsToggle" class="topbar-btn job-only" type="button" aria-expanded="true">Comments<span id="commentsCount"></span></button>
+      <button id="settingsToggle" class="settings-btn topbar-btn" type="button" aria-expanded="false" aria-controls="settingsPanel">&#9881; Settings</button>
+    </div>
   </header>
+  <p class="subtitle">{{SUBTITLE}}</p>
+  <div class="popup-scrim" id="popupScrim" hidden></div>
 
-  <div class="card settings-panel" id="settingsPanel" hidden>
-    <h2>Settings</h2>
+  <div class="card popup-panel" id="howItWorksPanel" hidden>
+    <div class="popup-head">
+      <h2>How this works</h2>
+      <button id="howItWorksClose" type="button">Close</button>
+    </div>
+    <p class="note">Drop in a video or a job folder. Watch the edit and read the words next to it. Cut words or bring them back right in the transcript, and pin a comment where something needs to change. When you are ready, Make the edit runs the choices on the card and builds a new edit from your words and your comments.</p>
+    <p class="note">Times everywhere on this page match the video you are watching: the edited video's clock.</p>
+    <h3>Keyboard shortcuts</h3>
+  <p class="note job-only" id="shortcutLine"><span>Shortcuts: Space play or pause · K pause · J back 5 seconds · L forward 5 seconds · ←/→ step 1 second · Shift+←/→ step 5 seconds · M pin a note here · Cmd+Z undo · Cmd+Shift+Z redo.</span><label class="switch"><input type="checkbox" id="shortcutToggle" checked> Keyboard shortcuts</label></p>
+  </div>
+
+  <div class="card settings-panel popup-panel" id="settingsPanel" hidden>
+    <div class="popup-head">
+      <h2>Settings</h2>
+      <button id="settingsClose" type="button">Close</button>
+    </div>
     <p class="note">Standing choices live here, out of the way of the work. Your Remove choices and how involved you want to be are saved as your usual choices each time you make an edit, so they are already set this way when you come back.</p>
+    <div id="problemReportBlock">
+      <h3>Problem report</h3>
+      <p class="note">If something went wrong, make a problem report and send the file back. It holds what the app did on this job, step by step, with your keys taken out.</p>
+      <div class="row">
+        <button id="problemReportBtn" type="button">Make a problem report</button>
+      </div>
+      <p class="status-line" id="problemReportNote"></p>
+    </div>
+    <div id="textSizeBlock">
+      <h3>Text size</h3>
+      <label class="switch"><input type="checkbox" id="biggerTextToggle"> Bigger text</label>
+      <p class="note">Bigger text makes the transcript words bigger, the counts and times a step bigger, and the buttons taller. The panel widths stay the same.</p>
+      <p class="note"><button id="resetLayoutBtn" type="button">Reset layout</button> Put the panel widths and the comments panel back the way they started.</p>
+    </div>
   <div class="card" id="directionCard">
     <h2 id="directionTitle">Run direction</h2>
     <p class="note job-only">Muse Spark proposes the edits, Muse Wonder reviews the risky ones, and the safety verifier decides what may change. Mock is a deterministic stand-in for trying the loop offline.</p>
@@ -889,11 +1123,27 @@
     <p class="status-line job-only" id="directStatus"></p>
     <div id="results" class="job-only"></div>
   </div>
+  <div class="card" id="moneyCard" hidden>
+    <h2>Money</h2>
+    <h3>What the editing has cost</h3>
+    <p class="note">Estimated from what each run actually used, priced at the rates in the app. The work that runs on this computer costs nothing.</p>
+    <div id="moneyBody"></div>
+    <div class="row">
+      <button id="moneyReset" type="button">Reset the running total</button>
+    </div>
+    <p class="status-line" id="moneyStatus"></p>
+  </div>
   </div>
 
   <div class="card" id="jobIncompleteBanner" hidden>
     <h2>This job is not whole yet</h2>
     <p class="note">That job is missing a file it needs. Drop the folder again, or try the built-in sample. Everything that works on the job stays out of sight until the job is whole, and comes back on its own when it is.</p>
+  </div>
+
+  <p class="note job-only" id="testVideoBanner" hidden>Test video: the app will not learn from this one.</p>
+
+  <div class="card job-only" id="testVideoCard">
+    <label class="switch"><input type="checkbox" id="jobTestVideo"> This is a test video. The app will not learn from it.</label>
   </div>
 
   <div class="card" id="dropCard">
@@ -914,6 +1164,7 @@
     </details>
     <input type="file" id="dropFolderInput" webkitdirectory hidden>
     <input type="file" id="dropFilesInput" multiple hidden>
+    <p class="note"><label class="switch"><input type="checkbox" id="dropTestVideo"> This is a test video. The app will not learn from it.</label></p>
     <p class="status-line" id="dropStatus"></p>
     <div id="dropVideoWrap" hidden>
       <video id="dropVideo" controls playsinline preload="metadata"></video>
@@ -996,23 +1247,17 @@
         <div class="tool-row" data-tool="silence">
           <div class="tool-head">
             <label class="switch"><input type="checkbox" class="tool-toggle" id="inSilence" checked> Word gaps (silence)</label>
-            <span class="tool-summary">Leave 0.2 seconds (recommended)</span>
+            <span class="tool-summary">Leave 0.1 seconds (recommended)</span>
             <button type="button" class="tool-open" aria-expanded="false">Options</button>
           </div>
           <div class="tool-options" hidden>
-            <p class="fd-note" id="inSilenceNote">Pauses over the buffer are shortened to the buffer. Every pause over that length is cut down the same way.</p>
+            <p class="fd-note" id="inSilenceNote">When you stop talking for a moment, the app cuts the quiet down and leaves only this much.</p>
             <div class="row" id="inBufferRow">
-              <label for="inBufferRange">Silence left between words</label>
-              <input type="range" id="inBufferRange" min="0.05" max="0.5" step="0.05" value="0.2">
-              <input type="number" id="inBufferNum" min="0.05" max="0.5" step="0.05" value="0.2">
+              <label for="inBufferRange">Quiet between your words</label>
+              <input type="range" id="inBufferRange" min="0.05" max="0.5" step="0.05" value="0.1">
+              <input type="number" id="inBufferNum" min="0.05" max="0.5" step="0.05" value="0.1">
               <span>seconds</span>
             </div>
-            <p class="note">Breaths:</p>
-            <div class="row" id="inBreathsPills">
-              <button type="button" data-breaths="keep">Keep the natural breath</button>
-              <button type="button" data-breaths="trim">Trim breaths with the pause</button>
-            </div>
-            <p class="note" id="inBreathsNote"></p>
           </div>
         </div>
         <div class="tool-row" data-tool="fillers">
@@ -1039,10 +1284,51 @@
             <p class="note" id="inModeNote"></p>
           </div>
         </div>
+        <div class="tool-row" data-tool="style">
+          <div class="tool-head">
+            <span class="tool-name">Editing style</span>
+            <span class="tool-summary">Justin's way</span>
+            <button type="button" class="tool-open" aria-expanded="false">Options</button>
+          </div>
+          <div class="tool-options" hidden>
+            <div class="row">
+              <label for="inStyle">Editing style</label>
+              <select id="inStyle">
+                <option value="justins-way" selected>Justin's way</option>
+                <option value="keep-it-simple">Keep it simple</option>
+                <option value="hands-off">Hands off</option>
+              </select>
+            </div>
+            <p class="note">If you pick nothing, this edit uses Justin's way. Your own saved rules win over the style when they disagree.</p>
+          </div>
+        </div>
       </div>
     </div>
     <p class="note" id="sampleRow">Just looking around? <button id="loadSample" type="button">Try the built-in sample</button> <span id="sampleStatus"></span></p>
     </div>
+
+  <div class="card" id="teachCard">
+    <h2>Teach the app</h2>
+    <p class="note">The fast way to teach the app how you edit. This is optional. The app also learns over time from your edits and your grades.</p>
+    <p class="note">Is this your own editing, or a style you like from someone else?</p>
+    <div class="row">
+      <button id="teachKindMine" type="button" class="on">My editing</button>
+      <button id="teachKindStyle" type="button">A style I like</button>
+    </div>
+    <p class="note"><label for="teachRecording">Screen recording of the editing, with talking</label><br>
+    <input type="file" id="teachRecording" accept="video/*,audio/*"></p>
+    <p class="note"><label for="teachRaw">The raw video, if you have it</label><br>
+    <input type="file" id="teachRaw" accept="video/*,audio/*"></p>
+    <p class="note"><label for="teachFinished">The finished edit, if you have it</label><br>
+    <input type="file" id="teachFinished" accept="video/*,audio/*"></p>
+    <p class="note"><label for="teachLink">Or paste a link to a finished video</label><br>
+    <input type="text" id="teachLink" placeholder="Paste the link here"> <button id="teachLinkBtn" type="button">Get the video from the link</button></p>
+    <p class="note">Listening costs about 4 cents for every 10 minutes of recording, plus about 5 cents for the read.</p>
+    <div class="row">
+      <button id="teachRun" class="primary" type="button">Teach from this</button>
+    </div>
+    <p class="status-line" id="teachStatus"></p>
+  </div>
 
   <div class="card job-only" id="novid" hidden>
     <h2>No video in this job folder</h2>
@@ -1051,31 +1337,48 @@
 
   <div class="review-split" id="reviewSplit">
   <div class="review-left">
+  <div class="panel-head job-only" id="videoPanelHead">
+    <span class="panel-head-name">Video</span>
+    <span class="panel-head-btns">
+      <button id="swapSidesBtn" type="button" aria-pressed="false">Swap sides</button>
+      <button id="videoExpandBtn" type="button" aria-pressed="false">Make wider</button>
+      <button id="videoHideBtn" type="button">Hide video</button>
+    </span>
+  </div>
+  <p class="note job-only" id="watchingLine" hidden></p>
+  <p class="note job-only" id="watchingNote" hidden></p>
   <div class="vid-wrap job-only" id="vidWrap">
     <video id="vid" controls playsinline preload="metadata"></video>
     <div class="vid-loading" id="vidLoading" hidden>Loading the video…</div>
     <div class="vid-error" id="vidError" hidden>This video could not be played here. The file could not be shown as a picture.</div>
     <div class="vid-error" id="vidPending" hidden>Getting your video ready to watch…</div>
   </div>
+  <div class="transport job-only" id="fmtRow">
+    <span class="clock transport-clock"><b id="clock">0:00 / 0:00</b></span>
+    <div class="transport-center">
+      <span class="tp-slot" id="prevChangeSlot" hidden><button class="tp-btn" id="prevChangeBtn" type="button" title="Previous change"><span class="tp-icon">&#8592;</span><span class="tp-label">Prev change</span></button></span>
+      <button class="tp-btn" id="goStartBtn" type="button" title="Go to start"><span class="tp-icon">&#9198;</span><span class="tp-label">Start</span></button>
+      <button class="tp-btn" id="back5" type="button" title="Back 5 seconds (J)"><span class="tp-icon">&#8630;</span><span class="tp-label">Back 5</span></button>
+      <button class="tp-btn tp-play" id="playPauseBtn" type="button" title="Play or pause (Space)"><span class="tp-icon" id="playPauseIcon">&#9654;</span><span class="tp-label" id="playPauseLabel">Play</span></button>
+      <button class="tp-btn" id="fwd5" type="button" title="Forward 5 seconds (L)"><span class="tp-icon">&#8631;</span><span class="tp-label">Fwd 5</span></button>
+      <button class="tp-btn" id="goEndBtn" type="button" title="Go to end"><span class="tp-icon">&#9197;</span><span class="tp-label">End</span></button>
+      <span class="tp-slot" id="nextChangeSlot" hidden><button class="tp-btn" id="nextChangeBtn" type="button" title="Next change"><span class="tp-icon">&#8594;</span><span class="tp-label">Next change</span></button></span>
+    </div>
+  </div>
   <div class="tl-wrap job-only" id="tlbar">
     <button id="tlCommentBtn" class="tl-comment-btn" type="button" hidden>&#128172; Leave a comment here</button>
-    <div class="tl-track" id="tlTrack">
+    <div class="tl-stack" id="tlStack">
+      <div class="tl-ruler" id="tlRuler"></div>
+      <div class="tl-track" id="tlTrack">
+        <div id="tlBlocks"></div>
+      </div>
       <div id="tlDots"></div>
+      <div class="tl-hover-line" id="tlHoverLine" hidden></div>
       <div class="tl-playhead" id="tlPlayhead" style="left: 0%"></div>
       <div class="tl-bubble" id="tlBubble" hidden></div>
     </div>
+    <p class="tl-caption" id="tlCaption"></p>
   </div>
-  <div class="row job-only" id="fmtRow">
-    <button id="btnV" class="on" type="button">Vertical (9:16)</button>
-    <button id="btnL" type="button">Landscape (16:9)</button>
-    <button id="back5" type="button">Back 5s</button>
-    <button id="back1" type="button">Back 1s</button>
-    <button id="fwd1" type="button">Forward 1s</button>
-    <button id="fwd5" type="button">Forward 5s</button>
-    <span class="clock">Now at <b id="clock">0:00.0</b></span>
-  </div>
-  <p class="note job-only" id="fmtNote" hidden></p>
-  <p class="note job-only" id="shortcutLine"><span>Shortcuts: Space play or pause · K pause · J back 5 seconds · L forward 5 seconds · ←/→ step 1 second · Shift+←/→ step 5 seconds · M pin a note here · Cmd+Z undo · Cmd+Shift+Z redo.</span><label class="switch"><input type="checkbox" id="shortcutToggle" checked> Keyboard shortcuts</label></p>
 
   <div class="card job-only" id="makeEditCard">
     <h2>Make the edit</h2>
@@ -1102,23 +1405,17 @@
       <div class="tool-row" data-tool="silence">
         <div class="tool-head">
           <label class="switch"><input type="checkbox" class="tool-toggle" id="fdSilence" checked> Word gaps (silence)</label>
-          <span class="tool-summary">Leave 0.2 seconds (recommended)</span>
+          <span class="tool-summary">Leave 0.1 seconds (recommended)</span>
           <button type="button" class="tool-open" aria-expanded="false">Options</button>
         </div>
         <div class="tool-options" hidden>
-          <p class="fd-note">Pauses over the buffer are shortened to the buffer. Every pause over that length is cut down the same way.</p>
+          <p class="fd-note">When you stop talking for a moment, the app cuts the quiet down and leaves only this much.</p>
           <div class="row" id="fdBufferRow">
-            <label for="fdBufferRange">Silence left between words</label>
-            <input type="range" id="fdBufferRange" min="0.05" max="0.5" step="0.05" value="0.2">
-            <input type="number" id="fdBufferNum" min="0.05" max="0.5" step="0.05" value="0.2">
+            <label for="fdBufferRange">Quiet between your words</label>
+            <input type="range" id="fdBufferRange" min="0.05" max="0.5" step="0.05" value="0.1">
+            <input type="number" id="fdBufferNum" min="0.05" max="0.5" step="0.05" value="0.1">
             <span>seconds</span>
           </div>
-          <p class="note">Breaths:</p>
-          <div class="row" id="fdBreathsPills">
-            <button type="button" data-breaths="keep">Keep the natural breath</button>
-            <button type="button" data-breaths="trim">Trim breaths with the pause</button>
-          </div>
-          <p class="note" id="fdBreathsNote"></p>
         </div>
       </div>
       <div class="tool-row" data-tool="fillers">
@@ -1143,6 +1440,24 @@
             <button type="button" data-mode="tailor">Tailor it with me</button>
           </div>
           <p class="note" id="fdModeNote"></p>
+        </div>
+      </div>
+      <div class="tool-row" data-tool="style">
+        <div class="tool-head">
+          <span class="tool-name">Editing style</span>
+          <span class="tool-summary">Justin's way</span>
+          <button type="button" class="tool-open" aria-expanded="false">Options</button>
+        </div>
+        <div class="tool-options" hidden>
+          <div class="row">
+            <label for="fdStyle">Editing style</label>
+            <select id="fdStyle">
+              <option value="justins-way" selected>Justin's way</option>
+              <option value="keep-it-simple">Keep it simple</option>
+              <option value="hands-off">Hands off</option>
+            </select>
+          </div>
+          <p class="note">If you pick nothing, this edit uses Justin's way. Your own saved rules win over the style when they disagree.</p>
         </div>
       </div>
       <div class="tool-row" data-tool="more">
@@ -1174,9 +1489,17 @@
         <div class="pass-row"><button type="button" class="pass-btn" id="passFillersBtn">Take out the ums and uhs</button><span class="note">Filler words like um and uh come out of the edit.</span></div>
       </div>
     </details>
+    <div class="row" id="formatRow">
+      <span class="note">Format:</span>
+      <button id="btnV" class="on" type="button">Vertical (9:16)</button>
+      <button id="btnL" type="button">Landscape (16:9)</button>
+    </div>
+    <p class="note job-only" id="fmtNote" hidden></p>
     <div class="row">
       <button id="fdFire" class="primary hero-action" type="button">Make the edit</button>
     </div>
+    <p class="note" id="fdCostLine">Edits cost a few cents a run.</p>
+    <p class="note" id="fdRunSummary" hidden><span id="fdRunSummaryText"></span> <button id="moneyDetailsLink" type="button" hidden>Money details</button></p>
     <p class="note" id="fdCostEstimate"></p>
     <p class="note" id="fdCostWhy"></p>
     <p class="status-line" id="fdStatus"></p>
@@ -1188,10 +1511,14 @@
   <div class="review-right">
   <div class="card job-only" id="transcriptCard">
     <h2>Transcript</h2>
-    <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Drag across words to pick a whole phrase, or click a word to pick just that word; the strip under the words cuts the pick or brings it back, and Backspace cuts it too. Clicking struck-through words picks exactly those words, so bringing words back brings back only what you picked. Cmd+Z undoes the last change, and Cmd+Shift+Z does it again. Every change passes the same safety check as a direction change.</p>
     <div class="tx-header">
       <span class="tx-counts" id="txCounts"></span>
+      <span class="note" id="txClockNote">Times match the video you are watching.</span>
       <button id="txFollow" type="button" aria-pressed="true">Follow the video: on</button>
+      <span class="panel-head-btns">
+        <button id="transcriptExpandBtn" type="button" aria-pressed="false">Make wider</button>
+        <button id="transcriptHideBtn" type="button">Hide transcript</button>
+      </span>
     </div>
     <div id="transcriptPanel">
       <p class="transcript" id="transcriptWords"></p>
@@ -1206,6 +1533,27 @@
       <span class="note" id="txUndoHint">Cmd+Z to undo · Drag picks a phrase · Backspace cuts it</span>
     </div>
     <p class="status-line" id="transcriptStatus"></p>
+    <div id="whyCard" hidden>
+      <p id="whyQuestion"></p>
+      <div class="row">
+        <button id="whyStory" type="button" data-why-choice="story">It matters to the story</button>
+        <button id="whySound" type="button" data-why-choice="sound">It sounds better this way</button>
+        <button id="whySayIt" type="button" data-why-choice="say_it">That is how I say it</button>
+        <button id="whyOther" type="button" data-why-choice="other">Other</button>
+      </div>
+      <div id="whyNoteRow" hidden>
+        <textarea id="whyNote" rows="2" placeholder="Write the reason in your own words."></textarea>
+        <div class="row">
+          <button id="whyDictate" type="button">Dictate</button>
+          <span class="note" id="whyDictateStatus"></span>
+          <button id="whySave" class="primary" type="button">Save</button>
+        </div>
+      </div>
+      <div class="row">
+        <button id="whySkip" type="button">Skip</button>
+      </div>
+      <p class="status-line" id="whyStatus"></p>
+    </div>
     <div class="row">
       <button id="fixWordsBtn" type="button">Fix words</button>
     </div>
@@ -1221,7 +1569,14 @@
   </div>
   </div>
   <div class="pane-divider" id="toolsDivider" role="separator" aria-orientation="vertical" aria-label="Resize the transcript and tools panes" tabindex="0"></div>
-  <aside class="review-tools job-only" id="toolsPane" aria-label="More tools">
+  <aside class="review-tools job-only" id="toolsPane" aria-label="Comments and more tools">
+  <div class="comments-head" id="commentsHead">
+    <h2>Comments <span id="commentsHeadCount"></span></h2>
+    <span class="panel-head-btns">
+      <button id="commentsExpandBtn" type="button" aria-pressed="false">Make wider</button>
+      <button id="hideCommentsBtn" type="button">Hide comments</button>
+    </span>
+  </div>
   <div class="card job-only" id="pinCard">
     <h2>Pin a comment</h2>
     <div class="row">
@@ -1265,6 +1620,7 @@
     <h2>Your style</h2>
     <p class="note">Rules you save here ride into every run as standing direction. Nothing is saved without your yes.</p>
     <div id="ruleSuggestions"></div>
+    <div id="storyRuleSuggestion"></div>
     <div id="savedRulesList"></div>
     <p class="empty" id="rulesEmpty">No saved rules yet. When a kind of change keeps working, you will be offered it here as a rule.</p>
   </div>
@@ -1302,16 +1658,6 @@
     <p class="note" id="finishCaptionsRow" hidden>Captions for this edit: <a href="/api/captions">download the caption file (WebVTT)</a>.</p>
     <p class="note" id="finishCaptionsSwitchRow" hidden><label class="switch"><input type="checkbox" id="finishCaptionsHideFillers" checked> Hide ums and uhs in captions</label></p>
     <div id="finishCosts"></div>
-  </div>
-
-  <div class="card" id="moneyCard" hidden>
-    <h2>What the editing has cost</h2>
-    <p class="note">Estimated from what each run actually used, priced at the rates in the app. The work that runs on this computer costs nothing.</p>
-    <div id="moneyBody"></div>
-    <div class="row">
-      <button id="moneyReset" type="button">Reset the running total</button>
-    </div>
-    <p class="status-line" id="moneyStatus"></p>
   </div>
 
   <div class="card job-only" id="historyCard">
@@ -1391,13 +1737,243 @@
 
   var settingsToggle = document.getElementById("settingsToggle");
   var settingsPanel = document.getElementById("settingsPanel");
+  var howItWorksToggle = document.getElementById("howItWorksToggle");
+  var howItWorksPanel = document.getElementById("howItWorksPanel");
+  var popupScrim = document.getElementById("popupScrim");
+  function syncPopupScrim() {
+    if (!popupScrim) { return; }
+    var anyOpen = (settingsPanel && !settingsPanel.hidden) ||
+      (howItWorksPanel && !howItWorksPanel.hidden);
+    popupScrim.hidden = !anyOpen;
+  }
+  function closePopups() {
+    if (settingsPanel) { settingsPanel.hidden = true; }
+    if (howItWorksPanel) { howItWorksPanel.hidden = true; }
+    if (settingsToggle) { settingsToggle.setAttribute("aria-expanded", "false"); }
+    if (howItWorksToggle) { howItWorksToggle.setAttribute("aria-expanded", "false"); }
+    syncPopupScrim();
+  }
+  function openSettingsAtMoney() {
+    if (howItWorksPanel) { howItWorksPanel.hidden = true; }
+    if (settingsPanel) { settingsPanel.hidden = false; }
+    if (settingsToggle) { settingsToggle.setAttribute("aria-expanded", "true"); }
+    syncPopupScrim();
+    var mc = document.getElementById("moneyCard");
+    if (mc && mc.scrollIntoView) { mc.scrollIntoView({ block: "start" }); }
+  }
   if (settingsToggle && settingsPanel) {
     settingsToggle.addEventListener("click", function () {
       var open = settingsPanel.hidden;
       settingsPanel.hidden = !open;
       settingsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open && howItWorksPanel) { howItWorksPanel.hidden = true; }
+      syncPopupScrim();
     });
   }
+  var settingsClose = document.getElementById("settingsClose");
+  if (settingsClose) { settingsClose.addEventListener("click", closePopups); }
+  if (howItWorksToggle && howItWorksPanel) {
+    howItWorksToggle.addEventListener("click", function () {
+      var open = howItWorksPanel.hidden;
+      howItWorksPanel.hidden = !open;
+      howItWorksToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open && settingsPanel) { settingsPanel.hidden = true; }
+      syncPopupScrim();
+    });
+  }
+  var howItWorksClose = document.getElementById("howItWorksClose");
+  if (howItWorksClose) { howItWorksClose.addEventListener("click", closePopups); }
+  if (popupScrim) { popupScrim.addEventListener("click", closePopups); }
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") { closePopups(); }
+  });
+
+  // -- comments panel open state + text size + layout reset (v2) --
+  var commentsToggle = document.getElementById("commentsToggle");
+  function applyCommentsOpen(open) {
+    document.body.classList.toggle("comments-closed", !open);
+    if (commentsToggle) {
+      commentsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    try {
+      window.localStorage.setItem(
+        "tye-comments-open", open ? "open" : "closed");
+    } catch (err) {}
+  }
+  var commentsOpenSaved = null;
+  try {
+    commentsOpenSaved = window.localStorage.getItem("tye-comments-open");
+  } catch (err) {}
+  if (commentsOpenSaved === "closed") { applyCommentsOpen(false); }
+  if (commentsToggle) {
+    commentsToggle.addEventListener("click", function () {
+      applyCommentsOpen(true);
+      var pane = document.getElementById("toolsPane");
+      if (pane && pane.scrollIntoView) { pane.scrollIntoView({ block: "nearest" }); }
+    });
+  }
+  var hideCommentsBtn = document.getElementById("hideCommentsBtn");
+  if (hideCommentsBtn) {
+    hideCommentsBtn.addEventListener("click", function () {
+      clearExpandedPanel("comments");
+      applyCommentsOpen(false);
+    });
+  }
+  var biggerTextToggle = document.getElementById("biggerTextToggle");
+  function applyBiggerText(on) {
+    document.body.classList.toggle("bigger-text", !!on);
+    if (biggerTextToggle) { biggerTextToggle.checked = !!on; }
+    try {
+      window.localStorage.setItem("tye-bigger-text", on ? "on" : "off");
+    } catch (err) {}
+  }
+  var biggerSaved = null;
+  try { biggerSaved = window.localStorage.getItem("tye-bigger-text"); } catch (err) {}
+  if (biggerSaved === "on") { applyBiggerText(true); }
+  if (biggerTextToggle) {
+    biggerTextToggle.addEventListener("change", function () {
+      applyBiggerText(biggerTextToggle.checked);
+    });
+  }
+  var resetLayoutBtn = document.getElementById("resetLayoutBtn");
+  if (resetLayoutBtn) {
+    resetLayoutBtn.addEventListener("click", function () {
+      try {
+        window.localStorage.removeItem("tye-pane-a");
+        window.localStorage.removeItem("tye-pane-c");
+        window.localStorage.removeItem("tye-comments-open");
+        window.localStorage.removeItem("tye-layout");
+      } catch (err) {}
+      var split = document.getElementById("reviewSplit");
+      if (split) {
+        split.style.removeProperty("--pane-a");
+        split.style.removeProperty("--pane-c");
+      }
+      layoutState = { swapped: false, video: false, transcript: false, expanded: null };
+      applyLayout();
+      applyCommentsOpen(true);
+    });
+  }
+
+  // -- panel arrangement (v2 addition): swap sides, panels off
+  // and on, one panel wider. A few plain buttons in the panel
+  // headers and the top bar; the arrangement is remembered on
+  // this computer in the same localStorage family as the sizes.
+  var layoutState = { swapped: false, video: false, transcript: false, expanded: null };
+  try {
+    var layoutSaved = window.localStorage.getItem("tye-layout");
+    if (layoutSaved) {
+      var parsedLayout = JSON.parse(layoutSaved);
+      if (parsedLayout && typeof parsedLayout === "object") {
+        layoutState.swapped = !!parsedLayout.swapped;
+        layoutState.video = !!parsedLayout.video;
+        layoutState.transcript = !!parsedLayout.transcript;
+        layoutState.expanded =
+          ["video", "transcript", "comments"].indexOf(parsedLayout.expanded) >= 0
+            ? parsedLayout.expanded : null;
+      }
+    }
+  } catch (err) {}
+  function applyLayout() {
+    document.body.classList.toggle("panels-swapped", layoutState.swapped);
+    document.body.classList.toggle("video-hidden", layoutState.video);
+    document.body.classList.toggle("transcript-hidden", layoutState.transcript);
+    ["video", "transcript", "comments"].forEach(function (name) {
+      document.body.classList.toggle(
+        "expanded-" + name, layoutState.expanded === name);
+    });
+    var showVideoBtn = document.getElementById("showVideoBtn");
+    if (showVideoBtn) { showVideoBtn.hidden = !layoutState.video; }
+    var showTranscriptBtn = document.getElementById("showTranscriptBtn");
+    if (showTranscriptBtn) { showTranscriptBtn.hidden = !layoutState.transcript; }
+    var swapBtn = document.getElementById("swapSidesBtn");
+    if (swapBtn) {
+      swapBtn.setAttribute(
+        "aria-pressed", layoutState.swapped ? "true" : "false");
+    }
+    [["videoExpandBtn", "video"],
+     ["transcriptExpandBtn", "transcript"],
+     ["commentsExpandBtn", "comments"]].forEach(function (pair) {
+      var btn = document.getElementById(pair[0]);
+      if (btn) {
+        var on = layoutState.expanded === pair[1];
+        btn.textContent = on ? "Back to normal" : "Make wider";
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+    });
+    try {
+      window.localStorage.setItem("tye-layout", JSON.stringify(layoutState));
+    } catch (err) {}
+  }
+  function clearExpandedPanel(name) {
+    if (layoutState.expanded === name) {
+      layoutState.expanded = null;
+      applyLayout();
+    }
+  }
+  function toggleExpandedPanel(name) {
+    layoutState.expanded = layoutState.expanded === name ? null : name;
+    if (layoutState.expanded === "video") { layoutState.video = false; }
+    if (layoutState.expanded === "transcript") { layoutState.transcript = false; }
+    if (layoutState.expanded === "comments") { applyCommentsOpen(true); }
+    applyLayout();
+  }
+  var swapSidesBtn = document.getElementById("swapSidesBtn");
+  if (swapSidesBtn) {
+    swapSidesBtn.addEventListener("click", function () {
+      layoutState.swapped = !layoutState.swapped;
+      applyLayout();
+    });
+  }
+  var videoHideBtn = document.getElementById("videoHideBtn");
+  if (videoHideBtn) {
+    videoHideBtn.addEventListener("click", function () {
+      clearExpandedPanel("video");
+      layoutState.video = true;
+      applyLayout();
+    });
+  }
+  var showVideoBtn = document.getElementById("showVideoBtn");
+  if (showVideoBtn) {
+    showVideoBtn.addEventListener("click", function () {
+      layoutState.video = false;
+      applyLayout();
+    });
+  }
+  var transcriptHideBtn = document.getElementById("transcriptHideBtn");
+  if (transcriptHideBtn) {
+    transcriptHideBtn.addEventListener("click", function () {
+      clearExpandedPanel("transcript");
+      layoutState.transcript = true;
+      applyLayout();
+    });
+  }
+  var showTranscriptBtn = document.getElementById("showTranscriptBtn");
+  if (showTranscriptBtn) {
+    showTranscriptBtn.addEventListener("click", function () {
+      layoutState.transcript = false;
+      applyLayout();
+    });
+  }
+  var videoExpandBtn = document.getElementById("videoExpandBtn");
+  if (videoExpandBtn) {
+    videoExpandBtn.addEventListener("click", function () {
+      toggleExpandedPanel("video");
+    });
+  }
+  var transcriptExpandBtn = document.getElementById("transcriptExpandBtn");
+  if (transcriptExpandBtn) {
+    transcriptExpandBtn.addEventListener("click", function () {
+      toggleExpandedPanel("transcript");
+    });
+  }
+  var commentsExpandBtn = document.getElementById("commentsExpandBtn");
+  if (commentsExpandBtn) {
+    commentsExpandBtn.addEventListener("click", function () {
+      toggleExpandedPanel("comments");
+    });
+  }
+  applyLayout();
 
   var dropCardEl = document.getElementById("dropCard");
   var dropSlimToggle = document.getElementById("dropSlimToggle");
@@ -1525,7 +2101,7 @@
   function showLoading() { setPlayerStatus("loading"); }
   function pendingText(state, pct) {
     if (state === "failed") {
-      return "This video could not be made watchable here, so it cannot be shown yet. The edit still works from the words.";
+      return "This video could not be made watchable here, so it cannot be shown yet. The edit still works from the words. The details were saved in a file called playback.log, in the playback folder inside this job's tye-session folder. Send that file back so the real cause can be found.";
     }
     var head = "Getting your video ready to watch…";
     if (typeof pct === "number") { head += " " + pct + "%."; }
@@ -1560,6 +2136,88 @@
     var m = Math.floor(t / 60);
     var s = t - m * 60;
     return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  // -- one clock (v2): every time printed on screen runs on the
+  // edited video's clock, the clock the player shows for the edit.
+  function fmtTransport(t) {
+    t = Math.max(0, Math.floor(t || 0));
+    var h = Math.floor(t / 3600);
+    var m = Math.floor((t - h * 3600) / 60);
+    var sec = t - h * 3600 - m * 60;
+    var mm = h > 0 ? (m < 10 ? "0" : "") + m : String(m);
+    return (h > 0 ? h + ":" : "") + mm + ":" + (sec < 10 ? "0" : "") + sec;
+  }
+
+  function editedDuration() {
+    if (state.outputDuration > 0) { return state.outputDuration; }
+    if (jobSourceDuration > 0 && !editPlaybackApplies()) {
+      return jobSourceDuration;
+    }
+    return tlDuration();
+  }
+
+  // Where the viewer is, on the edited clock. When the file in the
+  // player runs on the source clock (the original, before a splice
+  // exists), the source position is mapped through the words; when
+  // the file is the edit itself, its own time already is the
+  // edited clock.
+  function displayTime() {
+    var ct = vid.currentTime || 0;
+    if (!editPlaybackApplies()) { return ct; }
+    return editedTimeForSource(ct);
+  }
+
+  function editedTimeForSource(t) {
+    var result = 0;
+    for (var i = 0; i < transcriptEntries.length; i++) {
+      var w = transcriptEntries[i];
+      if (typeof w.start !== "number") { continue; }
+      if (t < w.start) { break; }
+      var span = (w.end || w.start) - w.start;
+      var espan = (typeof w.edited_end === "number" ? w.edited_end : w.edited_start) -
+        (typeof w.edited_start === "number" ? w.edited_start : 0);
+      if (typeof w.edited_start !== "number") { continue; }
+      if (span > 0 && t <= (w.end || w.start)) {
+        result = w.edited_start + ((t - w.start) / span) * espan;
+      } else {
+        result = w.edited_start + espan;
+      }
+    }
+    return result;
+  }
+
+  function editedToFileTime(et) {
+    var fallback = et;
+    for (var i = 0; i < transcriptEntries.length; i++) {
+      var w = transcriptEntries[i];
+      if (typeof w.edited_start !== "number") { continue; }
+      var eEnd = typeof w.edited_end === "number" ? w.edited_end : w.edited_start;
+      if (w.status === "cut") { continue; }
+      if (et < w.edited_start) { return w.start; }
+      if (et <= eEnd) {
+        var span = eEnd - w.edited_start;
+        var fspan = (w.end || w.start) - w.start;
+        return span > 0 ? w.start + ((et - w.edited_start) / span) * fspan : w.start;
+      }
+      fallback = w.end || w.start;
+    }
+    return fallback;
+  }
+
+  function commentEditedTs(c) {
+    if (c && typeof c.edited_ts === "number") { return c.edited_ts; }
+    return (c && typeof c.ts === "number") ? c.ts : 0;
+  }
+
+  function seekToEdited(et, fmt) {
+    if (fmt && fmt !== curFmt) { setFmt(fmt); }
+    var fileT = editPlaybackApplies() ? editedToFileTime(et) : et;
+    seekTo(fileT);
+  }
+
+  function transportReadout() {
+    return fmtTransport(displayTime()) + " / " + fmtTransport(editedDuration());
   }
 
   function tlDuration() {
@@ -1598,29 +2256,220 @@
   }
 
   function updatePlayhead() {
-    var d = tlDuration();
-    var frac = d > 0 ? (vid.currentTime / d) : 0;
+    var d = editedDuration();
+    var frac = d > 0 ? (displayTime() / d) : 0;
     tlPlayhead.style.left = tlInsetLeft(frac, 6);
   }
 
+  // -- the timeline panel (v2): ruler, piece blocks, comment dots --
+  // The strip shows where you are, where the comments sit, and lets
+  // a click jump there. Nothing else is drawn on it: what was cut
+  // and what is held lives in the words.
+  var timelinePieces = [];
+
   function renderDots() {
-    var d = tlDuration();
+    var d = editedDuration();
     tlDots.innerHTML = "";
     if (d <= 0) { return; }
+    var groups = [];
     state.comments.forEach(function (c) {
+      var t = commentEditedTs(c);
+      var g = groups.length ? groups[groups.length - 1] : null;
+      if (g && Math.abs(t - g.ts) <= Math.max(0.4, d * 0.015)) {
+        g.items.push(c);
+      } else {
+        groups.push({ ts: t, items: [c] });
+      }
+    });
+    groups.forEach(function (g) {
+      // A spot still waiting on the person's call carries the
+      // blue dot. Once every comment at the spot is decided, the
+      // dot goes away and the spot reads as done in the strip's
+      // normal look, the same handled/not-handled split as the
+      // words themselves. (The transcript margin markers keep
+      // their blue/gray states; this rule is the timeline's.)
+      var waiting = g.items.filter(function (x) { return !x.done; });
+      if (!waiting.length) { return; }
+      var c = waiting[0];
       var dot = document.createElement("button");
       dot.type = "button";
       dot.className = "tl-dot";
-      dot.style.left = tlInsetLeft(c.ts / d, 8);
-      dot.setAttribute("aria-label", "Comment at " + fmtTime(c.ts) + ": " + c.text);
+      dot.style.left = tlInsetLeft(g.ts / d, 8);
+      dot.setAttribute("aria-label", "Comment at " + fmtTransport(g.ts) + ": " + c.text);
+      if (waiting.length > 1) {
+        var count = document.createElement("span");
+        count.className = "tl-dot-count";
+        count.textContent = waiting.length;
+        dot.appendChild(count);
+      }
       var tip = document.createElement("span");
       tip.className = "tl-tip";
-      tip.textContent = fmtTime(c.ts) + " · " + c.text;
+      tip.textContent = fmtTransport(g.ts) + " · " + c.text +
+        (waiting.length > 1 ? " (+" + (waiting.length - 1) + " more here)" : "");
       dot.appendChild(tip);
       dot.addEventListener("pointerdown", function (e) { e.stopPropagation(); });
-      dot.addEventListener("click", function () { seekTo(c.ts, c.fmt); });
+      dot.addEventListener("click", function () {
+        seekToEdited(g.ts, c.fmt);
+        openCommentById(c.id);
+      });
       tlDots.appendChild(dot);
     });
+  }
+
+  function playbackBuilding() {
+    var name = currentVideoName || primaryVideoName;
+    if (!name) { return false; }
+    var st = jobPlayback[name];
+    return !!st && st !== "ready";
+  }
+
+  function renderRuler() {
+    var ruler = document.getElementById("tlRuler");
+    if (!ruler) { return; }
+    ruler.innerHTML = "";
+    var d = editedDuration();
+    if (d <= 0) { return; }
+    var steps = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800];
+    var step = steps[steps.length - 1];
+    for (var i = 0; i < steps.length; i++) {
+      if (d / steps[i] <= 7) { step = steps[i]; break; }
+    }
+    for (var t = 0; t <= d + 0.001; t += step) {
+      var label = document.createElement("span");
+      label.className = "tl-ruler-label";
+      label.style.left = (t / d * 100) + "%";
+      label.textContent = fmtTransport(t);
+      ruler.appendChild(label);
+      var tick = document.createElement("span");
+      tick.className = "tl-ruler-tick";
+      tick.style.left = (t / d * 100) + "%";
+      ruler.appendChild(tick);
+    }
+  }
+
+  function renderBlocks() {
+    var wrap = document.getElementById("tlBlocks");
+    if (!wrap) { return; }
+    wrap.innerHTML = "";
+    var d = editedDuration();
+    if (d <= 0) { return; }
+    if (playbackBuilding()) {
+      // While the playback copy builds: placeholder blocks plus
+      // the real percentage in the caption, never a blank bar.
+      for (var i = 0; i < 6; i++) {
+        var ph = document.createElement("span");
+        ph.className = "tl-block tl-block-ph";
+        ph.style.left = (i * (100 / 6)) + "%";
+        ph.style.width = "calc(" + (100 / 6) + "% - 3px)";
+        wrap.appendChild(ph);
+      }
+      return;
+    }
+    timelinePieces.forEach(function (piece) {
+      var block = document.createElement("button");
+      block.type = "button";
+      block.className = "tl-block";
+      block.style.left = (piece.output_start / d * 100) + "%";
+      block.style.width =
+        "calc(" + Math.max(0.2, (piece.output_end - piece.output_start) / d * 100) + "% - 3px)";
+      block.setAttribute("aria-label",
+        "Piece from " + fmtTransport(piece.output_start) +
+        " to " + fmtTransport(piece.output_end) +
+        ". Click to pick these words.");
+      block.addEventListener("click", function (e) {
+        e.stopPropagation();
+        seekToEdited(piece.output_start);
+        if (typeof piece.word_start === "number" &&
+            typeof piece.word_end === "number") {
+          selStart = piece.word_start;
+          selEnd = piece.word_end;
+          refreshFixSelection();
+          updateTxActionStrip();
+          var first = transcriptEl.querySelector(
+            '.tw[data-index="' + piece.word_start + '"]');
+          if (first && first.scrollIntoView) {
+            first.scrollIntoView({ block: "center" });
+          }
+        }
+      });
+      wrap.appendChild(block);
+    });
+  }
+
+  function renderTlCaption() {
+    var cap = document.getElementById("tlCaption");
+    if (!cap) { return; }
+    if (playbackBuilding()) {
+      var name = currentVideoName || primaryVideoName;
+      var pct = name ? jobProgress[name] : null;
+      cap.textContent = "Getting your video ready to watch…" +
+        (typeof pct === "number" ? " " + pct + "%." : "");
+      return;
+    }
+    var src = state.sourceDuration || jobSourceDuration || 0;
+    var out = editedDuration();
+    var edited = (typeof state.wordsCut === "number" && state.wordsCut > 0) ||
+      (src > 0 && out > 0 && out < src - 0.05);
+    if (!edited) {
+      cap.textContent =
+        "Nothing taken out yet. This is your video as you dropped it.";
+      return;
+    }
+    cap.textContent = "Edited: " + fmtTransport(out) +
+      " of the original " + fmtTransport(src) + "." +
+      (state.comments.some(function (c) { return !c.done; })
+        ? " The dots are your comments." : "");
+  }
+
+  function renderTimeline() {
+    renderRuler();
+    renderBlocks();
+    renderTlCaption();
+    updateChangeButtons();
+  }
+
+  // -- previous / next change (v2): on screen only when a cut or a
+  // pinned comment exists to jump to. --
+  function changeTimesEdited() {
+    var times = [];
+    var inCut = false;
+    transcriptEntries.forEach(function (w) {
+      if (w.status === "cut" && !inCut &&
+          typeof w.edited_start === "number") {
+        times.push(w.edited_start);
+      }
+      inCut = w.status === "cut";
+    });
+    state.comments.forEach(function (c) { times.push(commentEditedTs(c)); });
+    times.sort(function (a, b) { return a - b; });
+    return times;
+  }
+
+  function updateChangeButtons() {
+    var times = changeTimesEdited();
+    var prev = document.getElementById("prevChangeSlot");
+    var next = document.getElementById("nextChangeSlot");
+    if (prev) { prev.hidden = !times.length; }
+    if (next) { next.hidden = !times.length; }
+  }
+
+  function jumpChange(dir) {
+    var times = changeTimesEdited();
+    if (!times.length) { return; }
+    var now = displayTime();
+    var target = null;
+    if (dir < 0) {
+      for (var i = times.length - 1; i >= 0; i--) {
+        if (times[i] < now - 0.15) { target = times[i]; break; }
+      }
+      if (target === null) { target = times[times.length - 1]; }
+    } else {
+      for (var j = 0; j < times.length; j++) {
+        if (times[j] > now + 0.15) { target = times[j]; break; }
+      }
+      if (target === null) { target = times[0]; }
+    }
+    seekToEdited(target);
   }
 
   var tlDragging = false;
@@ -1653,21 +2502,50 @@
     });
   }
   function tlSeekEvent(e) {
-    var rect = tlTrack.getBoundingClientRect();
+    var stack = document.getElementById("tlStack") || tlTrack;
+    var rect = stack.getBoundingClientRect();
     if (!rect.width) { return; }
     var frac = (e.clientX - rect.left) / rect.width;
     frac = Math.max(0, Math.min(1, frac));
-    var d = tlDuration();
+    var d = editedDuration();
     if (d <= 0) { return; }
-    vid.currentTime = Math.round(frac * d * 10) / 10;
+    var et = Math.round(frac * d * 10) / 10;
+    vid.currentTime = editPlaybackApplies() ? editedToFileTime(et) : et;
     updatePlayhead();
     if (tlBubble) {
       var halfBubble = Math.max(
         24, (tlBubble.offsetWidth || 48) / 2
       );
       tlBubble.style.left = tlInsetLeft(frac, halfBubble);
-      tlBubble.textContent = fmtTime(vid.currentTime);
+      tlBubble.textContent = fmtTransport(et);
     }
+  }
+
+  // Hovering the strip shows a faint landing line and the time
+  // before you commit (v2 timeline spec).
+  var tlHoverLine = document.getElementById("tlHoverLine");
+  function tlHoverEvent(e) {
+    var stack = document.getElementById("tlStack") || tlTrack;
+    var rect = stack.getBoundingClientRect();
+    if (!rect.width) { return; }
+    var frac = (e.clientX - rect.left) / rect.width;
+    frac = Math.max(0, Math.min(1, frac));
+    var d = editedDuration();
+    if (d <= 0) { return; }
+    if (tlHoverLine) {
+      tlHoverLine.hidden = false;
+      tlHoverLine.style.left = tlInsetLeft(frac, 1);
+    }
+    if (tlBubble && !tlDragging) {
+      tlBubble.hidden = false;
+      var halfBubble = Math.max(24, (tlBubble.offsetWidth || 48) / 2);
+      tlBubble.style.left = tlInsetLeft(frac, halfBubble);
+      tlBubble.textContent = fmtTransport(frac * d);
+    }
+  }
+  function tlHoverEnd() {
+    if (tlHoverLine) { tlHoverLine.hidden = true; }
+    if (tlBubble && !tlDragging) { tlBubble.hidden = true; }
   }
   tlTrack.addEventListener("pointerdown", function (e) {
     tlDragging = true;
@@ -1693,8 +2571,33 @@
     tlTrack.classList.remove("scrubbing");
     if (tlBubble) { tlBubble.hidden = true; }
   });
+  tlTrack.addEventListener("pointermove", function (e) {
+    if (!tlDragging) { tlHoverEvent(e); }
+  });
+  tlTrack.addEventListener("pointerleave", tlHoverEnd);
+  var tlRuler = document.getElementById("tlRuler");
+  if (tlRuler) {
+    tlRuler.addEventListener("pointerdown", function (e) {
+      tlDragging = true;
+      tlTrack.classList.add("scrubbing");
+      if (tlBubble) { tlBubble.hidden = false; }
+      if (tlCommentBtn) { tlCommentBtn.hidden = true; }
+      tlSeekEvent(e);
+    });
+    tlRuler.addEventListener("pointermove", function (e) {
+      if (tlDragging) { tlSeekEvent(e); } else { tlHoverEvent(e); }
+    });
+    tlRuler.addEventListener("pointerup", function () {
+      tlDragging = false;
+      tlTrack.classList.remove("scrubbing");
+      if (tlBubble) { tlBubble.hidden = true; }
+      showTimelineCommentButton(vid.currentTime || 0);
+    });
+    tlRuler.addEventListener("pointerleave", tlHoverEnd);
+  }
   vid.addEventListener("loadedmetadata", function () {
     renderDots();
+    renderTimeline();
     updatePlayhead();
   });
 
@@ -1824,25 +2727,85 @@
     });
   }
 
+  function highlightMarkerFor(id) {
+    if (!transcriptEl) { return; }
+    transcriptEl.querySelectorAll(".tx-comment-marker").forEach(function (m) {
+      if (String(m.dataset.commentId) === String(id)) {
+        m.classList.add("comment-flash");
+        if (m.scrollIntoView) { m.scrollIntoView({ block: "center" }); }
+        setTimeout(function () { m.classList.remove("comment-flash"); }, 1600);
+      }
+    });
+  }
+
+  function openCommentById(id) {
+    applyCommentsOpen(true);
+    if (!listEl) { return; }
+    var card = listEl.querySelector(
+      '[data-comment-id="' + String(id) + '"]');
+    if (card) {
+      if (card.scrollIntoView) { card.scrollIntoView({ block: "nearest" }); }
+      card.classList.add("comment-flash");
+      setTimeout(function () { card.classList.remove("comment-flash"); }, 1600);
+    }
+  }
+
+  function updateCommentsCounts() {
+    var open = state.comments.filter(function (c) { return !c.done; }).length;
+    var cc = document.getElementById("commentsCount");
+    if (cc) { cc.textContent = open ? " (" + open + ")" : ""; }
+    var hc = document.getElementById("commentsHeadCount");
+    if (hc) {
+      hc.textContent = state.comments.length
+        ? "(" + open + " open of " + state.comments.length + ")"
+        : "";
+    }
+  }
+
   function renderList() {
     renderDots();
+    updateCommentsCounts();
     listEl.innerHTML = "";
     if (!state.comments.length) {
       var empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "No comments yet. Pause the video where something needs to change and pin one.";
+      empty.textContent = "No comments yet. Pause where something needs to change, or start from an example.";
+      var example = document.createElement("button");
+      example.type = "button";
+      example.className = "example-comment";
+      example.id = "exampleCommentBtn";
+      example.textContent = "This part drags, tighten it";
+      example.addEventListener("click", function () {
+        applyCommentsOpen(true);
+        pinnedWordStart = null;
+        pinnedWordEnd = null;
+        pinDraft(vid.currentTime || 0);
+        draft.value = "This part drags, tighten it";
+        draftWasEmpty = false;
+        if (!keepPlayingEl.checked) { vid.pause(); }
+        draft.focus();
+      });
+      empty.appendChild(example);
       listEl.appendChild(empty);
       return;
     }
     state.comments.forEach(function (c) {
       var card = document.createElement("div");
-      card.className = "comment";
+      card.className = "comment" + (c.done ? " done" : "");
+      card.dataset.commentId = c.id;
+      card.addEventListener("click", function (e) {
+        if (e.target && e.target.closest && e.target.closest(".del")) { return; }
+        highlightMarkerFor(c.id);
+      });
       var header = document.createElement("header");
       var ts = document.createElement("button");
       ts.className = "ts";
       ts.type = "button";
-      ts.textContent = fmtTime(c.ts);
-      ts.addEventListener("click", function () { seekTo(c.ts, c.fmt); });
+      ts.textContent = fmtTransport(commentEditedTs(c));
+      ts.addEventListener("click", function () {
+        seekToEdited(commentEditedTs(c), c.fmt);
+        highlightMarkerFor(c.id);
+      });
       var tag = document.createElement("span");
       tag.className = "badge";
       tag.textContent = c.fmt || "vertical";
@@ -1913,7 +2876,57 @@
   // Lines break on a pause over 0.7 seconds, at 14 words, or after
   // a word that ends a sentence. Each line opens with a time chip
   // that seeks the video to the line's first word.
+  // [tye-scroll-anchor-begin]
+  // Scroll anchoring for transcript re-renders (v0.9.0, item 29):
+  // a re-render rebuilds every word span, so without an anchor the
+  // reader's place is lost whenever a cut lands. These two pure
+  // functions do the math on measured word positions; the DOM side
+  // only measures and applies. With Follow on, the follow logic
+  // owns the scroll and no anchor is taken.
+  function pickScrollAnchor(followOn, panelTop, spans) {
+    if (followOn) { return null; }
+    for (var i = 0; i < spans.length; i++) {
+      if (spans[i].bottom > panelTop) {
+        return { index: spans[i].index, delta: spans[i].top - panelTop };
+      }
+    }
+    return null;
+  }
+  function scrollAnchorAdjustment(anchor, panelTop, spans) {
+    if (!anchor) { return null; }
+    var best = null;
+    for (var i = 0; i < spans.length; i++) {
+      if (spans[i].index === anchor.index) { best = spans[i]; break; }
+      if (spans[i].index > anchor.index && !best) { best = spans[i]; }
+    }
+    if (!best) { return null; }
+    return (best.top - panelTop) - anchor.delta;
+  }
+  // [tye-scroll-anchor-end]
+
+  function measureWordSpans() {
+    var spans = [];
+    transcriptEl.querySelectorAll(".tw").forEach(function (s) {
+      var r = s.getBoundingClientRect();
+      spans.push({
+        index: parseInt(s.dataset.index, 10),
+        top: r.top, bottom: r.bottom
+      });
+    });
+    return spans;
+  }
+
   function renderTranscript(words) {
+    var scrollAnchor = null;
+    if (transcriptPanel &&
+        typeof transcriptPanel.getBoundingClientRect === "function" &&
+        transcriptPanel.scrollTop > 0) {
+      scrollAnchor = pickScrollAnchor(
+        followOn,
+        transcriptPanel.getBoundingClientRect().top,
+        measureWordSpans()
+      );
+    }
     transcriptEntries = words || [];
     transcriptEl.innerHTML = "";
     currentWordIndex = null;
@@ -1946,38 +2959,118 @@
           w.index < g.word_end && g.word_start < e;
       });
     }
-    var lineEl = null;
-    var lineWords = null;
-    var lineCount = 0;
-    var prev = null;
-    function startLine(w) {
-      lineEl = document.createElement("div");
-      lineEl.className = "tx-line";
-      var chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "tx-chip";
-      chip.dataset.start = (typeof w.start === "number") ? w.start : "";
-      chip.textContent = fmtMinSec(w.start);
-      chip.setAttribute("aria-label", "Play from " + fmtMinSec(w.start));
-      lineEl.appendChild(chip);
-      lineWords = document.createElement("span");
-      lineWords.className = "tx-words";
-      lineEl.appendChild(lineWords);
-      transcriptEl.appendChild(lineEl);
-      lineCount = 0;
+    // Comment markers by paragraph, and the pinned words of open
+    // comments (v2): a marker sits in the paragraph's right margin,
+    // blue while its comment is open, gray once it is dealt with.
+    var speakers = {};
+    transcriptEntries.forEach(function (w) {
+      if (w.speaker) { speakers[w.speaker] = true; }
+    });
+    var showSpeakers = Object.keys(speakers).length > 1;
+    var commentedWords = {};
+    (state.comments || []).forEach(function (c) {
+      if (c.done) { return; }
+      if (typeof c.word_start === "number" && typeof c.word_end === "number") {
+        for (var k = c.word_start; k < c.word_end; k++) {
+          commentedWords[k] = true;
+        }
+      }
+    });
+    function entryIndexForComment(c) {
+      if (typeof c.word_start === "number") { return c.word_start; }
+      var ets = commentEditedTs(c);
+      var found = transcriptEntries.length ? transcriptEntries[0].index : 0;
+      transcriptEntries.forEach(function (w) {
+        if (typeof w.edited_start === "number" && w.edited_start <= ets + 0.001) {
+          found = w.index;
+        }
+      });
+      return found;
+    }
+    var markersByPara = {};
+    (state.comments || []).forEach(function (c) {
+      var idx = entryIndexForComment(c);
+      var entry = entryByIndex(idx) || transcriptEntries[0];
+      if (!entry) { return; }
+      var para = typeof entry.paragraph === "number" ? entry.paragraph : 0;
+      if (!markersByPara[para]) { markersByPara[para] = []; }
+      markersByPara[para].push(c);
+    });
+    // Paragraphs (v2): the grouping rides on each entry from the
+    // server, computed once from the original word times, so edits
+    // never move a break. One quiet time per paragraph, in the
+    // left gutter, on the edited clock.
+    var paraEl = null;
+    var paraWords = null;
+    var paraIndex = null;
+    var paraSpeaker = null;
+    function startPara(w) {
+      paraIndex = typeof w.paragraph === "number" ? w.paragraph : 0;
+      paraEl = document.createElement("div");
+      paraEl.className = "tx-para";
+      paraEl.dataset.para = paraIndex;
+      if (showSpeakers && w.speaker && w.speaker !== paraSpeaker) {
+        var sp = document.createElement("div");
+        sp.className = "tx-speaker";
+        sp.textContent = w.speaker;
+        paraEl.appendChild(sp);
+      }
+      paraSpeaker = w.speaker || paraSpeaker;
+      var row = document.createElement("div");
+      row.className = "tx-para-row";
+      var time = document.createElement("button");
+      time.type = "button";
+      time.className = "tx-time";
+      var et = typeof w.edited_start === "number" ? w.edited_start : 0;
+      time.dataset.edited = et;
+      time.textContent = fmtTransport(et);
+      time.setAttribute("aria-label", "Play from " + fmtTransport(et));
+      row.appendChild(time);
+      paraWords = document.createElement("span");
+      paraWords.className = "tx-words";
+      row.appendChild(paraWords);
+      paraEl.appendChild(row);
+      var marks = markersByPara[paraIndex] || [];
+      if (marks.length) {
+        var margin = document.createElement("span");
+        margin.className = "tx-margin";
+        var byDone = {};
+        marks.forEach(function (c) {
+          var key2 = c.done ? "done" : "open";
+          if (!byDone[key2]) { byDone[key2] = []; }
+          byDone[key2].push(c);
+        });
+        Object.keys(byDone).forEach(function (key2) {
+          var group = byDone[key2];
+          var first = group[0];
+          var marker = document.createElement("button");
+          marker.type = "button";
+          marker.className = "tx-comment-marker" + (first.done ? " done" : "");
+          marker.dataset.commentId = first.id;
+          marker.textContent = group.length > 1 ? String(group.length) : "";
+          marker.title = first.text;
+          marker.setAttribute("aria-label",
+            "Comment: " + first.text);
+          marker.addEventListener("click", function () {
+            seekToEdited(commentEditedTs(first), first.fmt);
+            openCommentById(first.id);
+          });
+          margin.appendChild(marker);
+        });
+        paraEl.appendChild(margin);
+      }
+      transcriptEl.appendChild(paraEl);
     }
     transcriptEntries.forEach(function (w) {
-      var needLine = !lineEl;
-      if (!needLine && prev) {
-        if (typeof w.start === "number" && typeof prev.end === "number" &&
-            w.start - prev.end > 0.7) { needLine = true; }
-        if (lineCount >= 14) { needLine = true; }
-        var prevText = String(prev.word || "").replace(/\s+$/, "");
-        if (/[.!?]$/.test(prevText)) { needLine = true; }
-      }
-      if (needLine) { startLine(w); }
+      var wp = typeof w.paragraph === "number" ? w.paragraph : 0;
+      if (!paraEl || wp !== paraIndex) { startPara(w); }
       var span = document.createElement("span");
-      span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "") + (inGold(w) ? " tw-held" : "");
+      var isCommented = false;
+      var e2 = w.word_end || (w.index + 1);
+      for (var k2 = w.index; k2 < e2; k2++) {
+        if (commentedWords[k2]) { isCommented = true; }
+      }
+      span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "") + (inGold(w) ? " tw-held" : "") + (isCommented ? " tw-commented" : "");
       span.dataset.index = w.index;
       span.dataset.end = w.word_end || (w.index + 1);
       span.textContent = w.word;
@@ -1986,9 +3079,8 @@
         : (w.status === "cut"
           ? "Cut. Click to jump here and pick this word."
           : "Click to jump here and pick this word.");
-      lineWords.appendChild(span);
-      lineWords.appendChild(document.createTextNode(" "));
-      lineCount += ((w.word_end || (w.index + 1)) - w.index) || 1;
+      paraWords.appendChild(span);
+      paraWords.appendChild(document.createTextNode(" "));
       var entryEnd = w.word_end || (w.index + 1);
       Object.keys(dotByLast).forEach(function (k) {
         var lastIdx = parseInt(k, 10);
@@ -2002,7 +3094,7 @@
           dot.setAttribute("aria-haspopup", "dialog");
           dot.setAttribute("aria-expanded", "false");
           wirePopupAnchor(dot, function (anchor) { openEditPopup(editSpan, anchor); });
-          lineWords.appendChild(dot);
+          paraWords.appendChild(dot);
         }
       });
       Object.keys(flagsByLast).forEach(function (k) {
@@ -2017,7 +3109,7 @@
             marker.setAttribute("aria-haspopup", "dialog");
             marker.setAttribute("aria-expanded", "false");
             wirePopupAnchor(marker, function (anchor) { openFlagPopup(flag, anchor); });
-            lineWords.appendChild(marker);
+            paraWords.appendChild(marker);
           });
         }
       });
@@ -2033,15 +3125,26 @@
             marker.setAttribute("aria-haspopup", "dialog");
             marker.setAttribute("aria-expanded", "false");
             wirePopupAnchor(marker, function (anchor) { openGoldPopup(g, anchor); });
-            lineWords.appendChild(marker);
+            paraWords.appendChild(marker);
           });
         }
       });
-      prev = w;
     });
     updateTxCounts();
     refreshFixSelection();
     updateTxActionStrip();
+    updateChangeButtons();
+    if (scrollAnchor && transcriptPanel) {
+      var adj = scrollAnchorAdjustment(
+        scrollAnchor,
+        transcriptPanel.getBoundingClientRect().top,
+        measureWordSpans()
+      );
+      if (adj !== null && adj !== 0) {
+        transcriptPanel.scrollTop = Math.max(
+          0, transcriptPanel.scrollTop + adj);
+      }
+    }
   }
 
   function reloadTranscript() {
@@ -2051,6 +3154,10 @@
       jobFlags = job.flags || [];
       jobGold = job.gold || [];
       renderTranscript(job.transcript_words);
+      // A run that rewrote the plan may also have rebuilt the
+      // edited video (FIX A): the player follows the same fresh
+      // state, on its own, with no reload of the page.
+      syncPlayerToWatching(job);
     }).catch(function () {});
   }
 
@@ -2165,6 +3272,9 @@
       if (data.changed) { refreshHistory(); }
       reloadJobState();
       transcriptStatus.textContent = rangeResultMessage(data, action);
+      if (action === "restore" && data.why_prompt && data.why_prompt.entry_id) {
+        showWhyPrompt(data.why_prompt.entry_id, "restore");
+      }
       if (goldStayed) {
         reloadTranscript().then(function () { openGoldForStayed(goldStayed); });
       } else {
@@ -2219,16 +3329,20 @@
     lastTxSync = now;
     if (!transcriptEntries.length) { return; }
     var ct = vid.currentTime || 0;
+    var sourceClock = editPlaybackApplies();
     var current = null;
     for (var i = 0; i < transcriptEntries.length; i++) {
-      if (typeof transcriptEntries[i].start === "number" && transcriptEntries[i].start <= ct) {
+      var stamp = sourceClock
+        ? transcriptEntries[i].start
+        : transcriptEntries[i].edited_start;
+      if (typeof stamp === "number" && stamp <= ct) {
         current = transcriptEntries[i];
-      } else if (typeof transcriptEntries[i].start === "number" && transcriptEntries[i].start > ct) {
+      } else if (typeof stamp === "number" && stamp > ct) {
         break;
       }
     }
-    transcriptEl.querySelectorAll(".tw-now").forEach(function (el) { el.classList.remove("tw-now"); });
-    transcriptEl.querySelectorAll(".tx-line-now").forEach(function (el) { el.classList.remove("tx-line-now"); });
+    transcriptEl.querySelectorAll(".tw-now").forEach(function (el) { el.classList.remove("tw-now"); el.classList.remove("tw-resting"); });
+    transcriptEl.querySelectorAll(".tx-para-now").forEach(function (el) { el.classList.remove("tx-para-now"); });
     if (!current) { currentWordIndex = null; return; }
     currentWordIndex = current.index;
     var wordEl = null;
@@ -2237,15 +3351,24 @@
     });
     if (!wordEl) { return; }
     wordEl.classList.add("tw-now");
-    var line = wordEl.closest ? wordEl.closest(".tx-line") : null;
+    // Paused, the spoken mark rests as a thin outline on the last
+    // spoken word: the same mark at rest, not a fifth one.
+    if (vid.paused) { wordEl.classList.add("tw-resting"); }
+    var line = wordEl.closest ? wordEl.closest(".tx-para") : null;
     if (!line) { return; }
-    line.classList.add("tx-line-now");
+    line.classList.add("tx-para-now");
     if (followOn && transcriptPanel) {
+      // Gentle follow (v2): nothing moves until the spoken word
+      // passes about 70% down the panel; then the current
+      // paragraph comes to about 30% from the top.
       var panelRect = transcriptPanel.getBoundingClientRect();
       var lineRect = line.getBoundingClientRect();
-      if (lineRect.top < panelRect.top + 4 || lineRect.bottom > panelRect.bottom - 4) {
+      var past70 = lineRect.bottom - panelRect.top > panelRect.height * 0.7;
+      var aboveTop = lineRect.top < panelRect.top;
+      if (past70 || aboveTop) {
         followScrolling = true;
-        var target = transcriptPanel.scrollTop + (lineRect.top - panelRect.top) - 12;
+        var target = transcriptPanel.scrollTop +
+          (lineRect.top - panelRect.top) - panelRect.height * 0.3;
         transcriptPanel.scrollTo({ top: Math.max(0, target), behavior: "auto" });
         setTimeout(function () { followScrolling = false; }, 60);
       }
@@ -2462,7 +3585,7 @@
 
   transcriptEl.addEventListener("pointerdown", function (e) {
     if (fixMode) { return; }
-    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag") || e.target.closest(".theld") || e.target.closest(".tx-chip"))) { return; }
+    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag") || e.target.closest(".theld") || e.target.closest(".tx-time"))) { return; }
     var span = e.target && e.target.closest ? e.target.closest(".tw") : null;
     if (!span) { return; }
     var index = parseInt(span.dataset.index, 10);
@@ -2509,11 +3632,12 @@
   // post for the whole pick. In fix mode, clicks keep picking the
   // run for the correction editor.
   transcriptEl.addEventListener("click", function (e) {
-    var chip = e.target && e.target.closest ? e.target.closest(".tx-chip") : null;
+    var chip = e.target && e.target.closest ? e.target.closest(".tx-time") : null;
     if (chip) {
-      var chipStart = parseFloat(chip.dataset.start);
-      if (!isNaN(chipStart)) {
-        vid.currentTime = chipStart;
+      var chipEdited = parseFloat(chip.dataset.edited);
+      if (!isNaN(chipEdited)) {
+        vid.currentTime = editPlaybackApplies()
+          ? editedToFileTime(chipEdited) : chipEdited;
         updatePlayhead();
         syncTranscriptPlayback(true);
       }
@@ -2532,7 +3656,9 @@
     }
     var entry = entryByIndex(index);
     if (entry && typeof entry.start === "number") {
-      vid.currentTime = entry.start;
+      vid.currentTime = editPlaybackApplies()
+        ? entry.start
+        : (typeof entry.edited_start === "number" ? entry.edited_start : entry.start);
       updatePlayhead();
     }
     if (e.shiftKey && selStart !== null && selEnd !== null) {
@@ -2552,6 +3678,22 @@
     refreshFixSelection();
     updateTxActionStrip();
     syncTranscriptPlayback(true);
+  });
+
+  transcriptEl.addEventListener("dblclick", function (e) {
+    var span = e.target && e.target.closest ? e.target.closest(".tw") : null;
+    if (!span) { return; }
+    var index = parseInt(span.dataset.index, 10);
+    if (isNaN(index)) { return; }
+    var spanEnd = parseInt(span.dataset.end, 10) || (index + 1);
+    var entry = entryByIndex(index);
+    pinnedWordStart = index;
+    pinnedWordEnd = spanEnd;
+    pinDraft(entry && typeof entry.start === "number"
+      ? entry.start : (vid.currentTime || 0));
+    applyCommentsOpen(true);
+    draft.placeholder = "Comment pinned to these words. Type or dictate, then Save comment.";
+    draft.focus();
   });
 
   if (txCutBtn) { txCutBtn.addEventListener("click", function () { runSelectionToggle("cut"); }); }
@@ -2609,7 +3751,7 @@
     }, { passive: true });
   }
   vid.addEventListener("seeked", function () {
-    clockEl.textContent = fmtTime(vid.currentTime);
+    clockEl.textContent = transportReadout();
     updatePlayhead();
     syncTranscriptPlayback(true);
   });
@@ -2617,15 +3759,60 @@
   document.getElementById("btnV").addEventListener("click", function () { setFmt("vertical"); });
   document.getElementById("btnL").addEventListener("click", function () { setFmt("landscape"); });
   document.getElementById("back5").addEventListener("click", function () { stepBy(-5); });
-  document.getElementById("back1").addEventListener("click", function () { stepBy(-1); });
-  document.getElementById("fwd1").addEventListener("click", function () { stepBy(1); });
   document.getElementById("fwd5").addEventListener("click", function () { stepBy(5); });
+  // -- transport (v2): start, end, play/pause, prev/next change --
+  var playPauseBtn = document.getElementById("playPauseBtn");
+  var playPauseIcon = document.getElementById("playPauseIcon");
+  var playPauseLabel = document.getElementById("playPauseLabel");
+  function syncPlayButton() {
+    var playing = !vid.paused && !vid.ended;
+    if (playPauseIcon) { playPauseIcon.textContent = playing ? "\u23F8" : "\u25B6"; }
+    if (playPauseLabel) { playPauseLabel.textContent = playing ? "Pause" : "Play"; }
+    if (playPauseBtn) {
+      playPauseBtn.title = playing ? "Pause (Space)" : "Play (Space)";
+    }
+  }
+  if (playPauseBtn) {
+    playPauseBtn.addEventListener("click", function () {
+      if (vid.paused) { vid.play(); } else { vid.pause(); }
+    });
+  }
+  vid.addEventListener("play", syncPlayButton);
+  vid.addEventListener("pause", syncPlayButton);
+  vid.addEventListener("ended", syncPlayButton);
+  var goStartBtn = document.getElementById("goStartBtn");
+  if (goStartBtn) {
+    goStartBtn.addEventListener("click", function () {
+      vid.currentTime = 0;
+      clockEl.textContent = transportReadout();
+      updatePlayhead();
+      syncTranscriptPlayback(true);
+    });
+  }
+  var goEndBtn = document.getElementById("goEndBtn");
+  if (goEndBtn) {
+    goEndBtn.addEventListener("click", function () {
+      var d = tlDuration();
+      if (d > 0) { vid.currentTime = d; }
+      clockEl.textContent = transportReadout();
+      updatePlayhead();
+      syncTranscriptPlayback(true);
+    });
+  }
+  var prevChangeBtn = document.getElementById("prevChangeBtn");
+  if (prevChangeBtn) {
+    prevChangeBtn.addEventListener("click", function () { jumpChange(-1); });
+  }
+  var nextChangeBtn = document.getElementById("nextChangeBtn");
+  if (nextChangeBtn) {
+    nextChangeBtn.addEventListener("click", function () { jumpChange(1); });
+  }
   vid.addEventListener("timeupdate", function () {
     // Skip first, then read the clock: the readout always shows
     // where the playhead actually is, never a cut part it has
     // already jumped past.
     skipCutParts();
-    clockEl.textContent = fmtTime(vid.currentTime);
+    clockEl.textContent = transportReadout();
     updatePlayhead();
     syncTranscriptPlayback(false);
   });
@@ -2756,7 +3943,7 @@
     var t = Math.max(0, (vid.currentTime || 0) + seconds);
     if (d > 0) { t = Math.min(d, t); }
     vid.currentTime = t;
-    clockEl.textContent = fmtTime(vid.currentTime);
+    clockEl.textContent = transportReadout();
     updatePlayhead();
   }
 
@@ -2842,6 +4029,7 @@
     var results = document.getElementById("results");
     var provider = document.getElementById("provider").value;
     status.textContent = "Running direction for the " + curFmt + " cut with the " + provider + " provider...";
+    if (jobIsIntake) { showWatchingBuilding(); }
     results.innerHTML = "";
     persist().then(function () {
       return postJson("/api/direct", { provider: provider, format: curFmt });
@@ -2849,6 +4037,7 @@
       var data = res.data || {};
       if (!data.ok) {
         status.textContent = "Direction did not run: " + (data.error || res.status);
+        reloadJobState();
         return;
       }
       status.textContent = "Direction finished.";
@@ -2897,16 +4086,21 @@
       }
     }).catch(function (err) {
       status.textContent = "Direction did not run: " + err;
+      reloadJobState();
     });
   });
 
   document.getElementById("runRender").addEventListener("click", function () {
     var status = document.getElementById("renderStatus");
     status.textContent = "Rendering the revised review...";
+    showWatchingBuilding();
     postJson("/api/render", {}).then(function (res) {
       var data = res.data || {};
       if (data.ok) {
         status.textContent = "Rendered. Use Grade the changes to watch the revised edit and mark each change.";
+        // The rebuilt video swaps into the player on its own
+        // through the fresh job state (FIX A), no page reload.
+        reloadJobState();
       } else if (data.missing && data.missing.length) {
         status.textContent = "Render is not set up on this server yet. Missing: " +
           data.missing.join(", ") +
@@ -2914,8 +4108,10 @@
       } else {
         status.textContent = "Render did not finish: " + (data.error || res.status);
       }
+      if (!data.ok) { reloadJobState(); }
     }).catch(function (err) {
       status.textContent = "Render did not finish: " + err;
+      reloadJobState();
     });
   });
 
@@ -3283,6 +4479,91 @@
   wireDictation("draftDictate", "draft", "draftDictateStatus");
   wireDictation("overallDictate", "overallDraft", "overallDictateStatus");
   wireDictation("intakeDictate", "intakeDirection", "firstEditStatus");
+
+  // -- the why question ------------------------------------------------
+  // [tye-why-begin]
+  // After words are brought back, or a spot the editor was not
+  // sure about is left in, the app asks one short question about
+  // that choice. It is never required and never blocks anything:
+  // one tap on an answer saves it on that change's own record and
+  // closes the card, Other opens a short note box first, and Skip
+  // closes the card and saves nothing. A new question replaces
+  // any question still open, so there is only ever one showing.
+  var whyCard = document.getElementById("whyCard");
+  var whyQuestion = document.getElementById("whyQuestion");
+  var whyNoteRow = document.getElementById("whyNoteRow");
+  var whyNote = document.getElementById("whyNote");
+  var whyStatus = document.getElementById("whyStatus");
+  var whyEntryId = null;
+
+  function hideWhyPrompt() {
+    whyEntryId = null;
+    if (whyCard) { whyCard.hidden = true; }
+    if (whyNoteRow) { whyNoteRow.hidden = true; }
+    if (whyNote) { whyNote.value = ""; }
+    if (whyStatus) { whyStatus.textContent = ""; }
+  }
+
+  function showWhyPrompt(entryId, kind) {
+    if (!whyCard || !entryId) { return; }
+    whyEntryId = entryId;
+    if (whyQuestion) {
+      whyQuestion.textContent = kind === "leave"
+        ? "Why are you leaving that in?"
+        : "Why did you put that back?";
+    }
+    if (whyNoteRow) { whyNoteRow.hidden = true; }
+    if (whyNote) { whyNote.value = ""; }
+    if (whyStatus) { whyStatus.textContent = ""; }
+    whyCard.hidden = false;
+  }
+
+  function saveWhyChoice(choice) {
+    if (!whyEntryId) { return; }
+    var entryId = whyEntryId;
+    var note = whyNote ? whyNote.value.trim() : "";
+    postJson("/api/why", {
+      entry_id: entryId, choice: choice, note: note
+    }).then(function (res) {
+      if (!res.data || !res.data.ok) {
+        if (whyStatus) {
+          whyStatus.textContent = (res.data && res.data.error) ||
+            "That answer could not be saved.";
+        }
+      }
+    }).catch(function () {
+      if (whyStatus) {
+        whyStatus.textContent = "That answer could not be saved.";
+      }
+    });
+    hideWhyPrompt();
+  }
+
+  function wireWhyButton(id, choice) {
+    var btn = document.getElementById(id);
+    if (!btn) { return; }
+    btn.addEventListener("click", function () { saveWhyChoice(choice); });
+  }
+  wireWhyButton("whyStory", "story");
+  wireWhyButton("whySound", "sound");
+  wireWhyButton("whySayIt", "say_it");
+  var whyOtherBtn = document.getElementById("whyOther");
+  if (whyOtherBtn) {
+    whyOtherBtn.addEventListener("click", function () {
+      if (whyNoteRow) { whyNoteRow.hidden = false; }
+      if (whyNote) { whyNote.focus(); }
+    });
+  }
+  var whySaveBtn = document.getElementById("whySave");
+  if (whySaveBtn) {
+    whySaveBtn.addEventListener("click", function () { saveWhyChoice("other"); });
+  }
+  var whySkipBtn = document.getElementById("whySkip");
+  if (whySkipBtn) {
+    whySkipBtn.addEventListener("click", function () { hideWhyPrompt(); });
+  }
+  wireDictation("whyDictate", "whyNote", "whyDictateStatus");
+  // [tye-why-end]
 
   // -- note-box state (v0.9.0) -------------------------------------------
   // One shared note box serves every popover, so its text is kept
@@ -3681,6 +4962,9 @@
       // a verdict landing late must not close another span's card.
       if (popupGoldRef === verdictSpan) { closeEditPopup(); }
       if (transcriptStatus) { transcriptStatus.textContent = message; }
+      if (decision === "leave" && data.why_prompt && data.why_prompt.entry_id) {
+        showWhyPrompt(data.why_prompt.entry_id, "leave");
+      }
       refreshHistory();
       reloadJobState();
     }).catch(function () {
@@ -3774,6 +5058,9 @@
         closeEditPopup();
         var ts = document.getElementById("transcriptStatus");
         if (ts) { ts.textContent = data.message || "Done."; }
+        if (action === "restore" && data.why_prompt && data.why_prompt.entry_id) {
+          showWhyPrompt(data.why_prompt.entry_id, "restore");
+        }
         refreshHistory();
         reloadJobState();
       } else if (editActionStatus) {
@@ -3861,6 +5148,7 @@
 
   // -- your style (rules) ---------------------------------------------
   var ruleSuggestionsEl = document.getElementById("ruleSuggestions");
+  var storyRuleSuggestionEl = document.getElementById("storyRuleSuggestion");
   var savedRulesListEl = document.getElementById("savedRulesList");
   var rulesEmptyEl = document.getElementById("rulesEmpty");
 
@@ -3873,24 +5161,39 @@
 
   function renderRules() {
     if (ruleSuggestionsEl) { ruleSuggestionsEl.innerHTML = ""; }
+    if (storyRuleSuggestionEl) { storyRuleSuggestionEl.innerHTML = ""; }
     if (savedRulesListEl) { savedRulesListEl.innerHTML = ""; }
     (ruleSuggestions || []).forEach(function (sug) {
+      var isStory = sug.rule_class === "story";
       var card = document.createElement("div");
-      card.className = "comment";
+      card.className = isStory ? "comment story-rule" : "comment";
+      if (isStory) {
+        var storyLabel = document.createElement("p");
+        storyLabel.className = "comment-text story-rule-label";
+        storyLabel.textContent = "Story rule: this can change what a video means.";
+        card.appendChild(storyLabel);
+      }
       var p = document.createElement("p");
       p.className = "comment-text";
       p.textContent = "Pattern caught: " + (sug.statement || "");
       var small = document.createElement("p");
       small.className = "action";
-      small.textContent = sug.explicit
-        ? "You marked a change like this as your style."
-        : "This has worked " + sug.support_count + " times in your grades.";
+      small.textContent = sug.source_note
+        ? sug.source_note
+        : (sug.explicit
+          ? "You marked a change like this as your style."
+          : "This has worked " + sug.support_count + " times in your grades.");
+      if (isStory) {
+        var needsYes = document.createElement("p");
+        needsYes.className = "action";
+        needsYes.textContent = "It needs your clear yes before it ever applies.";
+      }
       var row = document.createElement("div");
       row.className = "row";
       var saveBtn = document.createElement("button");
       saveBtn.type = "button";
       saveBtn.className = "primary";
-      saveBtn.textContent = "Save as a rule";
+      saveBtn.textContent = isStory ? "Save this story rule" : "Save as a rule";
       saveBtn.addEventListener("click", function () {
         postJson("/api/rule-save", { pattern_key: sug.pattern_key }).then(function (res) {
           updateRulesFromData(res.data || {});
@@ -3909,9 +5212,20 @@
       row.appendChild(saveBtn);
       row.appendChild(dismissBtn);
       card.appendChild(p);
+      if (isStory) { card.appendChild(needsYes); }
       card.appendChild(small);
+      if (sug.proof) {
+        var proofEl = document.createElement("p");
+        proofEl.className = "action";
+        proofEl.textContent = sug.proof;
+        card.appendChild(proofEl);
+      }
       card.appendChild(row);
-      if (ruleSuggestionsEl) { ruleSuggestionsEl.appendChild(card); }
+      if (isStory) {
+        // A story rule stands apart from the small rules, in its
+        // own place on the page, never bundled in with them.
+        if (storyRuleSuggestionEl) { storyRuleSuggestionEl.appendChild(card); }
+      } else if (ruleSuggestionsEl) { ruleSuggestionsEl.appendChild(card); }
     });
     (savedRules || []).forEach(function (rule) {
       var row = document.createElement("div");
@@ -3929,12 +5243,144 @@
         }).catch(function () {});
       });
       row.appendChild(label);
+      if (typeof rule !== "string") {
+        var ruleMeta = document.createElement("span");
+        ruleMeta.className = "note";
+        var metaParts = [rule.rule_class === "small" ? "Small rule" : "Story rule"];
+        if (rule.source === "pattern" || rule.source === "explicit") {
+          metaParts.push("Learned from your grades");
+        }
+        ruleMeta.textContent = metaParts.join(" · ");
+        row.appendChild(ruleMeta);
+        if (rule.source === "teaching" && rule.tested === false) {
+          var testedEl = document.createElement("span");
+          testedEl.className = "note";
+          testedEl.textContent = "Not tested yet";
+          row.appendChild(testedEl);
+        }
+      }
       row.appendChild(removeBtn);
       if (savedRulesListEl) { savedRulesListEl.appendChild(row); }
     });
     if (rulesEmptyEl) {
       rulesEmptyEl.hidden = !!((savedRules && savedRules.length) || (ruleSuggestions && ruleSuggestions.length));
     }
+  }
+
+  // -- teach the app (v0.10) ---------------------------------------
+  var teachStatusEl = document.getElementById("teachStatus");
+  var teachLinkEl = document.getElementById("teachLink");
+  var teachKind = "mine";
+  var teachId = null;
+
+  function teachSay(text) {
+    if (teachStatusEl) { teachStatusEl.textContent = text; }
+  }
+
+  function teachEnsure() {
+    if (teachId) { return Promise.resolve(teachId); }
+    return postJson("/api/teach/begin", { kind: teachKind }).then(function (res) {
+      if (!res.data || !res.data.ok || !res.data.teach_id) {
+        throw new Error("begin");
+      }
+      teachId = res.data.teach_id;
+      return teachId;
+    });
+  }
+
+  function teachMarkKind() {
+    var mineBtn = document.getElementById("teachKindMine");
+    var styleBtn = document.getElementById("teachKindStyle");
+    if (mineBtn) { mineBtn.classList.toggle("on", teachKind === "mine"); }
+    if (styleBtn) { styleBtn.classList.toggle("on", teachKind === "style"); }
+  }
+
+  function teachSetKind(kind) {
+    if (teachKind === kind) { return; }
+    teachKind = kind;
+    teachMarkKind();
+    if (teachId) {
+      // A new choice is a fresh teaching drop: the files added so
+      // far belonged to the other choice.
+      teachId = null;
+      teachSay("New choice, so this is a fresh teaching drop. Add the files again.");
+    }
+  }
+
+  var teachMineBtn = document.getElementById("teachKindMine");
+  var teachStyleBtn = document.getElementById("teachKindStyle");
+  if (teachMineBtn) {
+    teachMineBtn.addEventListener("click", function () { teachSetKind("mine"); });
+  }
+  if (teachStyleBtn) {
+    teachStyleBtn.addEventListener("click", function () { teachSetKind("style"); });
+  }
+
+  function teachUpload(role, input) {
+    if (!input || !input.files || !input.files.length) { return; }
+    var file = input.files[0];
+    teachSay("Bringing in " + file.name + "…");
+    teachEnsure().then(function (id) {
+      return fetch(
+        "/api/teach/file?teach=" + encodeURIComponent(id) +
+        "&role=" + encodeURIComponent(role) +
+        "&name=" + encodeURIComponent(file.name),
+        { method: "POST", body: file }
+      ).then(function (r) { return r.json(); });
+    }).then(function (res) {
+      if (!res || !res.ok) {
+        teachSay("That file could not be taken in.");
+        return;
+      }
+      teachSay("Got it: " + file.name + ". Add anything else you have, then choose Teach from this.");
+    }).catch(function () {
+      teachSay("That file could not be taken in.");
+    });
+  }
+
+  [["teachRecording", "recording"], ["teachRaw", "raw"], ["teachFinished", "finished"]].forEach(function (pair) {
+    var input = document.getElementById(pair[0]);
+    if (input) {
+      input.addEventListener("change", function () { teachUpload(pair[1], input); });
+    }
+  });
+
+  var teachLinkBtn = document.getElementById("teachLinkBtn");
+  if (teachLinkBtn) {
+    teachLinkBtn.addEventListener("click", function () {
+      var url = teachLinkEl ? teachLinkEl.value.trim() : "";
+      if (!url) {
+        teachSay("Paste a link first.");
+        return;
+      }
+      teachSay("Getting the video from that link…");
+      teachEnsure().then(function (id) {
+        return postJson("/api/teach/link", { teach_id: id, url: url, as: "finished" });
+      }).then(function (res) {
+        teachSay((res.data && res.data.message) || "");
+      }).catch(function () {
+        teachSay("The app could not get that video from the link. Drop the video file here instead.");
+      });
+    });
+  }
+
+  var teachRunBtn = document.getElementById("teachRun");
+  if (teachRunBtn) {
+    teachRunBtn.addEventListener("click", function () {
+      teachSay("Learning from what you shared…");
+      teachEnsure().then(function (id) {
+        return postJson("/api/teach/run", { teach_id: id });
+      }).then(function (res) {
+        var data = (res && res.data) || {};
+        teachSay(data.message || "");
+        if (data.suggestions) {
+          ruleSuggestions = data.suggestions;
+          renderRules();
+        }
+      }).catch(function () {
+        teachSay("The teaching could not be run. Try again in a moment.");
+      });
+    });
   }
 
   // -- tool rows (v0.9.0) ------------------------------------------
@@ -4021,34 +5467,6 @@
   }
   setKeepMode("last");
 
-  var fdBreathsPills = document.getElementById("fdBreathsPills");
-  var fdBreathsNote = document.getElementById("fdBreathsNote");
-  var fdBreaths = "keep";
-
-  var BREATHS_NOTES = {
-    keep: "Pauses over the buffer are shortened to the buffer. Keep the natural breath is the one exception protected on purpose: the signature breath before a sentence is saved and kept, while every other pause is cut down to the buffer.",
-    trim: "Breaths go with the pause. Pauses over the buffer are shortened to the buffer, with no exception for breaths, so the next thought lands right away."
-  };
-
-  function setBreaths(mode) {
-    if (mode !== "trim") { mode = "keep"; }
-    fdBreaths = mode;
-    if (fdBreathsPills) {
-      Array.prototype.forEach.call(fdBreathsPills.querySelectorAll("button"), function (btn) {
-        if (btn.getAttribute("data-breaths") === mode) { btn.classList.add("on"); }
-        else { btn.classList.remove("on"); }
-      });
-    }
-    if (fdBreathsNote) { fdBreathsNote.textContent = BREATHS_NOTES[mode]; }
-  }
-
-  if (fdBreathsPills) {
-    Array.prototype.forEach.call(fdBreathsPills.querySelectorAll("button"), function (btn) {
-      btn.addEventListener("click", function () { setBreaths(btn.getAttribute("data-breaths")); });
-    });
-  }
-  setBreaths("keep");
-
   // How involved the creator wants to be (v0.7.1): one choice,
   // saved with the other front door choices, named in every recap.
   var fdModePills = document.getElementById("fdModePills");
@@ -4078,6 +5496,22 @@
     });
   }
   setFdMode("cleanest");
+
+  // Editing style (v0.10): which starter know-how this edit uses.
+  // No pick means Justin's way, and the select starts there.
+  var fdStyleEl = document.getElementById("fdStyle");
+  var fdStyle = "justins-way";
+
+  function setFdStyle(style) {
+    if (style !== "keep-it-simple" && style !== "hands-off") { style = "justins-way"; }
+    fdStyle = style;
+    if (fdStyleEl) { fdStyleEl.value = style; }
+  }
+
+  if (fdStyleEl) {
+    fdStyleEl.addEventListener("change", function () { setFdStyle(fdStyleEl.value); });
+  }
+  setFdStyle("justins-way");
 
   function renderBetaLine(beta) {
     if (!fdBetaLine) { return; }
@@ -4126,9 +5560,13 @@
 
   if (fdFire) {
     fdFire.addEventListener("click", function () {
-      var bufferVal = fdBufferNum ? clampBuffer(fdBufferNum.value) : 0.2;
+      var bufferVal = fdBufferNum ? clampBuffer(fdBufferNum.value) : 0.1;
       fdFire.disabled = true;
       if (fdStatus) { fdStatus.textContent = "Making the edit..."; }
+      // While the run builds the new edit, the watching line
+      // says so (FIX A, sharpened); the state brought back when
+      // the run lands sets it right again, whatever happened.
+      if (jobIsIntake) { showWatchingBuilding(); }
       if (fdResults) { fdResults.innerHTML = ""; }
       persist().then(function () {
         return postJson("/api/front-door", {
@@ -4136,8 +5574,8 @@
           cut_silence: fdSilence ? !!fdSilence.checked : true,
           buffer_s: bufferVal,
           keep_mode: fdKeepMode,
-          breaths: fdBreaths,
           mode: fdMode,
+          style: fdStyle,
           remove_fillers: fdFillers ? !!fdFillers.checked : false,
           format_scope: fdScope ? fdScope.value : "both",
           direction_text: fdDirection ? fdDirection.value : ""
@@ -4147,11 +5585,18 @@
         fdFire.disabled = false;
         if (!data.ok) {
           if (fdStatus) { fdStatus.textContent = data.error || "The edit did not run."; }
+          reloadJobState();
           return;
         }
         if (fdStatus) { fdStatus.textContent = "Done."; }
         renderBetaLine(data.beta);
         if (fdResults) {
+          if (data.length_recap) {
+            var lengthLine = document.createElement("p");
+            lengthLine.className = "counts";
+            lengthLine.textContent = data.length_recap;
+            fdResults.appendChild(lengthLine);
+          }
           if (data.recap) {
             var recapLine = document.createElement("p");
             recapLine.className = "counts";
@@ -4164,17 +5609,11 @@
             setLine.textContent = line;
             fdResults.appendChild(setLine);
           });
-          if (data.breaths_recap) {
-            var breathsLine = document.createElement("p");
-            breathsLine.className = "counts";
-            breathsLine.textContent = data.breaths_recap;
-            fdResults.appendChild(breathsLine);
-          }
-          if (data.settings && data.settings.breaths) {
-            setBreaths(data.settings.breaths);
-          }
           if (data.settings && data.settings.mode) {
             setFdMode(data.settings.mode);
+          }
+          if (data.settings && data.settings.style) {
+            setFdStyle(data.settings.style);
           }
           (data.mode_lines || []).forEach(function (line) {
             var modeLine = document.createElement("p");
@@ -4256,11 +5695,55 @@
             fdResults.appendChild(link);
           }
         }
+        // One summary line stays on the card (v2): what ran, how
+        // much was taken out, and what it cost, ending with the
+        // Money details link into the Settings pop up.
+        var summaryEl = document.getElementById("fdRunSummary");
+        var summaryText = document.getElementById("fdRunSummaryText");
+        var moneyLink = document.getElementById("moneyDetailsLink");
+        if (summaryEl && summaryText) {
+          var bits = [];
+          bits.push(data.recap || "Made the edit.");
+          var runs2 = data.direction_runs || [];
+          if (runs2.length) {
+            var takenS = runs2[0].before.output_duration_s -
+              runs2[runs2.length - 1].after.output_duration_s;
+            if (takenS > 0.05) {
+              bits.push("Took out " + fmtTransport(takenS) + ".");
+            }
+            var takenW = runs2[0].before.kept_words -
+              runs2[runs2.length - 1].after.kept_words;
+            if (takenW > 0) {
+              bits.push("Took out " + takenW +
+                (takenW === 1 ? " word." : " words."));
+            }
+          }
+          var costFig = null;
+          (data.cost_lines || []).forEach(function (line) {
+            if (line.indexOf("This edit cost ") === 0) {
+              costFig = line.replace("This edit cost ", "")
+                .replace(" in all.", "").replace(/\.$/, "");
+            }
+          });
+          if (costFig) {
+            bits.push("It cost " + costFig + ".");
+            var costLineEl = document.getElementById("fdCostLine");
+            if (costLineEl) {
+              costLineEl.textContent = costFig.indexOf("about ") === 0
+                ? "Your last edit cost " + costFig + "."
+                : "Your last edit cost about " + costFig + ".";
+            }
+          }
+          summaryText.textContent = bits.join(" ");
+          summaryEl.hidden = false;
+          if (moneyLink) { moneyLink.hidden = false; }
+        }
         refreshHistory();
         reloadJobState();
       }).catch(function (err) {
         fdFire.disabled = false;
         if (fdStatus) { fdStatus.textContent = "The edit did not run: " + err; }
+        reloadJobState();
       });
     });
   }
@@ -4351,6 +5834,7 @@
       return {
         id: c.id, ts: c.ts, fmt: c.fmt || "vertical", scope: c.scope || "both",
         text: c.text, done: !!c.done,
+        edited_ts: typeof c.edited_ts === "number" ? c.edited_ts : null,
         // A word pin rides through reloads intact (item 20).
         word_start: typeof c.word_start === "number" ? c.word_start : null,
         word_end: typeof c.word_end === "number" ? c.word_end : null,
@@ -4382,18 +5866,36 @@
       }
       if (fdRow && fdS) { fdRow.hidden = !fdS.checked; }
       if (fd.keep_mode) { setKeepMode(fd.keep_mode); }
-      if (fd.breaths) { setBreaths(fd.breaths); }
       if (fd.mode) { setFdMode(fd.mode); }
+      if (fd.style) { setFdStyle(fd.style); }
       var fdF = document.getElementById("fdFillers");
       if (fdF && typeof fd.remove_fillers === "boolean") { fdF.checked = fd.remove_fillers; }
       if (job.front_door) { stateFrontDoor = job.front_door; applyIntakeSettings(job.front_door); }
     }
     renderBetaLine(job.beta);
+    // The test-video switch and banner follow the job summary:
+    // the switch shows the mark as it stands, and the banner
+    // shows only while the mark is on for a loaded job. The drop
+    // block's own switch is set from the summary only once a job
+    // is loaded, so a mark made at the front door (before any
+    // job) is not wiped by the front door's empty summary.
+    var testBanner = document.getElementById("testVideoBanner");
+    if (testBanner) { testBanner.hidden = !(job.has_job && job.test_video); }
+    var jobTestVideo = document.getElementById("jobTestVideo");
+    if (jobTestVideo) { jobTestVideo.checked = !!job.test_video; }
+    var dropTestVideo = document.getElementById("dropTestVideo");
+    if (dropTestVideo && job.has_job) { dropTestVideo.checked = !!job.test_video; }
+    state.outputDuration = job.output_duration_s || state.outputDuration || 0;
+    state.sourceDuration = job.source_duration_s || 0;
+    state.wordsCut = job.words_cut || 0;
+    timelinePieces = job.timeline_pieces || [];
     renderList();
     renderOverall();
     renderDots();
     renderTranscript(job.transcript_words);
+    renderTimeline();
     renderRules();
+    syncPlayerToWatching(job);
   }
 
   function reloadJobState() {
@@ -4414,6 +5916,9 @@
       historyStatusEl.textContent = current
         ? (which === "undo" ? "Went back to: " : "Moved forward to: ") + current.label + "."
         : "";
+      if (which === "undo" && data.why_prompt && data.why_prompt.entry_id) {
+        showWhyPrompt(data.why_prompt.entry_id, "restore");
+      }
       // The results on screen belonged to the state just left. The
       // restored state's own record is its after-review page, so
       // the run output clears and everything else is re-read.
@@ -4476,14 +5981,23 @@
   var inBufferRow = document.getElementById("inBufferRow");
   var inBufferRange = document.getElementById("inBufferRange");
   var inBufferNum = document.getElementById("inBufferNum");
-  var inBreathsPills = document.getElementById("inBreathsPills");
-  var inBreathsNote = document.getElementById("inBreathsNote");
   var inFillers = document.getElementById("inFillers");
   var inModePills = document.getElementById("inModePills");
   var inModeNote = document.getElementById("inModeNote");
+  var inStyleEl = document.getElementById("inStyle");
   var inKeepMode = "last";
-  var inBreaths = "keep";
   var inMode = "cleanest";
+  var inStyle = "justins-way";
+
+  function setInStyle(style) {
+    if (style !== "keep-it-simple" && style !== "hands-off") { style = "justins-way"; }
+    inStyle = style;
+    if (inStyleEl) { inStyleEl.value = style; }
+  }
+  if (inStyleEl) {
+    inStyleEl.addEventListener("change", function () { setInStyle(inStyleEl.value); });
+  }
+  setInStyle("justins-way");
 
   function setInKeepMode(mode) {
     if (mode !== "first" && mode !== "best") { mode = "last"; }
@@ -4502,24 +6016,6 @@
     });
   }
   setInKeepMode("last");
-
-  function setInBreaths(mode) {
-    if (mode !== "trim") { mode = "keep"; }
-    inBreaths = mode;
-    if (inBreathsPills) {
-      Array.prototype.forEach.call(inBreathsPills.querySelectorAll("button"), function (btn) {
-        if (btn.getAttribute("data-breaths") === mode) { btn.classList.add("on"); }
-        else { btn.classList.remove("on"); }
-      });
-    }
-    if (inBreathsNote) { inBreathsNote.textContent = BREATHS_NOTES[mode]; }
-  }
-  if (inBreathsPills) {
-    Array.prototype.forEach.call(inBreathsPills.querySelectorAll("button"), function (btn) {
-      btn.addEventListener("click", function () { setInBreaths(btn.getAttribute("data-breaths")); });
-    });
-  }
-  setInBreaths("keep");
 
   function setInMode(mode) {
     if (mode !== "tailor") { mode = "cleanest"; }
@@ -4567,8 +6063,8 @@
     if (inSilence && typeof fd.cut_silence === "boolean") { inSilence.checked = fd.cut_silence; }
     if (typeof fd.buffer_s === "number") { setInBuffer(fd.buffer_s); }
     if (fd.keep_mode) { setInKeepMode(fd.keep_mode); }
-    if (fd.breaths) { setInBreaths(fd.breaths); }
     if (fd.mode) { setInMode(fd.mode); }
+    if (fd.style) { setInStyle(fd.style); }
     if (inFillers && typeof fd.remove_fillers === "boolean") { inFillers.checked = fd.remove_fillers; }
     updateInBufferDim();
   }
@@ -4577,10 +6073,10 @@
     return {
       remove_retakes: inRetakes ? !!inRetakes.checked : true,
       cut_silence: inSilence ? !!inSilence.checked : true,
-      buffer_s: inBufferNum ? clampBuffer(inBufferNum.value) : 0.2,
+      buffer_s: inBufferNum ? clampBuffer(inBufferNum.value) : 0.1,
       keep_mode: inKeepMode,
-      breaths: inBreaths,
       mode: inMode,
+      style: inStyle,
       remove_fillers: inFillers ? !!inFillers.checked : false
     };
   }
@@ -4916,7 +6412,7 @@
                   dropSay(data.message || "");
                 } else if (st.playback === "failed") {
                   clearInterval(previewPoll);
-                  dropSay("This video could not be made watchable here, so the preview cannot be shown. You can still make the first edit: the edit works from the words.");
+                  dropSay("This video could not be made watchable here, so the preview cannot be shown. You can still make the first edit: the edit works from the words. The details were saved in a file called playback.log. Once this video is a job, that file is in the playback folder inside the job's tye-session folder; send it back so the real cause can be found.");
                 } else if (typeof st.playback_progress === "number") {
                   dropSay("Getting your video ready to watch… " + st.playback_progress + "%. You can keep going; the preview will catch up.");
                 }
@@ -5022,6 +6518,39 @@
   wireCaptionsSwitch("captionsHideFillers");
   wireCaptionsSwitch("finishCaptionsHideFillers");
 
+  // The test-video switches: one in the drop block (usable before
+  // a job exists) and one on the job page. Both set the same mark
+  // through the same route, and both are set from the answer, so
+  // they never disagree.
+  function setTestVideoSwitches(on) {
+    ["dropTestVideo", "jobTestVideo"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) { el.checked = !!on; }
+    });
+    var banner = document.getElementById("testVideoBanner");
+    if (banner) { banner.hidden = !(on && HAS_JOB); }
+  }
+
+  function wireTestVideoSwitch(id) {
+    var el = document.getElementById(id);
+    if (!el) { return; }
+    el.addEventListener("change", function () {
+      var on = el.checked;
+      postJson("/api/test-video", { test: on }).then(function (res) {
+        var data = (res && res.data) || {};
+        if (data.ok && typeof data.test_video === "boolean") {
+          setTestVideoSwitches(data.test_video);
+          reloadJobState();
+        } else {
+          setTestVideoSwitches(!on);
+        }
+      }).catch(function () { setTestVideoSwitches(!on); });
+    });
+  }
+
+  wireTestVideoSwitch("dropTestVideo");
+  wireTestVideoSwitch("jobTestVideo");
+
   // The player never points at a video whose watchable copy is
   // not ready: the raw file is never served in its place. While
   // the copy is being made the pending note stands in (with the
@@ -5034,6 +6563,13 @@
   var playbackPoll = null;
   var jobPlayback = {};
   var jobProgress = {};
+  // Which video the player should be showing (FIX A): the edited
+  // video when the session's splice is current, the job's own
+  // video (named the original) otherwise. The server decides;
+  // this state only follows it and names it on screen.
+  var watchingState = null;
+  var watchingStampSeen = null;
+  var editedVideoName = null;
 
   function stopPlaybackPoll() {
     if (playbackPoll) {
@@ -5045,15 +6581,30 @@
   function loadVideo(name) {
     stopPlaybackPoll();
     currentVideoName = name;
+    renderTimeline();
     document.getElementById("novid").hidden = true;
     vid.hidden = false;
     tlbarEl.hidden = false;
     setPlayerStatus("loading");
-    vid.src = "/video/" + name;
+    var src = "/video/" + name;
+    if (watchingState && watchingState.name === name && watchingState.stamp) {
+      // The edited video keeps its name across rebuilds; the
+      // stamp in the address is what makes the browser really
+      // load the new file instead of replaying the old one.
+      src += "?v=" + watchingState.stamp;
+    }
+    vid.src = src;
     noteMissingFormats();
   }
 
   function showPendingFor(name) {
+    if (currentVideoName === name && playbackPoll &&
+        playerStatus === "pending") {
+      // Already waiting on this video: just refresh the percent.
+      var s0 = jobPlayback[name] || "building";
+      setPlayerStatus("pending", pendingText(s0, jobProgress[name]));
+      return;
+    }
     stopPlaybackPoll();
     currentVideoName = name;
     document.getElementById("novid").hidden = true;
@@ -5065,6 +6616,7 @@
     tlbarEl.hidden = true;
     var s = jobPlayback[name] || "building";
     setPlayerStatus("pending", pendingText(s, jobProgress[name]));
+    renderTimeline();
     if (s === "failed") { return; }
     playbackPoll = setInterval(function () {
       fetch("/api/job").then(function (r) { return r.json(); })
@@ -5075,14 +6627,30 @@
           videoShapes = fresh.video_shapes || videoShapes;
           var now = jobPlayback[name] || "ready";
           if (now === "ready") {
-            loadVideo(name);
+            // The copy landed: the whole fresh state is applied
+            // (FIX A), so the player swaps to the edited video
+            // and the watching line turns true in the same pass,
+            // with no reload of the page.
+            stopPlaybackPoll();
+            if (fresh.watching && fresh.watching.kind === "edited" &&
+                fresh.watching.name === name) {
+              applyJobState(fresh);
+            } else {
+              loadVideo(name);
+            }
           } else if (now === "failed") {
             stopPlaybackPoll();
             setPlayerStatus("pending", pendingText("failed"));
+            if (fresh.watching) { syncPlayerToWatching(fresh); }
           } else {
             setPlayerStatus(
               "pending", pendingText(now, jobProgress[name])
             );
+            if (fresh.watching && fresh.watching.kind === "edited" &&
+                fresh.watching.name === name) {
+              // Keep the watching line honest while it builds.
+              syncPlayerToWatching(fresh);
+            }
           }
         }).catch(function () {});
     }, 2000);
@@ -5093,6 +6661,12 @@
     jobProgress = job.playback_progress || {};
     var names = job.videos || [];
     var name = videoFor(curFmt) || videoFor("vertical") || names[0] || null;
+    if (job.watching && job.watching.kind === "edited") {
+      // The edited video is the one the review is about. The
+      // format buttons choose among the job's own videos; they
+      // do not apply while the edit is what is shown.
+      name = job.watching.name;
+    }
     primaryVideoName = name;
     if (!name) {
       document.getElementById("novid").hidden = false;
@@ -5104,6 +6678,117 @@
     var s = jobPlayback[name] || "ready";
     if (s !== "ready") { showPendingFor(name); return; }
     loadVideo(name);
+  }
+
+  // The watching line while a new edit is being built (FIX A,
+  // sharpened): the line never claims the original is the edit,
+  // and never claims the edit before it is ready to watch.
+  function showWatchingBuilding() {
+    var line = document.getElementById("watchingLine");
+    var note = document.getElementById("watchingNote");
+    if (line) {
+      line.textContent = "Building your edited video\u2026";
+      line.hidden = false;
+    }
+    if (note) {
+      note.textContent =
+        "It will play here on its own when it is ready.";
+      note.hidden = false;
+    }
+  }
+
+  function syncPlayerToWatching(job) {
+    var w = job.watching || null;
+    watchingState = w;
+    jobPlayback = job.playback || jobPlayback;
+    jobProgress = job.playback_progress || jobProgress;
+    var line = document.getElementById("watchingLine");
+    var note = document.getElementById("watchingNote");
+    if (!w || !job.has_job) {
+      if (line) { line.hidden = true; }
+      if (note) { note.hidden = true; }
+      return;
+    }
+    var building = false;
+    var copyFailed = false;
+    if (w.kind === "edited") {
+      editedVideoName = w.name;
+      var s = jobPlayback[w.name] || (w.building ? "building" : "ready");
+      if (s === "failed") {
+        copyFailed = true;
+        showPendingFor(w.name);
+      } else if (s !== "ready") {
+        // The edited video exists but its watchable copy is
+        // still being made: the player waits on the poll, and
+        // the line says it is building, never that the edit is
+        // what is on screen.
+        building = true;
+        showPendingFor(w.name);
+      } else if (currentVideoName !== w.name || vid.hidden ||
+          !vid.getAttribute("src")) {
+        loadVideo(w.name);
+        watchingStampSeen = w.stamp;
+      } else if (watchingStampSeen !== w.stamp) {
+        // The same edited video, rebuilt from a newer plan:
+        // load the new file at the same spot on the same clock.
+        var t = vid.currentTime || 0;
+        var wasPlaying = !vid.paused;
+        loadVideo(w.name);
+        vid.addEventListener("loadedmetadata", function h() {
+          vid.removeEventListener("loadedmetadata", h);
+          try { vid.currentTime = Math.min(t, vid.duration || t); } catch (e) {}
+          if (wasPlaying) { vid.play(); }
+        });
+        watchingStampSeen = w.stamp;
+      }
+    } else if (editedVideoName && currentVideoName === editedVideoName) {
+      // The plan moved and the edited video is not current
+      // anymore: back to the job's own video, named the original.
+      var back = videoFor(curFmt) || videoFor("vertical") || primaryVideoName;
+      if (back && back !== currentVideoName) { loadVideo(back); }
+      watchingStampSeen = null;
+    }
+    if (building) {
+      showWatchingBuilding();
+    } else if (copyFailed) {
+      if (line) {
+        line.textContent = "The edited video is not ready to watch.";
+        line.hidden = false;
+      }
+      if (note) {
+        note.textContent =
+          "It could not be made watchable here. The edit still works from the words. The details are in playback.log, in the playback folder inside this job's tye-session folder.";
+        note.hidden = false;
+      }
+    } else {
+      if (line) {
+        line.textContent = w.kind === "edited"
+          ? "You are watching: the edited video"
+          : "You are watching: the original video";
+        line.hidden = false;
+      }
+      var noteText = "";
+      if (w.failed) {
+        noteText = "The edited video could not be built. " + w.failed;
+      } else if (w.kind !== "edited" && (w.stale || w.not_built)) {
+        noteText = "Your newest cuts are not in a video yet.";
+      }
+      if (note) {
+        note.textContent = noteText;
+        note.hidden = !noteText;
+      }
+    }
+    if (w.kind === "edited" && !building && !copyFailed) {
+      var btnV = document.getElementById("btnV");
+      var btnL = document.getElementById("btnL");
+      if (btnV) { btnV.disabled = true; }
+      if (btnL) { btnL.disabled = true; }
+      var fmtNote = document.getElementById("fmtNote");
+      if (fmtNote) {
+        fmtNote.textContent = "The edited video is what is shown.";
+        fmtNote.hidden = false;
+      }
+    }
   }
 
   // ---- What it costs (v0.7.2) --------------------------------
@@ -5145,12 +6830,20 @@
         );
       }
     }
+    var fdCostLine = document.getElementById("fdCostLine");
+    if (fdCostLine && jobBlock && jobBlock.total_text) {
+      fdCostLine.textContent =
+        "Your last edit cost " + jobBlock.total_text + ".";
+    }
     if (!moneyCard || !moneyBody) { return; }
     var macLines = mac.lines || [];
     var hasAnything = !!jobBlock || macLines.length > 0;
-    moneyCard.hidden = !hasAnything;
-    if (!hasAnything) { return; }
+    moneyCard.hidden = false;
     moneyBody.innerHTML = "";
+    if (!hasAnything) {
+      moneyBody.appendChild(moneyLine("No costs recorded yet."));
+      return;
+    }
     if (jobBlock) {
       moneyBody.appendChild(
         moneyLine("This job so far: " + jobBlock.total_text + ".")
@@ -5193,6 +6886,36 @@
           }
         }
       }).catch(function () {});
+    });
+  }
+
+  var moneyDetailsLink = document.getElementById("moneyDetailsLink");
+  if (moneyDetailsLink) {
+    moneyDetailsLink.addEventListener("click", function () {
+      openSettingsAtMoney();
+    });
+  }
+
+  var problemReportBtn = document.getElementById("problemReportBtn");
+  var problemReportNote = document.getElementById("problemReportNote");
+  if (problemReportBtn) {
+    problemReportBtn.addEventListener("click", function () {
+      problemReportBtn.disabled = true;
+      if (problemReportNote) { problemReportNote.textContent = "Making your problem report…"; }
+      postJson("/api/problem-report", {}).then(function (res) {
+        var data = res.data || {};
+        problemReportBtn.disabled = false;
+        if (problemReportNote) {
+          problemReportNote.textContent = data.ok
+            ? (data.message || "")
+            : (data.error || "The problem report could not be made.");
+        }
+      }).catch(function () {
+        problemReportBtn.disabled = false;
+        if (problemReportNote) {
+          problemReportNote.textContent = "The problem report could not be made.";
+        }
+      });
     });
   }
 
@@ -5296,11 +7019,30 @@
       var move = function (ev) {
         var rect = split.getBoundingClientRect();
         if (!rect.width) { return; }
-        var frac = fromRight
-          ? (rect.right - ev.clientX) / rect.width
-          : (ev.clientX - rect.left) / rect.width;
-        frac = Math.min(0.55, Math.max(0.2, frac));
-        var pct = Math.round(frac * 100) + "%";
+        var px;
+        if (!fromRight &&
+            document.body.classList.contains("panels-swapped")) {
+          // Swapped: the video panel sits in the middle, so its
+          // width runs from this divider to the tools panel (or
+          // to the split's right edge when comments are closed).
+          var rightEdge = rect.right;
+          var tools = document.getElementById("toolsPane");
+          if (tools &&
+              !document.body.classList.contains("comments-closed")) {
+            rightEdge = tools.getBoundingClientRect().left - 10;
+          }
+          px = Math.round(rightEdge - ev.clientX);
+        } else {
+          var frac = fromRight
+            ? (rect.right - ev.clientX) / rect.width
+            : (ev.clientX - rect.left) / rect.width;
+          frac = Math.min(0.55, Math.max(0.2, frac));
+          px = Math.round(frac * rect.width);
+        }
+        px = fromRight
+          ? Math.min(480, Math.max(240, px))
+          : Math.min(560, Math.max(260, px));
+        var pct = px + "px";
         split.style.setProperty(varName, pct);
         try { window.localStorage.setItem(key, pct); } catch (err) {}
       };

@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -489,6 +490,121 @@ class FollowTests(unittest.TestCase):
         )
         # Manual scrolling still pauses tracking, visibly.
         self.assertIn("if (followOn) { setFollow(false); }", html)
+
+
+# ---------------------------------------------------------------------------
+# Item 29, second leg (verifier round 2): a cut landing while Follow
+# is off must not move the reader. The re-render rebuilds every word
+# span; the scroll anchor math that preserves the place is a fenced
+# pure module, exercised for real under Node.
+# ---------------------------------------------------------------------------
+
+NODE = shutil.which("node")
+
+SCROLL_ANCHOR_SCENARIO = r"""
+const fs = require("fs");
+const html = fs.readFileSync(process.argv[2], "utf8");
+const begin = html.indexOf("// [tye-scroll-anchor-begin]");
+const end = html.indexOf("// [tye-scroll-anchor-end]");
+if (begin < 0 || end < 0 || end <= begin) {
+  console.log(JSON.stringify({ error: "scroll-anchor markers missing" }));
+  process.exit(0);
+}
+eval(html.slice(begin, end));
+const out = {};
+// Panel top at y=100. Words 0..4 sit above it, word 5 is the first
+// visible one (top 130, so delta 30), word 6 below.
+const before = [
+  { index: 0, top: 10, bottom: 30 },
+  { index: 5, top: 130, bottom: 150 },
+  { index: 6, top: 160, bottom: 180 }
+];
+out.followAnchor = pickScrollAnchor(true, 100, before);
+out.anchor = pickScrollAnchor(false, 100, before);
+// After the re-render, a cut above grew the content by 40px: every
+// span's top moved down 40. The adjustment must be +40 so the
+// reader's span returns to the same visual offset.
+const after = [
+  { index: 0, top: 50, bottom: 70 },
+  { index: 5, top: 170, bottom: 190 },
+  { index: 6, top: 200, bottom: 220 }
+];
+out.adjustment = scrollAnchorAdjustment(out.anchor, 100, after);
+// The anchored word itself is gone (indices jump 0 -> 6): fall back
+// to the nearest later word. Word 6 now sits at delta 100-100=...
+// its top is 200, panel top 100, so adjustment = (200-100) - 30.
+const missing = [
+  { index: 0, top: 50, bottom: 70 },
+  { index: 6, top: 200, bottom: 220 }
+];
+out.fallbackAdjustment = scrollAnchorAdjustment(out.anchor, 100, missing);
+// Nothing at or after the anchor: no adjustment.
+const gone = [{ index: 0, top: 50, bottom: 70 }];
+out.goneAdjustment = scrollAnchorAdjustment(out.anchor, 100, gone);
+out.nullAdjustment = scrollAnchorAdjustment(null, 100, after);
+console.log(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(NODE, "needs node on PATH")
+class ScrollAnchorBehaviorTests(unittest.TestCase):
+    def run_scenario(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "scenario.js"
+            script.write_text(SCROLL_ANCHOR_SCENARIO, encoding="utf-8")
+            out = subprocess.run(
+                [NODE, str(script), str(TEMPLATE)],
+                capture_output=True, text=True, timeout=30,
+            )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        result = json.loads(out.stdout)
+        self.assertNotIn("error", result, result)
+        return result
+
+    def test_follow_on_takes_no_anchor(self):
+        self.assertIsNone(self.run_scenario()["followAnchor"])
+
+    def test_first_visible_word_is_the_anchor(self):
+        anchor = self.run_scenario()["anchor"]
+        self.assertEqual(anchor["index"], 5)
+        self.assertEqual(anchor["delta"], 30)
+
+    def test_adjustment_restores_the_visual_offset(self):
+        self.assertEqual(self.run_scenario()["adjustment"], 40)
+
+    def test_missing_anchor_word_falls_back_to_the_next_word(self):
+        self.assertEqual(self.run_scenario()["fallbackAdjustment"], 70)
+
+    def test_no_anchor_word_left_means_no_adjustment(self):
+        result = self.run_scenario()
+        self.assertIsNone(result["goneAdjustment"])
+        self.assertIsNone(result["nullAdjustment"])
+
+
+class ScrollAnchorWiringTests(unittest.TestCase):
+    def render_body(self):
+        html = page_html()
+        start = html.index("function renderTranscript(words)")
+        end = html.index("function reloadTranscript()", start)
+        return html[start:end]
+
+    def test_anchor_is_captured_before_the_rebuild_clears(self):
+        body = self.render_body()
+        self.assertLess(
+            body.index("pickScrollAnchor("),
+            body.index('transcriptEl.innerHTML = ""'),
+        )
+
+    def test_anchor_is_restored_after_the_rebuild(self):
+        body = self.render_body()
+        self.assertLess(
+            body.index("updateTxActionStrip();"),
+            body.index("scrollAnchorAdjustment("),
+        )
+
+    def test_anchor_only_when_the_reader_has_scrolled(self):
+        body = self.render_body()
+        self.assertIn("transcriptPanel.scrollTop > 0", body)
 
 
 # ---------------------------------------------------------------------------

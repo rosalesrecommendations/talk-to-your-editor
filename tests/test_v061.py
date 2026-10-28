@@ -1,7 +1,8 @@
 """Tests for v0.6.1 (stdlib unittest, no dependencies).
 
-Covers the finish card, breaths as a choice, the plain-words
-missing-file surfaces, keys saved on this Mac, the captions
+Covers the finish card, the breaths removal (v0.10: no breaths
+choice anywhere; the buffer alone rules the silence pass), the
+plain-words missing-file surfaces, keys saved on this Mac, the captions
 switch's new home on the delivery cards, the visible first-edit
 progress stages, and the watchable H.264 copy an intake job's
 source video gets at intake time. HTTP tests spin the real server
@@ -140,11 +141,13 @@ def copy_sample_job(job: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Breaths: a custom job whose joins are known to the fraction.
+# Pauses: a custom job whose joins are known to the fraction.
 #
 # Words 0-2 end at 2.6s; the next range starts at 3.3s and its first
 # word at 4.0s, so join 0's audible pause is 0.7s. Join 1's pause is
 # 0.9s, and its next word (index 6) sits inside a protected span.
+# (The fixture keeps its historical name; v0.10 removed the breaths
+# choice these joins used to exercise.)
 # ---------------------------------------------------------------------------
 
 BREATH_WORDS = [
@@ -195,35 +198,36 @@ def write_breaths_job(job: Path) -> None:
 
 
 class BreathsDirectionParseTests(unittest.TestCase):
-    def test_keep_wordings(self):
+    """v0.10: breaths are not a setting anymore. Direction that
+    mentions them matches no rule: it sets nothing, names no
+    breaths state in the recap, and never fails; the words ride
+    along as plain guidance."""
+
+    def test_breaths_wordings_set_nothing(self):
         for text in (
             "keep the breaths natural",
             "keep natural breaths",
             "leave the breaths",
             "don't cut the breaths",
             "do not trim the breaths",
+            "cut the breaths too",
         ):
             parsed = direction_parse.parse_direction(text)
-            self.assertEqual(
-                parsed["overrides"].get("breaths"), "keep", text
+            self.assertNotIn("breaths", parsed["overrides"], text)
+            self.assertFalse(
+                any(
+                    line.startswith("Breaths")
+                    for line in parsed["recap"]
+                ),
+                text,
             )
-            self.assertIn(
-                "Breaths will be kept natural.", parsed["recap"]
-            )
-
-    def test_trim_wordings(self):
-        parsed = direction_parse.parse_direction("cut the breaths too")
-        self.assertEqual(parsed["overrides"].get("breaths"), "trim")
-        self.assertIn(
-            "Breaths will be trimmed with the pauses.", parsed["recap"]
-        )
 
     def test_breaths_composes_with_other_direction(self):
         parsed = direction_parse.parse_direction(
             "remove retakes, last take is the best take, "
             "and cut the breaths too"
         )
-        self.assertEqual(parsed["overrides"].get("breaths"), "trim")
+        self.assertNotIn("breaths", parsed["overrides"])
         self.assertEqual(parsed["overrides"].get("remove_retakes"), True)
         self.assertEqual(parsed["overrides"].get("keep_mode"), "last")
 
@@ -250,56 +254,37 @@ class BreathsTests(ServerCase):
         self.assertEqual(status, 200, payload)
         return payload
 
-    def test_default_breaths_is_keep(self):
+    def test_no_breaths_in_the_front_door_defaults(self):
         summary = self.summary()
-        self.assertEqual(summary["front_door"]["breaths"], "keep")
+        self.assertNotIn("breaths", summary["front_door"])
 
-    def test_keep_floor_holds_the_same_join(self):
+    def test_the_buffer_alone_rules_the_join(self):
         payload = self.fire_front_door()
-        self.assertEqual(payload["settings"]["breaths"], "keep")
-        self.assertEqual(
-            payload["breaths_recap"], "Breaths are being kept natural."
-        )
-        self.assertEqual(payload["silence"]["floor_s"], 0.3)
+        self.assertNotIn("breaths", payload["settings"])
+        self.assertNotIn("breaths_recap", payload)
+        self.assertNotIn("breaths", payload["silence"])
+        self.assertNotIn("floor_s", payload["silence"])
         ranges = self.revised_ranges()
-        # Join 0 trimmed toward the floor, not the buffer: the next
-        # range now starts 0.3s before its first word (4.0 - 0.3).
-        self.assertAlmostEqual(ranges[1]["start"], 3.7, places=4)
-        # The protected join is untouched.
-        self.assertAlmostEqual(ranges[2]["start"], 6.6, places=4)
-
-    def test_trim_lets_the_buffer_rule_the_same_join(self):
-        payload = self.fire_front_door(breaths="trim")
-        self.assertEqual(payload["settings"]["breaths"], "trim")
-        self.assertEqual(
-            payload["breaths_recap"],
-            "Breaths are trimmed with the pauses.",
-        )
-        self.assertIsNone(payload["silence"]["floor_s"])
-        ranges = self.revised_ranges()
-        # The same join, the same buffer: now the pause is the
-        # buffer alone (4.0 - 0.1).
+        # Join 0's 0.7s pause is cut to the buffer alone (0.1s):
+        # the next range now starts 0.1s before its first word
+        # (4.0 - 0.1). Before v0.10 the keep floor held it at 0.3s.
         self.assertAlmostEqual(ranges[1]["start"], 3.9, places=4)
+        # The protected join is untouched: a marked moment is kept
+        # because it is marked, not because it is a breath.
         self.assertAlmostEqual(ranges[2]["start"], 6.6, places=4)
-        # The choice persists in the saved front-door settings.
-        self.assertEqual(self.summary()["front_door"]["breaths"], "trim")
 
     def test_same_join_unit_proof_and_protection(self):
         config = WebAppConfig(self.job)
-        keep_ops = webapp._silence_operations(config, 0.1, "keep")
-        trim_ops = webapp._silence_operations(config, 0.1, "trim")
-        keep_targets = {op["join_index"]: op["target_pause_s"]
-                        for op in keep_ops}
-        trim_targets = {op["join_index"]: op["target_pause_s"]
-                        for op in trim_ops}
-        self.assertEqual(keep_targets, {0: 0.3})
-        self.assertEqual(trim_targets, {0: 0.1})
-        # Join 1 borders a protected word: no operation under
-        # either setting, which the two dicts above already prove.
+        ops = webapp._silence_operations(config, 0.1)
+        targets = {op["join_index"]: op["target_pause_s"]
+                   for op in ops}
+        self.assertEqual(targets, {0: 0.1})
+        # Join 1 borders a protected word: no operation, which the
+        # dict above already proves.
 
     def test_pinned_comment_protects_the_join(self):
         config = WebAppConfig(self.job)
-        before = webapp._silence_operations(config, 0.1, "trim")
+        before = webapp._silence_operations(config, 0.1)
         self.assertEqual(len(before), 1)
         session = self.job / "tye-session"
         session.mkdir(exist_ok=True)
@@ -311,28 +296,33 @@ class BreathsTests(ServerCase):
             ],
             "overall_feedback": [],
         }))
-        after = webapp._silence_operations(config, 0.1, "trim")
+        after = webapp._silence_operations(config, 0.1)
         self.assertEqual(after, [])
 
-    def test_direction_box_sets_breaths(self):
+    def test_direction_mentioning_breaths_sets_nothing(self):
         payload = self.fire_front_door(
             direction_text="cut the breaths too"
         )
-        self.assertEqual(payload["settings"]["breaths"], "trim")
-        self.assertEqual(
-            payload["direction_recap"],
-            ["Breaths will be trimmed with the pauses."],
-        )
+        self.assertNotIn("breaths", payload["settings"])
+        self.assertEqual(payload["direction_recap"], [])
         ranges = self.revised_ranges()
         self.assertAlmostEqual(ranges[1]["start"], 3.9, places=4)
 
-    def test_breaths_value_is_validated(self):
-        status, payload = self.call(
-            "/api/front-door",
-            {"remove_retakes": False, "breaths": "sometimes"},
-        )
-        self.assertEqual(status, 400)
-        self.assertIn("natural breath", payload["error"])
+    def test_an_old_breaths_value_is_ignored_not_an_error(self):
+        payload = self.fire_front_door(breaths="sometimes")
+        self.assertNotIn("breaths", payload["settings"])
+        self.assertNotIn("breaths", self.summary()["front_door"])
+
+    def test_a_usual_carrying_breaths_loads_clean(self):
+        usual_dir = self.home / ".talk-to-your-editor"
+        usual_dir.mkdir(parents=True, exist_ok=True)
+        (usual_dir / "usual.json").write_text(json.dumps({
+            "breaths": "trim",
+            "buffer_s": 0.3,
+        }))
+        summary = self.summary()
+        self.assertNotIn("breaths", summary["front_door"])
+        self.assertEqual(summary["front_door"]["buffer_s"], 0.3)
 
 
 # ---------------------------------------------------------------------------

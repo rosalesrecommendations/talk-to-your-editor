@@ -34,8 +34,10 @@ import os
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
+from . import skills as _skills
 from .schema import (
     MAX_JOIN_PAUSE_S,
     MIN_JOIN_PAUSE_S,
@@ -220,6 +222,79 @@ WONDER_FALLBACK_REASON = (
     "of applied."
 )
 
+# The built-in direction words, in the order the direction pass has
+# always put them after the schema spec. The justins-way starter
+# pack carries exactly these words; when no pack is found, this is
+# what the pass reads, byte for byte as before packs existed.
+BUILTIN_DIRECTION_BODY = (
+    DIRECTION_PASS_RULES + DIRECTION_PASS_FLAGS + DIRECTION_PASS_PAUSES
+)
+BUILTIN_RETAKE_BODY = RETAKE_CALIBRATION
+
+
+def _skill_body(loaded_body, has_pack, fallback: str) -> str:
+    """One pack kind's words for a run, with the built-in fallback.
+
+    A starter pack that was found is used as it stands, even when
+    its body is empty (the hands-off retake pack is empty on
+    purpose). When no starter pack was found but the creator's own
+    added words were, those words ride after the built-in words,
+    behind the same separator a starter pack would have used.
+    When nothing was found at all, the built-in words are used
+    exactly as they are.
+    """
+    if has_pack:
+        return loaded_body if loaded_body is not None else ""
+    if loaded_body is not None:
+        return fallback + _skills.YOURS_SEPARATOR + loaded_body
+    return fallback
+
+
+def _load_provider_skills(skills_dir, style, seed_skills: bool):
+    """Load the picked style's packs for a provider, never raising.
+
+    Returns ``(loaded, direction_body, retake_body)``. Any problem
+    reading the packs leaves the built-in words in place, with the
+    versions record saying so.
+    """
+    style_id = _skills.clean_style(style)
+    try:
+        loaded = _skills.load(
+            skills_dir=(
+                Path(skills_dir) if skills_dir is not None else None
+            ),
+            style=style_id,
+            seed=seed_skills,
+        )
+    except Exception:
+        loaded = _skills.LoadedSkills(style_id)
+    direction_body = _skill_body(
+        loaded.direction_body, loaded.direction_has_pack, BUILTIN_DIRECTION_BODY
+    )
+    retake_body = _skill_body(
+        loaded.retake_body, loaded.retake_has_pack, BUILTIN_RETAKE_BODY
+    )
+    return loaded, direction_body, retake_body
+
+
+# The words that mark a sentence as a stated editing rule when the
+# mock provider drafts from a teaching transcript (v0.10).
+_TEACHING_CUE = re.compile(
+    r"\b(always|never|cut|leave|keep)\b|\btake out\b|\bput back\b",
+    re.IGNORECASE,
+)
+
+TEACHING_READ_SYSTEM = """
+You are reading the words of a creator who recorded themselves editing a video while talking through their choices. Draft the editing rules the speaker states or clearly shows, and nothing else: never invent a rule the words do not support.
+
+Return JSON only: {"drafts": [{"statement": str, "reason": str, "at_s": number, "quote": str}]}. At most 8 drafts.
+
+- "statement": the rule in plain, simple words a person outside editing would understand.
+- "reason": why this is the rule, in plain words, from what the speaker said or showed.
+- "at_s": the time in seconds in the recording where the rule is stated or shown (the sentences in the request carry their start times).
+- "quote": the speaker's own words that support the rule, short (a sentence at most), copied from the transcript.
+"""
+
 
 def _is_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
@@ -333,6 +408,33 @@ class MockProvider:
     name = "mock"
 
     usage_log: list = []
+
+    def __init__(
+        self,
+        skills_dir=None,
+        style: Optional[str] = None,
+        seed_skills: bool = True,
+    ):
+        # The mock loads the same packs the live provider would, so
+        # a test run records the same know-how a live run would use.
+        # Its passes build no model system strings of their own (the
+        # direction pass proposes nothing and the retake judge
+        # judges nothing), so the loaded words change no output;
+        # they are kept here for the versions record.
+        loaded, direction_body, retake_body = _load_provider_skills(
+            skills_dir, style, seed_skills
+        )
+        self._loaded_skills = loaded
+        self._direction_skill_body = direction_body
+        self._retake_skill_body = retake_body
+        self.style = loaded.style
+
+    def skill_versions(self) -> dict:
+        """The know-how this provider loaded, in the shared shape."""
+        loaded = getattr(self, "_loaded_skills", None)
+        if loaded is None:
+            return _skills.builtin_versions()
+        return loaded.versions()
 
     def drain_usage(self) -> list:
         """The mock calls no model, so there is never usage to drain."""
@@ -464,6 +566,50 @@ class MockProvider:
         """The mock provider shadows nothing: the local ranking answers."""
         return None
 
+    def draft_rules_from_teaching(self, words):
+        """Deterministic teaching drafts from a transcript's words.
+
+        The transcript is split into sentences; a sentence becomes
+        a draft when it carries one of the cue words an editor uses
+        while stating a rule. No model is consulted, so the drafts
+        are the same every run.
+        """
+        sentences: list = []
+        current: list = []
+        start = None
+        for word in words or []:
+            if start is None:
+                try:
+                    start = float(word.get("start") or 0.0)
+                except (TypeError, ValueError):
+                    start = 0.0
+            text = str(word.get("word") or "")
+            current.append(text)
+            if text.rstrip().endswith((".", "!", "?")):
+                sentences.append((" ".join(current).strip(), start))
+                current = []
+                start = None
+        if current:
+            sentences.append((" ".join(current).strip(), start or 0.0))
+        drafts: list = []
+        for text, at_s in sentences:
+            if not text:
+                continue
+            if not _TEACHING_CUE.search(text):
+                continue
+            statement = text[:-1] if text.endswith(".") else text
+            drafts.append(
+                {
+                    "statement": statement.strip(),
+                    "reason": "You said this while showing the edit.",
+                    "at_s": at_s,
+                    "quote": text[:200],
+                }
+            )
+            if len(drafts) >= 5:
+                break
+        return drafts
+
 
 def _comments(feedback: dict) -> list[dict]:
     if isinstance(feedback, list):
@@ -578,7 +724,22 @@ class MetaProvider:
         spark_route: str = "meta",
         baseten_key: Optional[str] = None,
         fireworks_key: Optional[str] = None,
+        skills_dir=None,
+        style: Optional[str] = None,
+        seed_skills: bool = True,
     ):
+        # The picked style's packs load here, at the start of the
+        # run this provider serves. With no packs anywhere the
+        # loaded words are the built-in constants above, so the
+        # system strings are byte-identical to before packs existed.
+        loaded, direction_body, retake_body = _load_provider_skills(
+            skills_dir, style, seed_skills
+        )
+        self._loaded_skills = loaded
+        self._direction_skill_body = direction_body
+        self._retake_skill_body = retake_body
+        self.style = loaded.style
+        self.skills_dir = skills_dir
         self.api_key = api_key or os.environ.get("MODEL_API_KEY")
         self.allow_wonder = allow_wonder
         self.timeout_s = timeout_s
@@ -611,6 +772,17 @@ class MetaProvider:
         drained = self.route_events
         self.route_events = []
         return drained
+
+    def skill_versions(self) -> dict:
+        """The know-how this run loaded, for the run record.
+
+        ``{"style": id, "direction": {"version": int|None,
+        "source": "pack"|"pack+yours"|"built-in"}, "retake": {...}}``
+        """
+        loaded = getattr(self, "_loaded_skills", None)
+        if loaded is None:
+            return _skills.builtin_versions()
+        return loaded.versions()
 
     def _hosted_key(self, route: str) -> Optional[str]:
         return self._hosted_keys.get(route)
@@ -853,11 +1025,8 @@ class MetaProvider:
                 for index, word in enumerate(timeline.words)
             ],
         }
-        system = (
-            SCHEMA_SPEC
-            + DIRECTION_PASS_RULES
-            + DIRECTION_PASS_FLAGS
-            + DIRECTION_PASS_PAUSES
+        system = SCHEMA_SPEC + getattr(
+            self, "_direction_skill_body", BUILTIN_DIRECTION_BODY
         )
         try:
             content = self._chat(
@@ -1162,7 +1331,7 @@ class MetaProvider:
             "callback), or not_a_pair (the two are simply different "
             "lines). The creator's standing rule is that the last "
             "complete take wins unless the words say otherwise."
-            + RETAKE_CALIBRATION
+            + getattr(self, "_retake_skill_body", BUILTIN_RETAKE_BODY)
             + " One "
             "hard rule: a cut verdict requires a genuine retake, two "
             "tries at the same line. A line that merely fails to "
@@ -1266,6 +1435,94 @@ class MetaProvider:
             for op in proposed:
                 operations.append(op.to_dict())
         return operations, verdicts
+
+    def draft_rules_from_teaching(
+        self, words: list[dict]
+    ) -> list[dict]:
+        """Draft rules from a teaching recording's transcript.
+
+        ONE Spark call over the whole transcript: the sentences are
+        handed over with their start times, and the reply's drafts
+        are parsed defensively like every other provider answer.
+        A failed or unparseable reply drafts nothing rather than
+        raising, so the caller can fall back to what the pair (or
+        the finished video) shows on its own. Each draft is
+        {"statement", "reason", "at_s", "quote"} in plain words.
+        """
+        if not words:
+            return []
+        sentences: list = []
+        current: list = []
+        start = None
+        for word in words:
+            if start is None:
+                try:
+                    start = float(word.get("start") or 0.0)
+                except (TypeError, ValueError):
+                    start = 0.0
+            text = str(word.get("word") or "")
+            current.append(text)
+            if text.rstrip().endswith((".", "!", "?")):
+                sentences.append(
+                    {"at_s": start, "text": " ".join(current).strip()}
+                )
+                current = []
+                start = None
+        if current:
+            sentences.append(
+                {"at_s": start or 0.0, "text": " ".join(current).strip()}
+            )
+        # One read over a full transcript reasons longer than the
+        # per-comment ceiling, the same room the direction pass gets.
+        previous_timeout = self.timeout_s
+        self.timeout_s = max(self.timeout_s, 240.0)
+        try:
+            content = self._chat(
+                SPARK_MODEL,
+                [
+                    {"role": "system", "content": TEACHING_READ_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {"sentences": sentences}
+                        ),
+                    },
+                ],
+            )
+            parsed = extract_json(content)
+        except Exception:
+            return []
+        finally:
+            self.timeout_s = previous_timeout
+        raw_drafts = (
+            parsed.get("drafts") if isinstance(parsed, dict) else None
+        )
+        if not isinstance(raw_drafts, list):
+            return []
+        drafts: list[dict] = []
+        for raw in raw_drafts:
+            if not isinstance(raw, dict):
+                continue
+            statement = str(raw.get("statement") or "").strip()
+            reason = str(raw.get("reason") or "").strip()
+            if not statement or not reason:
+                continue
+            at_s = raw.get("at_s")
+            if not isinstance(at_s, (int, float)) or isinstance(
+                at_s, bool
+            ):
+                at_s = None
+            drafts.append(
+                {
+                    "statement": statement,
+                    "reason": reason,
+                    "at_s": float(at_s) if at_s is not None else None,
+                    "quote": str(raw.get("quote") or "")[:200],
+                }
+            )
+            if len(drafts) >= 8:
+                break
+        return drafts
 
     def judge_shadow(
         self,

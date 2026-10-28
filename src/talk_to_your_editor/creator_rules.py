@@ -46,6 +46,94 @@ _PLAIN_ACTION_BY_TYPE = {
 # never show a code.
 _CODE_TOKEN = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 
+# Learned rules run at two speeds. A "small" rule is only about a
+# filler word, a pause, a breath, or one word kept or cut, so it is
+# offered the way patterns have always been offered. A "story" rule
+# can change what a video means, so it is offered one at a time and
+# only ever saved on a clear yes. When the data cannot show a
+# pattern is small, it is a story rule.
+RULE_CLASS_SMALL = "small"
+RULE_CLASS_STORY = "story"
+
+# Whole words in a pattern key that mark the pattern as small: it is
+# only about filler words, pauses, or breaths.
+_SMALL_KEY_WORDS = frozenset({"filler", "pause", "pauses", "breath", "breaths"})
+
+_SUPPORT_VERDICTS = frozenset({"worked", "partly"})
+
+
+def _pattern_key_of(pattern) -> str:
+    """The pattern key for a pattern dict (or a bare key string)."""
+    if isinstance(pattern, str):
+        return pattern.strip()
+    if isinstance(pattern, dict):
+        for field in ("pattern_key", "operation_type"):
+            value = pattern.get(field)
+            if value and str(value).strip():
+                return str(value).strip()
+    return ""
+
+
+def _pattern_operation_type(pattern) -> Optional[str]:
+    """The operation type a pattern dict records, when it records one."""
+    if isinstance(pattern, dict):
+        value = pattern.get("operation_type")
+        if value and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _spans_one_word(entry: dict) -> bool:
+    """True when an entry records word_start/word_end over one word."""
+    start = entry.get("word_start")
+    end = entry.get("word_end")
+    if isinstance(start, bool) or isinstance(end, bool):
+        return False
+    if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+        return False
+    return end - start == 1
+
+
+def rule_class_for(pattern, entries=None) -> str:
+    """Which speed a learned pattern runs at: "small" or "story".
+
+    Small when the pattern is only about a pause length (operation
+    type ``set_join_pause``), only about filler words, pauses, or
+    breaths (named in the pattern key), or a single word kept or
+    cut (every supporting grade covers exactly one word). Story
+    for everything else: whole-thought cuts, kept repeats, take
+    swaps, retake bands, gold patterns, and anything the data
+    cannot show is small. When in doubt, story.
+    """
+    entries = [e for e in (entries or []) if isinstance(e, dict)]
+    key = _pattern_key_of(pattern)
+    if _pattern_operation_type(pattern) == "set_join_pause":
+        return RULE_CLASS_SMALL
+    key_words = re.findall(r"[a-z]+", key.lower())
+    if any(word in _SMALL_KEY_WORDS for word in key_words):
+        return RULE_CLASS_SMALL
+    supporting = [
+        entry
+        for entry in entries
+        if entry.get("verdict") in _SUPPORT_VERDICTS
+        and pattern_key_for(entry) == key
+    ]
+    if supporting and all(
+        entry.get("operation_type") == "set_join_pause" for entry in supporting
+    ):
+        return RULE_CLASS_SMALL
+    # Take swaps, gold patterns, and retake bands can change what a
+    # video means even when one graded change happened to cover a
+    # single word, so the one-word check below never makes them
+    # small.
+    if _pattern_operation_type(pattern) == "replace_take":
+        return RULE_CLASS_STORY
+    if key_words and key_words[0] in ("gold", "retake"):
+        return RULE_CLASS_STORY
+    if supporting and all(_spans_one_word(entry) for entry in supporting):
+        return RULE_CLASS_SMALL
+    return RULE_CLASS_STORY
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -138,6 +226,11 @@ def suggestions_for(entries: list, store: dict) -> list:
     dismissed at their current support count, are not offered again;
     a dismissed pattern comes back only when its support has grown
     past the count at which it was dismissed.
+
+    Every suggestion carries its ``rule_class`` ("small" or
+    "story", from :func:`rule_class_for`). Small suggestions come
+    first and all of them surface; at most one story suggestion
+    surfaces, after the small ones.
     """
     saved_keys = {
         rule.get("pattern_key")
@@ -165,9 +258,18 @@ def suggestions_for(entries: list, store: dict) -> list:
                 "support_count": support,
                 "explicit": key in explicit,
                 "sample_feedback": list(pattern.get("sample_feedback") or []),
+                "rule_class": rule_class_for(pattern, entries),
             }
         )
-    return suggestions
+    # Small suggestions all surface, as they always have. Story
+    # suggestions are offered one at a time: only the strongest one
+    # (extract_patterns already sorts by support, so the first story
+    # suggestion is the strongest), and it stands apart from the
+    # small ones instead of being bundled with them. The rest wait
+    # until this one is saved or passed over.
+    small = [s for s in suggestions if s["rule_class"] == RULE_CLASS_SMALL]
+    story = [s for s in suggestions if s["rule_class"] != RULE_CLASS_SMALL]
+    return small + story[:1]
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +313,11 @@ def save_rule(store: dict, suggestion: dict) -> dict:
     for rule in store["rules"]:
         if rule.get("pattern_key") == suggestion["pattern_key"]:
             return rule
+    rule_class = suggestion.get("rule_class")
+    if rule_class not in (RULE_CLASS_SMALL, RULE_CLASS_STORY):
+        # A suggestion with no class on it is treated as a story
+        # rule: when in doubt, the slower speed wins.
+        rule_class = RULE_CLASS_STORY
     rule = {
         "rule_id": "rule-" + re.sub(
             r"[^A-Za-z0-9_-]+", "-", str(suggestion["pattern_key"])
@@ -220,9 +327,21 @@ def save_rule(store: dict, suggestion: dict) -> dict:
         "statement": suggestion["statement"],
         "support_count": suggestion.get("support_count", 0),
         "source": "explicit" if suggestion.get("explicit") else "pattern",
+        "rule_class": rule_class,
         "active": True,
         "created_at": _now(),
     }
+    if suggestion.get("source") == "teaching":
+        # A rule learned from a teaching drop starts untested: it
+        # has not yet been seen working in a finished run. The
+        # basis and kind ride along, so the record says where the
+        # rule came from (a recording, a pair, a finished video)
+        # and whose editing it describes (the creator's own, or a
+        # style they like).
+        rule["source"] = "teaching"
+        rule["tested"] = False
+        rule["basis"] = suggestion.get("basis")
+        rule["kind"] = suggestion.get("kind")
     store["rules"].append(rule)
     store.get("dismissed", {}).pop(rule["pattern_key"], None)
     return rule

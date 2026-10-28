@@ -90,16 +90,18 @@ class IsolatedHomeCase(unittest.TestCase):
 class UsualStoreTests(IsolatedHomeCase):
     def test_round_trip_writes_only_the_stored_keys(self):
         # Seven since v0.7.1 (the involvement mode joined), eight
-        # since v0.8.1: the chosen Spark route rides along too.
+        # since v0.8.1 (the chosen Spark route rides along too).
+        # v0.10: the editing style joined and the breaths choice
+        # left in the same version, so the count stays eight.
         settings = {
             "spark_route": "baseten",
             "remove_retakes": False,
             "cut_silence": False,
             "buffer_s": 0.25,
             "keep_mode": "first",
-            "breaths": "trim",
             "remove_fillers": False,
             "mode": "tailor",
+            "style": "keep-it-simple",
             "something_else": "not stored",
         }
         usual.save_usual(settings)
@@ -127,7 +129,9 @@ class UsualStoreTests(IsolatedHomeCase):
                     "cut_silence": False,  # a real bool: honored
                     "buffer_s": 5.0,  # clamped to the top of the range
                     "keep_mode": "whichever",  # unknown word: default
-                    "breaths": "loud",  # unknown word: default
+                    "breaths": "loud",  # v0.10: no longer a key at
+                    # all; an old file carrying it loads clean and
+                    # the key is simply not there anymore.
                     "remove_fillers": False,
                     "mode": "sometimes",  # unknown word: default
                 }
@@ -139,7 +143,7 @@ class UsualStoreTests(IsolatedHomeCase):
         self.assertFalse(loaded["cut_silence"])
         self.assertEqual(loaded["buffer_s"], 0.5)
         self.assertEqual(loaded["keep_mode"], "last")
-        self.assertEqual(loaded["breaths"], "keep")
+        self.assertNotIn("breaths", loaded)
         self.assertFalse(loaded["remove_fillers"])
         self.assertEqual(loaded["mode"], "cleanest")
 
@@ -169,7 +173,7 @@ class FrontDoorSeedingTests(IsolatedHomeCase):
                 "cut_silence": True,
                 "buffer_s": 0.3,
                 "keep_mode": "best",
-                "breaths": "trim",
+                "mode": "tailor",
                 "remove_fillers": False,
             }
         )
@@ -180,7 +184,7 @@ class FrontDoorSeedingTests(IsolatedHomeCase):
         )
         settings = webapp._front_door_settings(WebAppConfig(self.job))
         self.assertEqual(settings["buffer_s"], 0.3)  # usual over default
-        self.assertEqual(settings["breaths"], "trim")  # usual over default
+        self.assertEqual(settings["mode"], "tailor")  # usual over default
         self.assertFalse(settings["remove_fillers"])  # usual over default
         # The profile's keeper seed outranks the usual.
         self.assertEqual(settings["keep_mode"], "first")
@@ -190,7 +194,7 @@ class FrontDoorSeedingTests(IsolatedHomeCase):
             {
                 **dict(webapp.FRONT_DOOR_DEFAULTS),
                 "keep_mode": "best",
-                "breaths": "trim",
+                "mode": "tailor",
             }
         )
         write_job(
@@ -201,12 +205,12 @@ class FrontDoorSeedingTests(IsolatedHomeCase):
         config = WebAppConfig(self.job)
         config.session_dir.mkdir(parents=True)
         (config.session_dir / "front_door.json").write_text(
-            json.dumps({"keep_mode": "last", "breaths": "keep"}),
+            json.dumps({"keep_mode": "last", "mode": "cleanest"}),
             encoding="utf-8",
         )
         settings = webapp._front_door_settings(config)
         self.assertEqual(settings["keep_mode"], "last")
-        self.assertEqual(settings["breaths"], "keep")
+        self.assertEqual(settings["mode"], "cleanest")
         # And the front door defaults now carry the filler choice.
         self.assertTrue(settings["remove_fillers"])
 
@@ -504,7 +508,11 @@ class DirectionPassTests(IsolatedHomeCase):
                 "Read your direction and made 1 change.",
                 "1 suggestion set aside for your review.",
             ]
-            + [flag["recap"] for flag in flags],
+            + [flag["recap"] for flag in flags]
+            # v0.10: the recap closes by naming the know-how used.
+            # This stub provider loads no packs, so the built-in
+            # words are what ran.
+            + ["Know-how used: Justin's way, starter pack version built-in."],
         )
 
         flags_file = json.loads(
@@ -549,7 +557,8 @@ class DropSettingsTests(IsolatedHomeCase):
                     "remove_fillers": True,
                     "buffer_s": 5,  # clamped
                     "keep_mode": "first",
-                    "breaths": "loud",  # unknown word: dropped
+                    "breaths": "loud",  # v0.10: not a key anymore:
+                    # dropped like any other unknown key.
                     "provider": "meta",  # not a front door key
                 }
             }
