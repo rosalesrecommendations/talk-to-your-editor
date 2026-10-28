@@ -13,6 +13,7 @@ src/talk_to_your_editor/intake_build.py
 src/talk_to_your_editor/learning.py
 src/talk_to_your_editor/meta_provider.py
 src/talk_to_your_editor/retakes.py
+src/talk_to_your_editor/saved_transcripts.py
 src/talk_to_your_editor/schema.py
 src/talk_to_your_editor/session_log.py
 src/talk_to_your_editor/skills.py
@@ -57,4 +58,7 @@ tests/test_v10_skills.py
 tests/test_v10_teaching.py
 tests/test_v10_testvideo.py
 tests/test_v10_why.py
+tests/test_v11_layout.py
+tests/test_v11_transcript.py
+tests/test_v11_transcripts.py
 tests/test_webapp.py

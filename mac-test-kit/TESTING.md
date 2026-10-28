@@ -12,6 +12,19 @@ This version is built around one idea: keep the front door simple. Two choices, 
 
 ## Mac test
 
+### 0. New in 0.11.0: the review screen fits, and transcripts are saved
+
+This version answers your screen recording of 0.10.1 from October 28.
+
+1. Load a job and look at the top of the review screen: the **Teach the app** card is now a slim bar with one button. The review screen belongs to the video and the transcript. The teaching choices are still one click away behind that button. With no job loaded, the front door keeps the full card.
+2. Drag the panels around and try to break the fit: the three columns now have sensible smallest and largest widths, they always fit inside the window at 100% zoom, and the page never scrolls sideways. Hide a panel and the others take its space inside the same window. The video keeps its shape inside its panel instead of sitting small in a wide black box.
+3. Read the transcript where takes repeat (the "I got one for you" stretch): lines no longer run on top of each other around cut words, and the word markers no longer sit on the text.
+4. Drop a video you have already transcribed once, in any session: the app finds the transcript it saved from the earlier run and uses it, and the recap says so in plain words, with no new transcription cost. Same video under a new name still matches; a different video that happens to share the name does not. In **Settings** there is one line to clear the saved transcripts.
+5. Resize the window, from full screen down to about half size: everything stays in view. The video shrinks, the transcript flexes, and the comments move into a band at the bottom. Nothing is cut off and nothing needs the page to scroll. On a very small window the page scrolls again, and opening and closing **Settings** never leaves it stuck.
+6. Try the **Talk** button on the review screen: hold it, say "remove retakes," and the retakes come out, the same as the button. Say "undo" and it is back. Say "go back five seconds" or "go to one minute and thirty seconds" and the picture moves there. Say something the app does not know and it either runs it as a direction (with a key set) or saves your words as a note and tells you. Say "center me in the frame" and it answers honestly that it cannot do that one yet.
+7. Read the transcript itself: it reads as paragraphs now, like Descript. The dots inside the text are the dead air: more dots, longer silence. Cut words stay where they were, struck through and dimmed, so you can read what came out in context.
+
+
 ### 0. New in 0.10.1: the fixes from your first 0.10 test
 
 Your first 0.10 test stopped at the words: ElevenLabs Scribe would not take the recording, and the message said nothing about why. This version answers that test.

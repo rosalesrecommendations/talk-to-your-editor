@@ -743,6 +743,18 @@
   body.job-loaded #dropCard .drop-full { display: none; }
   body.job-loaded #dropCard.expanded .drop-full { display: block; margin-top: 12px; }
   .drop-slim-text { font-weight: 600; font-size: 15px; }
+  /* Teach card slim bar (v0.11, item 1): once a job is loaded the
+     teaching choices collapse to one slim bar, the same way the
+     drop card does, so the review screen belongs to the video and
+     the transcript. One click on the Teach the app button brings
+     the full teaching choices back. With no job loaded the card
+     keeps its full front door shape and the slim bar stays hidden. */
+  #teachSlimBar { display: none; }
+  body.job-loaded #teachSlimBar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  body.job-loaded #teachCard { padding: 10px 18px; margin-bottom: 10px; flex: none; }
+  body.job-loaded #teachCard .teach-full { display: none; }
+  body.job-loaded #teachCard.expanded .teach-full { display: block; margin-top: 12px; }
+  .teach-slim-text { font-weight: 600; font-size: 15px; }
   .drop-line { font-size: 15px; margin: 0 0 8px; }
   details.more-info { margin-top: 10px; }
   details.more-info summary { cursor: pointer; color: var(--muted); font-size: 14px; }
@@ -807,7 +819,7 @@
     body.job-loaded .subtitle { margin-bottom: 10px; }
     body.job-loaded .review-split {
       flex: 1 1 auto; min-height: 0; display: grid;
-      grid-template-columns: minmax(280px, var(--pane-a, 34%)) 12px minmax(280px, 1fr) 12px minmax(240px, var(--pane-c, 26%));
+      grid-template-columns: minmax(280px, clamp(280px, var(--pane-a, 34%), 420px)) 12px minmax(320px, 1fr) 12px minmax(260px, clamp(260px, var(--pane-c, 26%), 360px));
       gap: 0; align-items: stretch; margin: 0;
     }
     body.job-loaded .review-left {
@@ -838,7 +850,7 @@
      contained so reaching its end cannot hand the scroll to the
      page, and while it is open the page itself is locked still
      by the popup-open rule below. */
-  .popup-panel { position: fixed; top: 56px; right: 10px; width: min(580px, 94vw); max-height: calc(100dvh - 72px); overflow-y: auto; z-index: 80; margin: 0; background: #1c1c1e; overscroll-behavior: contain; }
+  .popup-panel { position: fixed; top: 56px; right: 10px; width: min(580px, 94vw); max-height: calc(100vh - 72px); max-height: calc(100dvh - 72px); overflow-y: auto; z-index: 80; margin: 0; background: #1c1c1e; overscroll-behavior: contain; }
   body.popup-open { overflow: hidden; }
   .popup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .popup-head h2 { margin: 0; }
@@ -892,6 +904,60 @@
   .tw-commented { border-bottom: 2px dotted #0064d1; }
   .tw.tw-now { background: rgba(0, 100, 209, 0.38); box-shadow: none; border-bottom-color: transparent; }
   .tw.tw-resting { background: transparent; box-shadow: none; outline: 1px solid rgba(255, 255, 255, 0.55); outline-offset: 1px; }
+  /* Transcript line spacing (v0.11.0, item 3): a line of words must
+     hold its height no matter what renders inside it. Before this
+     block the words were plain inline spans on a 1.55 line height
+     (a 26px line at the 17px word size): a word's padding, wash,
+     and inset underline paint outside an inline span's line box
+     without pushing the next line down, and the dot and marker hit
+     areas stood about 28px tall against that 26px line, so lines
+     packed with cut words, washes, dots, and markers rendered on
+     top of the line below them, worst where takes repeat. The
+     rules below make the line box itself the guarantee: the line
+     height (32px at 17px, 36px at the bigger-text 19px) is taller
+     than every box that can sit in a line, words are inline-block
+     so their padding and washes count toward the line height
+     instead of painting over the next line, marker hit areas fit
+     inside the line, and outlines stay on their own line. Nothing
+     here takes a word or marker out of the flow, shifts it with a
+     transform, or pulls lines together with a negative margin,
+     and cut words keep the same size as kept words; only the
+     strike and the dimming say a word is cut. */
+  #transcriptPanel .transcript { line-height: 1.9; }
+  #transcriptPanel .tx-words { line-height: 1.9; }
+  #transcriptPanel .tw {
+    display: inline-block;
+    line-height: 1.5;
+    padding: 1px 3px;
+    vertical-align: top;
+  }
+  #transcriptPanel .tw-cut { text-decoration: line-through; }
+  #transcriptPanel .tw-selected { outline-offset: 0; }
+  #transcriptPanel .tw.tw-resting { outline-offset: 0; }
+  #transcriptPanel .tdot,
+  #transcriptPanel .tflag,
+  #transcriptPanel .theld { vertical-align: middle; }
+  #transcriptPanel .tdot::after { inset: -6px; }
+  #transcriptPanel .tflag::after,
+  #transcriptPanel .theld::after { inset: -6px; }
+  #transcriptPanel .tx-para { padding-right: 30px; }
+  /* Dead air dots (v0.11.0, item 9): a run of small dots sits in
+     the flow of a paragraph where a pause was measured between
+     two words, the way Descript shows dead air. The run is plain
+     text inside one quiet span: it wraps with the words, so a
+     long run can flow onto the next line or fill a line of its
+     own, and it adds no height of its own beyond the line it
+     sits on, so the item 3 line spacing still holds. The dots
+     are not words: the span carries no word data, no click
+     handling, and no pointer cursor. The scale lives with the
+     builder below (search "tye-pause-dots-begin"). */
+  #transcriptPanel .tpause {
+    color: var(--faint);
+    opacity: 0.75;
+    letter-spacing: 1px;
+    overflow-wrap: anywhere;
+    user-select: none;
+  }
   .comments-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 2px 10px; }
   .comments-head h2 { margin: 0; font-size: 17px; }
   #hideCommentsBtn { min-height: 36px; padding: 6px 12px; font-size: 13px; }
@@ -917,17 +983,39 @@
   @media (min-width: 1100px) {
     body.job-loaded { overflow: hidden; }
     body.job-loaded main {
-      max-width: none; height: 100dvh; padding: 10px;
-      display: flex; flex-direction: column; overflow: hidden;
+      width: 100%; max-width: 100%; height: 100vh; height: 100dvh; padding: 10px;
+      display: flex; flex-direction: column; overflow: hidden; overflow-x: hidden;
     }
     body.job-loaded .app-head { flex: none; height: 48px; align-items: center; }
     body.job-loaded .app-head h1 { font-size: 18px; margin: 0; }
     body.job-loaded .subtitle { display: none; }
+    /* Panel width limits (v0.11, items 2 and 4): the widths a
+       person drags or an older visit saved are read through a
+       clamp, so the video panel stays between 280px and 420px
+       and the comments panel between 260px and 360px, whatever
+       value is stored. With those caps and the transcript taking
+       at least 320px, the three columns always fit the window:
+       at a 1440px window the widest they can be is 420 + 10 +
+       320 + 10 + 360 plus the page padding, well inside it, and
+       the page itself never scrolls sideways. */
     body.job-loaded .review-split {
-      flex: 1 1 auto; min-height: 0; display: grid;
-      grid-template-columns: var(--pane-a, 350px) 10px minmax(0, 1fr) 10px var(--pane-c, 310px);
+      flex: 1 1 auto; min-height: 0; min-width: 0; width: 100%; max-width: 100%;
+      display: grid; overflow: hidden;
+      --col-a: clamp(280px, var(--pane-a, 350px), 420px);
+      --col-c: clamp(260px, var(--pane-c, 310px), 360px);
+      grid-template-columns: var(--col-a) 10px minmax(320px, 1fr) 10px var(--col-c);
       gap: 0; align-items: stretch; margin: 0;
     }
+    /* The video keeps its own shape inside its panel (v0.11,
+       item 2): the wrap never shrinks in the column, the picture
+       is sized by its width and its real shape, and it is never
+       stretched or squeezed into a wide black box. */
+    body.job-loaded .vid-wrap { flex: none; width: 100%; max-width: 100%; }
+    body.job-loaded #vid {
+      width: 100%; height: auto; max-width: 100%;
+      object-fit: contain; display: block; margin: 0 auto 12px;
+    }
+    body.job-loaded.expanded-video #vid { max-width: 720px; }
     body.job-loaded .review-left {
       position: static; max-height: none; overflow-y: auto; min-height: 0; min-width: 0;
       background: var(--panel); border: 0.5px solid var(--line); border-radius: var(--radius-sm);
@@ -950,7 +1038,7 @@
       background: rgba(255, 255, 255, 0.14); cursor: col-resize; touch-action: none;
     }
     body.comments-closed .review-split {
-      grid-template-columns: var(--pane-a, 350px) 10px minmax(0, 1fr) 0 0;
+      grid-template-columns: var(--col-a) 10px minmax(0, 1fr) 0 0;
     }
     body.comments-closed #toolsPane, body.comments-closed #toolsDivider { display: none; }
   }
@@ -971,7 +1059,7 @@
   .panel-head-btns button { min-height: 34px; padding: 5px 10px; font-size: 12px; }
   @media (min-width: 1100px) {
     body.job-loaded.panels-swapped .review-split {
-      grid-template-columns: minmax(0, 1fr) 10px var(--pane-a, 350px) 10px var(--pane-c, 310px);
+      grid-template-columns: minmax(320px, 1fr) 10px var(--col-a) 10px var(--col-c);
     }
     body.job-loaded.panels-swapped .review-right { grid-column: 1; }
     body.job-loaded.panels-swapped #paneDivider { grid-column: 2; }
@@ -979,12 +1067,12 @@
     body.job-loaded.panels-swapped #toolsDivider { grid-column: 4; }
     body.job-loaded.panels-swapped #toolsPane { grid-column: 5; }
     body.job-loaded.panels-swapped.comments-closed .review-split {
-      grid-template-columns: minmax(0, 1fr) 10px var(--pane-a, 350px) 0 0;
+      grid-template-columns: minmax(0, 1fr) 10px var(--col-a) 0 0;
     }
     body.job-loaded.video-hidden .review-left,
     body.job-loaded.video-hidden #paneDivider { display: none; }
     body.job-loaded.video-hidden .review-split {
-      grid-template-columns: minmax(0, 1fr) 10px var(--pane-c, 310px);
+      grid-template-columns: minmax(0, 1fr) 10px var(--col-c);
     }
     body.job-loaded.video-hidden .review-right { grid-column: 1; }
     body.job-loaded.video-hidden #toolsDivider { grid-column: 2; }
@@ -992,7 +1080,7 @@
     body.job-loaded.transcript-hidden .review-right,
     body.job-loaded.transcript-hidden #paneDivider { display: none; }
     body.job-loaded.transcript-hidden .review-split {
-      grid-template-columns: var(--pane-a, 350px) 10px minmax(0, 1fr);
+      grid-template-columns: var(--col-a) 10px minmax(0, 1fr);
     }
     body.job-loaded.transcript-hidden .review-left { grid-column: 1; }
     body.job-loaded.transcript-hidden #toolsDivider { grid-column: 2; }
@@ -1006,7 +1094,7 @@
       grid-template-columns: minmax(0, 1fr) 0 0;
     }
     body.job-loaded.comments-closed.transcript-hidden .review-split {
-      grid-template-columns: var(--pane-a, 350px) 0 0;
+      grid-template-columns: var(--col-a) 0 0;
     }
     body.job-loaded.expanded-video .review-split,
     body.job-loaded.expanded-transcript .review-split,
@@ -1025,6 +1113,182 @@
     body.job-loaded.expanded-video .review-left { grid-column: 1; }
     body.job-loaded.expanded-transcript .review-right { grid-column: 1; }
     body.job-loaded.expanded-comments #toolsPane { grid-column: 1; display: block; }
+  }
+  /* Workspace fit at every size (v0.11.0, item 7): the review
+     conforms to the window instead of sitting partly outside
+     it. Two things trapped content in 0.10.1. First, the drop
+     card above was never closed in the markup, so the teach
+     card, the no-video card, and the whole review split were
+     children of the drop card instead of the page column: the
+     split was never a flex child of the page, its flex sizing
+     never applied, and the workspace grew to its full natural
+     height inside a page that was locked against scrolling.
+     That close is fixed in the markup now. Second, the fitted
+     frame only existed at 1100px and wider; below that the
+     split unwrapped into one long stacked page. The rules
+     below hold the frame from 720px up: the page takes exactly
+     the window height (a plain 100vh line first, then the
+     100dvh line, so a browser without dvh support still gets
+     a bounded height), the split takes the space that is left
+     (flex: 1 1 auto with min-height: 0), and every pane that
+     scrolls inside itself can actually shrink (min-height: 0
+     and min-width: 0 on the flex and grid children), so no
+     pane can push content past the window. These rules respond
+     to the window live: resizing the window reflows them with
+     no reload. Sideways the page never scrolls at any size:
+     widths are capped at 100% and sideways overflow is cut. */
+  body { overflow-x: hidden; }
+  @media (min-width: 720px) {
+    body.job-loaded { overflow: hidden; }
+    body.job-loaded main {
+      width: 100%; max-width: 100%;
+      height: 100vh; height: 100dvh;
+      padding: 10px; display: flex; flex-direction: column;
+      overflow: hidden; overflow-x: hidden;
+    }
+    body.job-loaded .app-head { flex: none; min-height: 0; align-items: center; }
+    body.job-loaded .app-head h1 { font-size: 18px; margin: 0; }
+    body.job-loaded .subtitle { display: none; }
+    body.job-loaded #testVideoCard,
+    body.job-loaded #dropCard,
+    body.job-loaded #teachCard,
+    body.job-loaded #novid { flex: none; }
+    /* The small cards above the split sit slim while a job is
+       loaded (the test-video line is one line; the no-video
+       card is one short message), so the split keeps the
+       height they do not need. */
+    body.job-loaded #testVideoCard { padding: 10px 16px; margin-bottom: 10px; }
+    body.job-loaded #novid { padding: 12px 16px; margin-bottom: 10px; }
+    body.job-loaded .review-split {
+      flex: 1 1 auto; min-height: 0; min-width: 0;
+      width: 100%; max-width: 100%; overflow: hidden; margin: 0;
+    }
+    body.job-loaded .review-left,
+    body.job-loaded .review-right,
+    body.job-loaded .review-tools { min-height: 0; min-width: 0; }
+    body.job-loaded .review-left { overflow-y: auto; }
+    body.job-loaded .review-right { overflow: hidden; display: flex; }
+    body.job-loaded .review-right .card {
+      flex: 1 1 auto; min-height: 0; min-width: 0;
+      display: flex; flex-direction: column; margin-bottom: 0;
+    }
+    body.job-loaded .review-right #transcriptPanel {
+      flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto;
+    }
+    body.job-loaded .review-tools { overflow-y: auto; }
+    body.job-loaded .vid-wrap { flex: none; width: 100%; max-width: 100%; }
+    body.job-loaded #vid {
+      width: 100%; height: auto; max-width: 100%;
+      object-fit: contain; display: block; margin: 0 auto 12px;
+    }
+    /* The transport row wraps inside its pane instead of
+       running wider than the pane: every button stays visible
+       in the pane's own width, and the pane never needs
+       sideways scrolling to reach one. */
+    body.job-loaded .transport { flex-wrap: wrap; }
+    body.job-loaded .transport-center { flex-wrap: wrap; justify-content: center; }
+  }
+  /* Half-size windows (720px to 1099px): the three columns
+     rearrange instead of unwrapping. Video and transcript sit
+     side by side on the top row (the video column caps at
+     300px and the picture scales down with it, keeping its
+     shape; the transcript flexes into what is left), and the
+     comments and tools take a band across the bottom that is
+     part of the same fitted frame and scrolls inside itself.
+     The panel arrangements from the wide layout keep working
+     inside the same two rows, and the dividers step aside
+     because the columns are sized by the window here, not by
+     dragging. */
+  @media (min-width: 720px) and (max-width: 1099.98px) {
+    body.job-loaded .review-split {
+      display: grid;
+      grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) minmax(96px, 24%);
+      gap: 10px; align-items: stretch;
+    }
+    /* The transcript card's own trimmings shrink at this size
+       so the words themselves keep a visible share of the card:
+       tighter padding and header gaps, and the help line next
+       to the counts steps aside (the counts and the Follow
+       button stay). */
+    body.job-loaded #transcriptCard { padding: 14px 16px; }
+    body.job-loaded #transcriptCard > h2 { font-size: 18px; margin-bottom: 4px; }
+    body.job-loaded .tx-header { margin-top: 2px; gap: 4px 8px; }
+    body.job-loaded #txClockNote { display: none; }
+    body.job-loaded #transcriptPanel { margin-top: 4px; }
+    body.job-loaded #transcriptStatus { min-height: 0; margin-top: 4px; }
+    body.job-loaded #transcriptCard > .row { margin: 4px 0; }
+    body.job-loaded #transcriptCard > .row button { min-height: 40px; }
+    body.job-loaded .tx-counts { font-size: 14px; }
+    body.job-loaded #txFollow { min-height: 32px; padding: 4px 10px; font-size: 13px; }
+    body.job-loaded #transcriptCard .panel-head-btns button { min-height: 30px; padding: 3px 8px; font-size: 11px; }
+    body.job-loaded .review-left {
+      grid-column: 1; grid-row: 1;
+      background: var(--panel); border: 0.5px solid var(--line);
+      border-radius: var(--radius-sm); padding: 10px;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    body.job-loaded .review-left .card { margin-bottom: 10px; }
+    body.job-loaded .review-right { grid-column: 2; grid-row: 1; }
+    body.job-loaded .review-right .card { border-radius: var(--radius-sm); }
+    body.job-loaded #paneDivider,
+    body.job-loaded #toolsDivider { display: none; }
+    body.job-loaded .review-tools {
+      display: block;
+      grid-column: 1 / -1; grid-row: 2;
+      background: var(--panel); border: 0.5px solid var(--line);
+      border-radius: var(--radius-sm); padding: 10px;
+    }
+    body.job-loaded .review-tools .card { margin-bottom: 16px; }
+    body.job-loaded.panels-swapped .review-left { grid-column: 2; }
+    body.job-loaded.panels-swapped .review-right { grid-column: 1; }
+    body.job-loaded.video-hidden .review-left { display: none; }
+    body.job-loaded.video-hidden .review-right { grid-column: 1 / -1; }
+    body.job-loaded.transcript-hidden .review-right { display: none; }
+    body.job-loaded.transcript-hidden .review-left { grid-column: 1 / -1; }
+    body.job-loaded.comments-closed .review-tools { display: none; }
+    body.job-loaded.comments-closed .review-split { grid-template-rows: minmax(0, 1fr); }
+    body.job-loaded.expanded-video .review-right,
+    body.job-loaded.expanded-video .review-tools,
+    body.job-loaded.expanded-transcript .review-left,
+    body.job-loaded.expanded-transcript .review-tools,
+    body.job-loaded.expanded-comments .review-left,
+    body.job-loaded.expanded-comments .review-right { display: none; }
+    body.job-loaded.expanded-video .review-left { grid-column: 1 / -1; grid-row: 1 / -1; }
+    body.job-loaded.expanded-transcript .review-right { grid-column: 1 / -1; grid-row: 1 / -1; }
+    body.job-loaded.expanded-comments .review-tools { display: block; grid-column: 1 / -1; grid-row: 1 / -1; }
+  }
+  /* Short windows at any fitted width: the same transcript
+     card trimmings shrink so the words keep a visible share
+     of a short card too. */
+  @media (min-width: 720px) and (max-height: 860px) {
+    body.job-loaded #transcriptCard { padding: 14px 16px; }
+    body.job-loaded #txClockNote { display: none; }
+    body.job-loaded .tx-header { margin-top: 2px; gap: 4px 8px; }
+    body.job-loaded #transcriptPanel { margin-top: 4px; }
+    body.job-loaded #transcriptStatus { min-height: 0; margin-top: 4px; }
+    body.job-loaded #transcriptCard > .row { margin: 4px 0; }
+  }
+  /* Where the transcript card is wide enough for one header
+     row (861px to 1099px), the header takes that one row
+     instead of two, and the words gain the row it saved. */
+  @media (min-width: 861px) and (max-width: 1099.98px) {
+    body.job-loaded .tx-header { flex-wrap: nowrap; }
+    body.job-loaded .tx-header .tx-counts { font-size: 14px; white-space: nowrap; }
+  }
+  /* Very small windows (under 720px): the frame lets go on
+     purpose, as the last resort. Nothing is locked and nothing
+     is height bound: the cards stack in the usual order and
+     the page itself scrolls up and down normally, so every
+     part is still reachable. The transcript keeps its own
+     inside scroll at this size, the way it always has on a
+     narrow screen. */
+  @media (max-width: 719.98px) {
+    body.job-loaded { overflow-x: hidden; overflow-y: visible; }
+    body.job-loaded main { height: auto; max-height: none; overflow: visible; }
+    body.job-loaded .review-left,
+    body.job-loaded .review-tools { max-height: none; overflow-y: visible; }
+    body.job-loaded .review-right #transcriptPanel { max-height: 52vh; overflow-y: auto; }
   }
 </style>
 </head>
@@ -1076,6 +1340,14 @@
       <label class="switch"><input type="checkbox" id="biggerTextToggle"> Bigger text</label>
       <p class="note">Bigger text makes the transcript words bigger, the counts and times a step bigger, and the buttons taller. The panel widths stay the same.</p>
       <p class="note"><button id="resetLayoutBtn" type="button">Reset layout</button> Put the panel widths and the comments panel back the way they started.</p>
+    </div>
+    <div id="savedTranscriptsBlock">
+      <h3>Saved transcripts</h3>
+      <p class="note" id="savedTranscriptsLine">No saved transcripts yet.</p>
+      <div class="row">
+        <button id="clearSavedTranscripts" type="button">Clear saved transcripts</button>
+      </div>
+      <p class="status-line" id="savedTranscriptsStatus"></p>
     </div>
   <div class="card" id="directionCard">
     <h2 id="directionTitle">Run direction</h2>
@@ -1313,8 +1585,14 @@
     </div>
     <p class="note" id="sampleRow">Just looking around? <button id="loadSample" type="button">Try the built-in sample</button> <span id="sampleStatus"></span></p>
     </div>
+  </div>
 
   <div class="card" id="teachCard">
+    <div id="teachSlimBar">
+      <span class="teach-slim-text">Teaching is tucked away while you review.</span>
+      <button id="teachToggle" type="button" aria-expanded="false" aria-controls="teachFull">Teach the app</button>
+    </div>
+    <div class="teach-full" id="teachFull">
     <h2>Teach the app</h2>
     <p class="note">The fast way to teach the app how you edit. This is optional. The app also learns over time from your edits and your grades.</p>
     <p class="note">Is this your own editing, or a style you like from someone else?</p>
@@ -1335,6 +1613,7 @@
       <button id="teachRun" class="primary" type="button">Teach from this</button>
     </div>
     <p class="status-line" id="teachStatus"></p>
+    </div>
   </div>
 
   <div class="card job-only" id="novid" hidden>
@@ -1505,6 +1784,16 @@
     <div class="row">
       <button id="fdFire" class="primary hero-action" type="button">Make the edit</button>
     </div>
+    <!-- [voice-command-begin] v0.11.0, fix item 8: talk to the
+         app. The button uses the same dictation route as every
+         other Dictate button; the words it hears go to
+         /api/voice-command, which matches them locally first. -->
+    <div class="row">
+      <button id="voiceTalkBtn" type="button">Talk</button>
+      <span class="note" id="voiceStatus">Tap Talk, say a command like "remove retakes", "undo", or "go back five seconds", then tap Talk again to stop. Words that match a command run it at once. Words that match nothing are saved as a note.</span>
+    </div>
+    <textarea id="voiceText" rows="1" hidden aria-hidden="true"></textarea>
+    <!-- [voice-command-end] -->
     <p class="note" id="fdCostLine">Edits cost a few cents a run.</p>
     <p class="note" id="fdRunSummary" hidden><span id="fdRunSummaryText"></span> <button id="moneyDetailsLink" type="button" hidden>Money details</button></p>
     <p class="note" id="fdCostEstimate"></p>
@@ -1762,6 +2051,16 @@
     if (howItWorksToggle) { howItWorksToggle.setAttribute("aria-expanded", "false"); }
     syncPopupScrim();
   }
+  // Sync the pop up lock with the page as it loads (v0.11.0,
+  // item 7): both panels start hidden in the markup, so this
+  // call makes sure the page never starts out locked, and the
+  // lock only ever follows a pop up that is actually open.
+  // Every open and close path below (the two toggle buttons,
+  // both Close buttons, a click on the dimmed background, the
+  // Escape key, and the jump to the money card) already ends in
+  // syncPopupScrim or closePopups, so no path can leave the
+  // lock on after its pop up has closed.
+  syncPopupScrim();
   function openSettingsAtMoney() {
     if (howItWorksPanel) { howItWorksPanel.hidden = true; }
     if (settingsPanel) { settingsPanel.hidden = false; }
@@ -1998,6 +2297,19 @@
     dropSlimToggle.addEventListener("click", function () {
       var expanded = dropCardEl.classList.toggle("expanded");
       dropSlimToggle.textContent = expanded ? "Hide the bring-in card" : "Bring in another job";
+    });
+  }
+
+  // Teach card slim bar (v0.11, item 1): while a job is loaded
+  // the teaching choices sit behind this one button; one click
+  // opens them, one more click tucks them away again.
+  var teachCardEl = document.getElementById("teachCard");
+  var teachToggle = document.getElementById("teachToggle");
+  if (teachToggle && teachCardEl) {
+    teachToggle.addEventListener("click", function () {
+      var expanded = teachCardEl.classList.toggle("expanded");
+      teachToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+      teachToggle.textContent = expanded ? "Hide teaching choices" : "Teach the app";
     });
   }
 
@@ -2921,6 +3233,53 @@
   }
   // [tye-scroll-anchor-end]
 
+  // [tye-pause-dots-begin]
+  // Dead air dots (v0.11.0, item 9): the pause between two words,
+  // measured on the original recording (the next word's start
+  // minus this word's end), shows in the paragraph as a run of
+  // dots, the way Descript shows dead air in Justin's screenshot.
+  // The scale, the only one the app uses:
+  //   a pause under 0.3 seconds shows no dots;
+  //   from there, one dot for each full 0.3 seconds of pause,
+  //   so 0.3 to 0.59 seconds shows 1 dot, 0.6 to 0.89 shows 2,
+  //   1.2 seconds shows 4, and 3.0 seconds shows 10;
+  //   the run is capped at 30 dots (a pause of 9 seconds or
+  //   more), so a very long silence reads as a long dotted line,
+  //   like the longest runs in his screenshot, without flooding
+  //   the page.
+  // A longer pause always shows at least as many dots as a
+  // shorter one, and a clearly longer pause shows more. The dots
+  // show the pause in the original timing even where the edit
+  // takes that quiet out; no cut behavior changes here.
+  var PAUSE_DOT_STEP_S = 0.3;
+  var PAUSE_DOT_MAX = 30;
+  function pauseDotCount(pauseSeconds) {
+    if (typeof pauseSeconds !== "number" || !isFinite(pauseSeconds)) {
+      return 0;
+    }
+    if (pauseSeconds < PAUSE_DOT_STEP_S - 1e-9) { return 0; }
+    // The small addition keeps a pause that is exactly on a step
+    // (say 1.2 seconds) from losing a dot to rounding in the
+    // recorded times, which are decimal fractions.
+    var count = Math.floor(pauseSeconds / PAUSE_DOT_STEP_S + 1e-6);
+    return count > PAUSE_DOT_MAX ? PAUSE_DOT_MAX : count;
+  }
+  function pauseGapSeconds(entry, nextEntry) {
+    if (!entry || !nextEntry) { return 0; }
+    if (typeof entry.end !== "number" || typeof nextEntry.start !== "number") {
+      return 0;
+    }
+    var gap = nextEntry.start - entry.end;
+    return gap > 0 ? gap : 0;
+  }
+  function pauseDotText(pauseSeconds) {
+    var count = pauseDotCount(pauseSeconds);
+    var text = "";
+    for (var i = 0; i < count; i++) { text += "·"; }
+    return text;
+  }
+  // [tye-pause-dots-end]
+
   function measureWordSpans() {
     var spans = [];
     transcriptEl.querySelectorAll(".tw").forEach(function (s) {
@@ -3078,7 +3437,7 @@
       }
       transcriptEl.appendChild(paraEl);
     }
-    transcriptEntries.forEach(function (w) {
+    transcriptEntries.forEach(function (w, wPos) {
       var wp = typeof w.paragraph === "number" ? w.paragraph : 0;
       if (!paraEl || wp !== paraIndex) { startPara(w); }
       var span = document.createElement("span");
@@ -3098,6 +3457,28 @@
           : "Click to jump here and pick this word.");
       paraWords.appendChild(span);
       paraWords.appendChild(document.createTextNode(" "));
+      // Dead air dots (v0.11.0, item 9): right after this word, in
+      // the flow of the paragraph, a run of dots for the pause
+      // before the next word, sized by the scale above. This also
+      // runs for the last word of a paragraph, so a pause at a
+      // paragraph break shows its dots at the end of the
+      // paragraph it closes. The run is a plain span on purpose:
+      // no word data on it, no click handling, so word picking,
+      // selection, follow the video, and the take markers never
+      // treat it as a word.
+      var nextEntry = wPos + 1 < transcriptEntries.length
+        ? transcriptEntries[wPos + 1] : null;
+      var pauseSeconds = pauseGapSeconds(w, nextEntry);
+      if (pauseDotCount(pauseSeconds) > 0) {
+        var pauseEl = document.createElement("span");
+        pauseEl.className = "tpause";
+        pauseEl.textContent = pauseDotText(pauseSeconds);
+        pauseEl.setAttribute("aria-hidden", "true");
+        pauseEl.title = "Dead air, about " +
+          (Math.round(pauseSeconds * 10) / 10) + " seconds";
+        paraWords.appendChild(pauseEl);
+        paraWords.appendChild(document.createTextNode(" "));
+      }
       var entryEnd = w.word_end || (w.index + 1);
       Object.keys(dotByLast).forEach(function (k) {
         var lastIdx = parseInt(k, 10);
@@ -4197,6 +4578,41 @@
       }
     }).catch(function () {
       signinStateEl.textContent = "";
+    });
+  }
+
+  function refreshSavedTranscripts() {
+    return fetch("/api/saved-transcripts").then(function (r) { return r.json(); }).then(function (s) {
+      var savedLine = document.getElementById("savedTranscriptsLine");
+      if (savedLine && typeof s.saved_transcripts_count === "number") {
+        if (s.saved_transcripts_count === 0) {
+          savedLine.textContent = "No saved transcripts yet. When a video is written down, its transcript is saved on this Mac for next time.";
+        } else if (s.saved_transcripts_count === 1) {
+          savedLine.textContent = "1 saved transcript. Bringing that video in again uses the saved transcript and costs nothing new. Clearing it means the next run of that video writes down its words again.";
+        } else {
+          savedLine.textContent = s.saved_transcripts_count + " saved transcripts. Bringing one of those videos in again uses its saved transcript and costs nothing new. Clearing them means the next run of each video writes down its words again.";
+        }
+      }
+    }).catch(function () {});
+  }
+
+  refreshSavedTranscripts();
+
+  var clearSavedBtn = document.getElementById("clearSavedTranscripts");
+  if (clearSavedBtn) {
+    clearSavedBtn.addEventListener("click", function () {
+      var savedStatus = document.getElementById("savedTranscriptsStatus");
+      postJson("/api/saved-transcripts/clear", {}).then(function (res) {
+        var data = res.data || {};
+        if (data.ok) {
+          if (savedStatus) { savedStatus.textContent = data.message || "Saved transcripts cleared."; }
+          refreshSavedTranscripts();
+        } else if (savedStatus) {
+          savedStatus.textContent = "Saved transcripts could not be cleared: " + (data.error || res.status);
+        }
+      }).catch(function (err) {
+        if (savedStatus) { savedStatus.textContent = "Saved transcripts could not be cleared: " + err; }
+      });
     });
   }
 
@@ -5953,6 +6369,122 @@
   undoBtn.addEventListener("click", function () { moveHistory("undo"); });
   redoBtn.addEventListener("click", function () { moveHistory("redo"); });
 
+  // -- [voice-command-begin] voice commands (v0.11.0, fix item 8) --
+  // Talk dictates through the same /api/dictate route as every
+  // other Dictate button on this page; no new speech path. The
+  // words go to /api/voice-command, which matches them locally
+  // first. On a command decision the SAME handler the command's
+  // button runs is clicked here, in the same step, so a voice
+  // run is the button run: same progress, same history, same
+  // one undo away. Every outcome (ran, asked, saved as a note,
+  // sent as direction, cannot do that yet) shows the heard and
+  // did record line in the Talk status, the run recap, and the
+  // history list, matching the session log line the server
+  // wrote for it.
+  function voiceById(id) { return document.getElementById(id); }
+  function voiceClick(id) {
+    var el = voiceById(id);
+    if (el) { el.click(); }
+  }
+  var VOICE_COMMAND_HANDLERS = {
+    undo: function () { voiceClick("undoBtn"); },
+    redo: function () { voiceClick("redoBtn"); },
+    remove_retakes: function () { voiceClick("passRetakesBtn"); },
+    trim_audio: function () { voiceClick("passSilenceBtn"); },
+    make_edit: function () { voiceClick("fdFire"); },
+    play: function () {
+      if (vid && vid.paused) { voiceClick("playPauseBtn"); }
+    },
+    pause: function () {
+      if (vid && !vid.paused) { voiceClick("playPauseBtn"); }
+    },
+    next_change: function () { voiceClick("nextChangeBtn"); },
+    seek_start: function () { voiceClick("goStartBtn"); },
+    seek_end: function () { voiceClick("goEndBtn"); },
+    seek_relative: function (seconds) { stepBy(seconds || 0); },
+    seek_absolute: function (seconds) {
+      seekToEdited(typeof seconds === "number" ? seconds : 0);
+    },
+    keep_retakes: function () {
+      // There is no button for this one: the Remove retakes
+      // switch on the Edit settings card is the control. Voice
+      // turns it off through the same change event the switch
+      // itself fires, so the retakes stay in the next edit.
+      var sw = voiceById("fdRetakes");
+      if (sw && sw.checked) {
+        sw.checked = false;
+        sw.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+  };
+
+  function showVoiceRecord(record) {
+    var status = voiceById("voiceStatus");
+    if (status) { status.textContent = record; }
+    var recap = voiceById("fdResults");
+    if (recap && record) {
+      var p = document.createElement("p");
+      p.className = "counts";
+      p.textContent = record;
+      recap.appendChild(p);
+    }
+    if (record) {
+      var row = document.createElement("div");
+      row.className = "hist-row";
+      var label = document.createElement("span");
+      label.textContent = record;
+      row.appendChild(label);
+      historyListEl.appendChild(row);
+    }
+  }
+
+  function handleVoiceDecision(data) {
+    if (!data) {
+      showVoiceRecord("The words did not come through. Try Talk again.");
+      return;
+    }
+    if (data.decision === "command" && data.command) {
+      var handler = VOICE_COMMAND_HANDLERS[data.command];
+      // Fire first, then show the record: the Make the edit
+      // handler clears the recap as it starts, and the record
+      // line belongs in the recap that run leaves behind.
+      if (handler) { handler(data.seconds); }
+      showVoiceRecord(data.record || data.message || "");
+      return;
+    }
+    showVoiceRecord(data.record || data.message || "");
+    if (data.decision === "note" || data.decision === "direction") {
+      // A saved note joins the overall notes, and a direction
+      // run changes the edit: re-read the job so both show.
+      refreshHistory();
+      reloadJobState();
+    }
+  }
+
+  var voiceTextEl = voiceById("voiceText");
+  var voiceTalkBtnEl = voiceById("voiceTalkBtn");
+  if (voiceTalkBtnEl && voiceTextEl) {
+    voiceTalkBtnEl.addEventListener("click", function () {
+      // A fresh take starts from an empty box, so words from an
+      // earlier take never run twice.
+      voiceTextEl.value = "";
+    });
+    voiceTextEl.addEventListener("input", function () {
+      var words = (voiceTextEl.value || "").trim();
+      if (!words) { return; }
+      voiceTextEl.value = "";
+      postJson("/api/voice-command", { text: words }).then(function (res) {
+        handleVoiceDecision((res && res.data) || null);
+      }).catch(function () {
+        showVoiceRecord(
+          'Heard: "' + words + '". The words could not be settled just now. Nothing ran.'
+        );
+      });
+    });
+    wireDictation("voiceTalkBtn", "voiceText", "voiceStatus");
+  }
+  // -- [voice-command-end] --
+
   // -- Drag and drop intake -------------------------------------------------
   // A job folder dropped anywhere on the page is read through the
   // browser's folder entries, sent to the app file by file, and
@@ -6601,6 +7133,16 @@
   function loadVideo(name) {
     stopPlaybackPoll();
     currentVideoName = name;
+    // Keep the picture's own shape from the first frame (v0.11,
+    // item 2): the server measured this file's real width and
+    // height, so the player box takes that shape instead of a
+    // wide box the picture sits small inside.
+    var shape = videoShapes[name];
+    if (shape && shape.width && shape.height) {
+      vid.style.aspectRatio = shape.width + " / " + shape.height;
+    } else {
+      vid.style.removeProperty("aspect-ratio");
+    }
     renderTimeline();
     document.getElementById("novid").hidden = true;
     vid.hidden = false;
@@ -7092,9 +7634,13 @@
           frac = Math.min(0.55, Math.max(0.2, frac));
           px = Math.round(frac * rect.width);
         }
+        // The drag stops at the same limits the columns use
+        // (v0.11, item 2): the video panel stays between 280px
+        // and 420px, the comments panel between 260px and 360px,
+        // so no drag can push a panel off the window.
         px = fromRight
-          ? Math.min(480, Math.max(240, px))
-          : Math.min(560, Math.max(260, px));
+          ? Math.min(360, Math.max(260, px))
+          : Math.min(420, Math.max(280, px));
         var pct = px + "px";
         split.style.setProperty(varName, pct);
         try { window.localStorage.setItem(key, pct); } catch (err) {}

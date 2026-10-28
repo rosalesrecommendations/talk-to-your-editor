@@ -58,7 +58,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import captions as clean_captions
 from . import checkpoints, costs, creator_rules, retakes, session_log, skills, teaching, usual
-from . import direction_parse, intake_build
+from . import direction_parse, intake_build, saved_transcripts, voice_commands
 from . import transcribe as speech
 from .after_review import generate_after_review
 from .applier import ApplyError, apply_verdicts
@@ -3622,17 +3622,34 @@ def _first_edit_cost_entries(
     settings: dict,
     retake_summary,
     direction_summary,
+    reused: bool = False,
 ) -> list:
-    """The cost entries for one first edit, from its passes' records."""
-    entries = [
-        costs.make_entry(
-            "transcription",
-            costs.transcription_cost(route, duration_s),
-            "ElevenLabs Scribe" if route == "scribe" else "on this computer",
-            duration_s=duration_s if route == "scribe" else None,
-            pool="elevenlabs" if route == "scribe" else "local",
-        )
-    ]
+    """The cost entries for one first edit, from its passes' records.
+
+    A run that used a saved transcript records the transcription
+    at no cost: the words were already paid for (or made on this
+    computer) on the earlier run, and charging again here would
+    say the reuse saved nothing.
+    """
+    if reused:
+        entries = [
+            costs.make_entry(
+                "transcription",
+                0.0,
+                "saved transcript from an earlier run",
+                pool="elevenlabs" if route == "scribe" else "local",
+            )
+        ]
+    else:
+        entries = [
+            costs.make_entry(
+                "transcription",
+                costs.transcription_cost(route, duration_s),
+                "ElevenLabs Scribe" if route == "scribe" else "on this computer",
+                duration_s=duration_s if route == "scribe" else None,
+                pool="elevenlabs" if route == "scribe" else "local",
+            )
+        ]
     if retake_summary is not None:
         entries.extend(
             _usage_cost_entries(
@@ -6356,32 +6373,71 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
         duration = speech.extract_audio(video_path, wav_path)
         if media.get("duration") is None:
             media["duration"] = duration
-        route = _intake_word_route(httpd.config)  # type: ignore[attr-defined]
-        if route is None:
-            raise speech.TranscribeError(NO_ROUTE_MESSAGE)
-        if route == "scribe":
-            stage(
-                "Writing the words down with ElevenLabs Scribe…",
-                2,
-                total,
+        # Saved transcripts (v0.11.0, fix item 5): this video is
+        # known by its size and a hash of the whole file, never
+        # by its name. A saved copy found under that identity is
+        # used before any provider is called, so the words are
+        # not paid for twice; it carries the same shape as a
+        # fresh result, so everything below runs the same either
+        # way. When identity is uncertain there is no saved copy
+        # to find, the words are written down fresh, and nothing
+        # extra is said.
+        video_identity = saved_transcripts.identity_for_file(video_path)
+        saved_store = (
+            httpd.config.launch_home  # type: ignore[attr-defined]
+            / saved_transcripts.STORE_DIR_NAME
+        )
+        result = (
+            saved_transcripts.load_saved(video_identity, saved_store)
+            if video_identity is not None
+            else None
+        )
+        transcript_reused = result is not None
+        reuse_line = None
+        if transcript_reused:
+            stage("Using the transcript saved from the earlier run…", 2, total)
+            result = {**result, "duration": duration}
+            reuse_line = saved_transcripts.reuse_recap_line(
+                result.get("engine")
             )
-            result = speech.scribe_transcribe_wav(
-                wav_path,
-                httpd.config.elevenlabs_key(),  # type: ignore[attr-defined]
-                duration_s=duration,
-                work_dir=work,
+            route = (
+                "local"
+                if saved_transcripts.is_local_engine(result.get("engine"))
+                else "scribe"
             )
         else:
-            stage(
-                "Writing the words down on this computer. The "
-                "first time, the speech model downloads once "
-                "(about 150 MB), so this can take a few minutes.",
-                2,
-                total,
-            )
-            result = speech.local_transcribe_wav(
-                wav_path, duration_s=duration
-            )
+            route = _intake_word_route(httpd.config)  # type: ignore[attr-defined]
+            if route is None:
+                raise speech.TranscribeError(NO_ROUTE_MESSAGE)
+            if route == "scribe":
+                stage(
+                    "Writing the words down with ElevenLabs Scribe…",
+                    2,
+                    total,
+                )
+                result = speech.scribe_transcribe_wav(
+                    wav_path,
+                    httpd.config.elevenlabs_key(),  # type: ignore[attr-defined]
+                    duration_s=duration,
+                    work_dir=work,
+                )
+            else:
+                stage(
+                    "Writing the words down on this computer. The "
+                    "first time, the speech model downloads once "
+                    "(about 150 MB), so this can take a few minutes.",
+                    2,
+                    total,
+                )
+                result = speech.local_transcribe_wav(
+                    wav_path, duration_s=duration
+                )
+            if video_identity is not None and result.get("words"):
+                # Saving never fails the edit: a copy that cannot
+                # be written only loses the future saving.
+                saved_transcripts.save_transcript(
+                    video_identity, result, saved_store
+                )
         words = result["words"]
         if not words:
             session_log.log_stage(
@@ -6546,6 +6602,11 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             f"Your video was {_format_clock(timeline.source_duration)}. "
             f"The edit is {_format_clock(timeline.output_duration)}.",
         )
+        if reuse_line is not None:
+            # Said right under the length line, where the cost of
+            # the run is talked about: the words came from the
+            # saved copy, and no provider was paid again.
+            recap.insert(1, reuse_line)
         if retake_summary is not None:
             recap.append(
                 "Retakes: "
@@ -6580,7 +6641,8 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
         # own records (v0.7.2): one line per feature that ran and
         # a total, just before the recap's closing lines.
         cost_entries = _first_edit_cost_entries(
-            route, duration, settings, retake_summary, direction_summary
+            route, duration, settings, retake_summary, direction_summary,
+            reused=transcript_reused,
         )
         _account_costs(config, cost_entries)
         cost_block = costs.job_cost_block(cost_entries)
@@ -6612,6 +6674,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "remaining_s": 0.0,
                 "job_name": job_root.name,
                 "engine": result["engine"],
+                "saved_transcript_reused": transcript_reused,
                 "words": kept_before,
                 "kept_before": kept_before,
                 "kept_after": kept_after,
@@ -7248,6 +7311,69 @@ def _detect_intake(base: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Voice commands (v0.11.0, fix item 8)
+#
+# The local match lives in voice_commands.py and is pure text
+# work: a matched command returns at once, with no model call,
+# and the page fires the same handler the command's button
+# fires. Only words that match nothing can go further, here:
+# direction through the existing direction pass when a key is
+# set and the words read as direction, otherwise a feedback
+# note. Every outcome writes one record line to the session
+# log, naming what was heard and what was done, and the same
+# line goes back to the page for its recap and history.
+# ---------------------------------------------------------------------------
+
+VOICE_NOTE_SENTENCE = "I saved your words as a note."
+
+
+def _record_voice_line(config: WebAppConfig, record: str) -> None:
+    session_log.log_stage(
+        config.session_dir, "voice command", "finish", record
+    )
+
+
+def _save_voice_note(config: WebAppConfig, text: str) -> None:
+    """Save spoken words as an overall feedback note.
+
+    The same feedback store the comments routes write, under
+    its own checkpoint, so the note is in the history like any
+    other saved note and goes with the next direction run as
+    overall guidance.
+    """
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "video": config.job_dir.name if config.job_dir else "",
+        "feedback_done": False,
+        "comments": [],
+        "overall_feedback": [],
+    }
+    existing_path = _feedback_path(config)
+    if existing_path is not None:
+        try:
+            existing = _load_json(str(existing_path))
+        except (OSError, ValueError):
+            existing = None
+        if isinstance(existing, dict):
+            payload["video"] = str(
+                existing.get("video") or payload["video"]
+            )
+            payload["feedback_done"] = bool(
+                existing.get("feedback_done", False)
+            )
+            if isinstance(existing.get("comments"), list):
+                payload["comments"] = existing["comments"]
+            payload["overall_feedback"] = _overall_notes(existing)
+    payload["overall_feedback"].append(
+        {"id": f"voice-{uuid.uuid4().hex[:12]}", "text": text}
+    )
+    checkpoints.begin(config)
+    _write_json(session / "feedback.json", payload)
+    checkpoints.commit(config, "Voice words saved as a note")
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
 
@@ -7279,6 +7405,7 @@ _JOB_REQUIRED_POSTS = frozenset({
     "/api/render",
     "/api/history/undo",
     "/api/history/redo",
+    "/api/voice-command",
 })
 
 
@@ -7438,6 +7565,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(200, _job_summary(self.config))
             elif path == "/api/signin":
                 self._send_json(200, _signin_state(self.config))
+            elif path == "/api/saved-transcripts":
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "saved_transcripts_count":
+                            saved_transcripts.count_saved(
+                                self.config.launch_home
+                                / saved_transcripts.STORE_DIR_NAME
+                            ),
+                    },
+                )
             elif path == "/api/intake/status":
                 self._get_intake_status()
             elif path == "/api/captions":
@@ -7548,6 +7687,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_signin_remove()
         elif path == "/api/signin/check":
             self._post_signin_check()
+        elif path == "/api/saved-transcripts/clear":
+            self._post_saved_transcripts_clear()
         elif path == "/api/spark-route":
             self._post_spark_route()
         elif path == "/api/direct":
@@ -7592,6 +7733,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_history_move(undo=True)
         elif path == "/api/history/redo":
             self._post_history_move(undo=False)
+        elif path == "/api/voice-command":
+            self._post_voice_command()
         else:
             self._error(404, "not found")
 
@@ -8583,6 +8726,149 @@ class _Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def _post_voice_command(self) -> None:
+        """Settle one dictated request (v0.11.0, fix item 8).
+
+        The local match comes first and is the whole answer for
+        a matched command: this route returns the decision at
+        once, with no model call and nothing run on the server,
+        and the page fires the same handler the command's own
+        button fires, in the same step. That is what makes a
+        misheard command one undo away: there is no side path.
+
+        An ask and the known but unavailable centering command
+        also end here: nothing runs, nothing is saved, and no
+        direction is sent. Only words that match nothing go
+        further: to the existing direction pass when a key is
+        set and the words read as direction, otherwise into the
+        feedback store as a note, said plainly.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        heard = str(body.get("text") or "").strip()
+        if not heard:
+            self._error(400, "Say something first, then stop the recording.")
+            return
+        match = voice_commands.match_voice_command(heard)
+        decision = match.get("decision")
+
+        if decision == "command":
+            command = match["command"]
+            seconds = match.get("seconds")
+            label = voice_commands.command_label(command, seconds)
+            record = f'Heard: "{heard}". Ran command: {label}.'
+            _record_voice_line(self.config, record)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "decision": "command",
+                    "command": command,
+                    "seconds": seconds,
+                    "heard": heard,
+                    "record": record,
+                    "message": record,
+                },
+            )
+            return
+
+        if decision == "ask":
+            candidates = list(match.get("candidates") or [])[:2]
+            labels = [
+                voice_commands.COMMAND_LABELS.get(c, c)
+                for c in candidates
+            ]
+            names = " or ".join(labels)
+            record = (
+                f'Heard: "{heard}". I am not sure which you meant: '
+                f"{names}? Nothing ran."
+            )
+            _record_voice_line(self.config, record)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "decision": "ask",
+                    "candidates": candidates,
+                    "candidate_labels": labels,
+                    "heard": heard,
+                    "record": record,
+                    "message": record,
+                },
+            )
+            return
+
+        if decision == "unavailable":
+            record = (
+                f'Heard: "{heard}". '
+                + voice_commands.CENTER_UNAVAILABLE_SENTENCE
+            )
+            _record_voice_line(self.config, record)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "decision": "unavailable",
+                    "command": match.get("command") or "center_frame",
+                    "heard": heard,
+                    "record": record,
+                    "message": record,
+                },
+            )
+            return
+
+        # Nothing matched locally. Direction only when a key is
+        # set and the words plainly read as direction; the test
+        # for that is the deterministic one in voice_commands.
+        if (
+            voice_commands.reads_as_direction(heard)
+            and self.config.signin_key()
+        ):
+            try:
+                checkpoints.begin(self.config)
+                summary = _run_direction_pass(
+                    self.config,
+                    heard,
+                    _front_door_settings(self.config),
+                )
+                checkpoints.commit(self.config, "Direction run")
+            except Exception as exc:
+                _log_raw_error("voice direction", exc)
+                summary = None
+            if summary is not None:
+                record = (
+                    f'Heard: "{heard}". Sent as direction.'
+                )
+                _record_voice_line(self.config, record)
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "decision": "direction",
+                        "heard": heard,
+                        "record": record,
+                        "message": record,
+                        "direction_ran": bool(summary.get("ran")),
+                    },
+                )
+                return
+
+        _save_voice_note(self.config, heard)
+        record = f'Heard: "{heard}". {VOICE_NOTE_SENTENCE}'
+        _record_voice_line(self.config, record)
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "decision": "note",
+                "heard": heard,
+                "record": record,
+                "message": record,
+            },
+        )
+
     def _post_signin(self) -> None:
         body = self._read_json_body()
         if body is None:
@@ -8670,6 +8956,36 @@ class _Handler(BaseHTTPRequestHandler):
         if saved is not None and _session_key(self.config, kind) == saved:
             _set_session_key(self.config, kind, None)
         self._send_json(200, {"ok": True, **_signin_state(self.config)})
+
+    def _post_saved_transcripts_clear(self) -> None:
+        """Clear the saved transcripts on this Mac (fix item 5).
+
+        Every saved copy goes; the next run of each video writes
+        down its words again. The answer carries how many were
+        cleared and the new count (zero), which the Settings
+        panel also reads on its own from /api/saved-transcripts.
+        """
+        if self._read_json_body() is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        store_root = (
+            self.config.launch_home / saved_transcripts.STORE_DIR_NAME
+        )
+        cleared = saved_transcripts.clear_saved(store_root)
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "cleared": cleared,
+                "saved_transcripts_count": saved_transcripts.count_saved(
+                    store_root
+                ),
+                "message": (
+                    "Saved transcripts cleared. The next run of "
+                    "each video will write down its words again."
+                ),
+            },
+        )
 
     def _post_signin_check(self) -> None:
         if self._read_json_body() is None:

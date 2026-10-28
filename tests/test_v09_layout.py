@@ -280,9 +280,13 @@ class V2FrameTests(unittest.TestCase):
     def test_no_page_scrollbar_at_laptop_sizes(self):
         self.assertIn("body.job-loaded { overflow: hidden; }", TEMPLATE)
         self.assertIn("height: 100dvh", TEMPLATE)
+        # v0.11 (items 2 and 4): the stored widths are read
+        # through clamps (--col-a / --col-c, defined on the split)
+        # and the transcript keeps at least 320px, so the three
+        # columns always fit the window with no sideways scroll.
         self.assertIn(
-            "grid-template-columns: var(--pane-a, 350px) 10px "
-            "minmax(0, 1fr) 10px var(--pane-c, 310px);",
+            "grid-template-columns: var(--col-a) 10px "
+            "minmax(320px, 1fr) 10px var(--col-c);",
             TEMPLATE,
         )
         # 1280-wide windows get the narrower columns.
