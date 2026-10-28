@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.1 - 2026-10-28
+
+The fix round from your first hands-on test of 0.10.0 the same day, where the first edit stopped at writing the words down and nothing could say why.
+
+- **When Scribe refuses, the page says the real reason.** In 0.10.0 the answer ElevenLabs sent back could not be read by the app at all: its error shape (a "detail" object) was one the app did not know, so every refusal, whatever it was, came out as the same doubled sentence, and nothing anywhere recorded the status or the provider's own words. Now the page names the plain reason (the key was not accepted; ElevenLabs refused that recording, with its own words attached; ElevenLabs is at its limit; the app could not reach it), and the full detail goes into the session log. The Scribe request itself did not change between 0.9.0 and 0.10.0; what changed is that a refusal can now be seen.
+- **A saved key and a used key can no longer be two different things.** Settings reads and writes the key file on this Mac; a run used to read only the session and the environment the launcher set at start. Now a run falls back to the saved key file itself, so what Settings says is saved is what the app can use. The same alignment covers the Baseten and Fireworks keys.
+- **Check the ElevenLabs key before a run.** "Check the sign-ins" in Settings now checks the ElevenLabs key too (a harmless account read) and answers in plain words, so a wrong key is caught in Settings instead of mid-edit.
+- **The problem report now catches front-door failures.** A first edit writes its steps into the front door's session log as it goes, failure included, and the report zip carries that log whether or not a job is open. In 0.10.0 a front-door failure produced a report with no log in it.
+- **The problem report's name is clickable (your ask).** After a report is made, its name on the page is a button: click it and Finder opens the folder with the file picked out, ready to drag into the chat.
+- **Settings scrolls cleanly.** The pop up's background is fully opaque (the page's words used to show faintly through and double up with its own), reaching its end no longer hands the scroll to the page, and while a pop up is open the page behind does not move. Opening Settings at the money card scrolls the pop up itself, not the page.
+- **The money total says what it covers.** The running total now reads as what it is: every run saved on this computer, including runs from earlier copies of the app (the 0.10.0 card showed about $1.07, most of it one wrong entry from the 0.9.0 bug, as if it were today's). The reset already cleared it fully; the words now match.
+
 ## 0.10.0 - 2026-10-28
 
 The learning version, plus the fixes from your hands-on test of 0.9.0 the same morning. The app now starts from shared starter know-how, learns your own rules at two speeds, can be taught on purpose, and the player finally shows the edit you made.

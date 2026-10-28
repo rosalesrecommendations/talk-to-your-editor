@@ -12,6 +12,17 @@ This version is built around one idea: keep the front door simple. Two choices, 
 
 ## Mac test
 
+### 0. New in 0.10.1: the fixes from your first 0.10 test
+
+Your first 0.10 test stopped at the words: ElevenLabs Scribe would not take the recording, and the message said nothing about why. This version answers that test.
+
+1. Drop the same video and press **Make the first edit** again. If Scribe takes it, everything runs as in 0.10. If anything refuses, the line on the page now says the plain reason (the key was not accepted, ElevenLabs refused the recording, the app could not reach it), never the old doubled sentence.
+2. Before the run, open **Settings** and press **Check the sign-ins**. The answer now includes the ElevenLabs key: accepted, or not accepted, in plain words. A wrong key is caught here instead of halfway through an edit.
+3. In **Settings**, press **Make a problem report**. The page names the file, and the name is a button: click it and Finder opens the folder with the file picked out, ready to drag into the chat. The report now holds the step-by-step log even when the failure happened before any job existed, and the log carries the provider's own error words.
+4. Scroll **Settings** itself: it scrolls inside its own box, the page behind does not move, and its words no longer double up over the page's words.
+5. Read the money card: the running total now says it covers every run saved on this computer, including runs from earlier copies of the app.
+
+
 ### 0. New in 0.10.0: the player shows your edit, and the app learns out loud
 
 This version answers your 0.9.0 test from the same morning, and adds the learning build. Test it against the same moves.

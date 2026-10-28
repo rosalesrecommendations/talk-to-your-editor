@@ -1191,23 +1191,36 @@ class WebAppConfig:
 
         Used only by the intake's word route (Scribe). A key pasted
         on the page for this session wins over the environment the
-        server started with, the way the Meta key works.
+        server started with, the way the Meta key works. When
+        neither has it, the key saved on this Mac is read from its
+        file, so what Settings reports as saved and what a run can
+        use can never be two different things: until this fallback
+        existed, a server that started without the launcher's
+        export (or any start that missed it) showed the key as
+        saved while the run itself had no key to send.
         """
         if self.session_elevenlabs_key:
             return self.session_elevenlabs_key
-        return os.environ.get("ELEVENLABS_API_KEY") or None
+        return (
+            os.environ.get("ELEVENLABS_API_KEY")
+            or _read_mac_key("elevenlabs")
+        )
 
     def baseten_key(self) -> Optional[str]:
         """The creator's Baseten key, when the server has one.
 
         Used only by Spark-tier model work when the Baseten route
         is chosen. A key pasted on the page for this session wins
-        over the environment the server started with, the way the
-        other keys work.
+        over the environment the server started with, and the key
+        saved on this Mac is the last resort, the way the other
+        keys work.
         """
         if self.session_baseten_key:
             return self.session_baseten_key
-        return os.environ.get("BASETEN_API_KEY") or None
+        return (
+            os.environ.get("BASETEN_API_KEY")
+            or _read_mac_key("baseten")
+        )
 
     def fireworks_key(self) -> Optional[str]:
         """The creator's Fireworks key, when the server has one.
@@ -1218,7 +1231,10 @@ class WebAppConfig:
         """
         if self.session_fireworks_key:
             return self.session_fireworks_key
-        return os.environ.get("FIREWORKS_API_KEY") or None
+        return (
+            os.environ.get("FIREWORKS_API_KEY")
+            or _read_mac_key("fireworks")
+        )
 
     def hosted_key(self, route: str) -> Optional[str]:
         """The key for one hosted Spark route, or None."""
@@ -2696,7 +2712,10 @@ def _problem_report_costs(config: WebAppConfig) -> str:
         lines.append(
             "On this computer so far: "
             f"{mac.get('total_text', '$0')} across "
-            f"{mac.get('entries', 0)} recorded runs."
+            f"{mac.get('entries', 0)} recorded runs. That total "
+            "covers every run saved on this computer, including "
+            "runs from earlier copies of the app; it is not the "
+            "cost of this job alone."
         )
     if config.has_job:
         retake = _load_session_json(config, RETAKE_PASS_FILENAME, {})
@@ -2746,6 +2765,34 @@ def _problem_report_counts(config: WebAppConfig) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _reveal_in_finder(path: Path) -> tuple:
+    """Show one file in Finder; (opened, one plain sentence).
+
+    The Mac's `open -R` selects the file in its folder, ready
+    to drag. Anywhere else there is no Finder; the sentence
+    then names the folder the file is in. Tests drive this
+    seam directly, so the real `open` only ever runs on a Mac.
+    """
+    if sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                ["open", "-R", str(path)],
+                capture_output=True, text=True, timeout=15,
+            )
+            if proc.returncode == 0:
+                return True, (
+                    "Finder is showing you the file, picked out "
+                    "in its folder. Drag it into the chat to send it."
+                )
+        except Exception:
+            pass
+        return False, (
+            "Finder could not be opened. The file is in this "
+            f"folder: {path.parent}"
+        )
+    return False, f"The file is in this folder: {path.parent}"
+
+
 def _build_problem_report(config: WebAppConfig) -> Path:
     """Make the problem report zip and return its path.
 
@@ -2784,19 +2831,32 @@ def _build_problem_report(config: WebAppConfig) -> Path:
         "costs-and-rounds.txt": _problem_report_costs(config),
         "cut-counts.txt": _problem_report_counts(config),
     }
+    # The session log rides along whether or not a job is open
+    # (v0.10.1). It used to be added only for a loaded job, so a
+    # failure at the front door, before any job existed, produced
+    # a report with no log in it at all: three short pages and no
+    # way to see what had actually happened.
+    session = config.session_dir
+    log_text = session_log.read_log(session)
+    if log_text:
+        pages[session_log.SESSION_LOG_NAME] = log_text
+    playback_logs = sorted(session.glob(f"playback/{PLAYBACK_LOG_NAME}"))
+    if playback_logs:
+        try:
+            pages[PLAYBACK_LOG_NAME] = playback_logs[0].read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            pass
     if config.has_job:
-        session = config.session_dir
-        log_text = session_log.read_log(session)
-        if log_text:
-            pages[session_log.SESSION_LOG_NAME] = log_text
-        playback_logs = sorted(session.glob(f"playback/{PLAYBACK_LOG_NAME}"))
-        if playback_logs:
-            try:
-                pages[PLAYBACK_LOG_NAME] = playback_logs[0].read_text(
-                    encoding="utf-8", errors="replace"
-                )
-            except OSError:
-                pass
+        # The front door's own log lives in the launch home; when
+        # this job was born there, its first-edit lines (and any
+        # failure on the way in) are in that log, not this one.
+        front_session = config.launch_home / SESSION_DIR_NAME
+        if front_session != session:
+            front_log = session_log.read_log(front_session)
+            if front_log:
+                pages["front-door-session.log"] = front_log
         for filename in (
             "operations_audit.json",
             DIRECTION_PASS_FILENAME,
@@ -3219,6 +3279,80 @@ def _check_hosted(config: WebAppConfig, route: str) -> Optional[dict]:
             f"The {label} sign-in was not accepted. Check the "
             "key and try again. Until it works, Spark work "
             "runs on Meta."
+        ),
+    }
+
+
+ELEVENLABS_USER_URL = "https://api.elevenlabs.io/v1/user"
+
+
+def _elevenlabs_get(url: str, api_key: str) -> tuple:
+    """One GET against ElevenLabs; returns (status, payload).
+
+    The seam the ElevenLabs key check reads through, so tests
+    can answer it offline. A connection that cannot be made at
+    all returns status 0 with the error as the payload text.
+    """
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        url, headers={"xi-api-key": api_key}, method="GET"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8", "replace")
+            status = response.status
+    except urllib.error.HTTPError as err:
+        raw = err.read().decode("utf-8", "replace")
+        status = err.code
+    except Exception as exc:  # no answer at all
+        return 0, str(exc)
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, raw
+
+
+def _check_elevenlabs(config: WebAppConfig) -> Optional[dict]:
+    """Check the ElevenLabs key the way the hosted routes check.
+
+    Returns None when no key is set (nothing to check). Otherwise
+    {accepted, message}: the check asks ElevenLabs for the
+    account page, a harmless read, so a wrong key is caught in
+    Settings instead of halfway through a first edit, where until
+    now it surfaced as a doubled sentence that named no reason.
+    """
+    key = config.elevenlabs_key()
+    if not key:
+        return None
+    status, payload = _elevenlabs_get(ELEVENLABS_USER_URL, key)
+    if status == 200:
+        return {
+            "accepted": True,
+            "message": "The ElevenLabs key was accepted.",
+        }
+    if status in (401, 403):
+        return {
+            "accepted": False,
+            "message": (
+                "The ElevenLabs key was not accepted. Check the "
+                "key in Settings and try again."
+            ),
+        }
+    if status == 0:
+        return {
+            "accepted": False,
+            "message": (
+                "The ElevenLabs key could not be checked: the "
+                "app could not reach ElevenLabs."
+            ),
+        }
+    return {
+        "accepted": False,
+        "message": (
+            "The ElevenLabs key could not be checked: "
+            f"ElevenLabs answered with an error (HTTP {status})."
         ),
     }
 
@@ -6142,6 +6276,19 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
     video_path = base / record["video_rel"]
     job_root = video_path.parent
 
+    # The front door's own session log (v0.10.1). Until now this
+    # run wrote nothing to any log before the job existed, so a
+    # failure at the front door (the words never written down,
+    # say) left the problem report with nothing to show. The log
+    # lives in the front door's session folder, the one a no-job
+    # problem report reads, and it takes the start line, the
+    # words line, and any failure with its full detail.
+    front_session = httpd.config.session_dir  # type: ignore[attr-defined]
+    session_log.log_stage(
+        front_session, "first edit", "start",
+        f"video: {video_path.name}",
+    )
+
     # The run's clocks (item 15): when the run started, and when
     # the current stage started, both monotonic. Every stage
     # carries the measured elapsed time, the percentage of stages
@@ -6237,11 +6384,19 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             )
         words = result["words"]
         if not words:
+            session_log.log_stage(
+                front_session, "first edit", "finish",
+                "no words were found in that video",
+            )
             state.update(
                 {"status": "no_words", "message": NO_WORDS_MESSAGE}
             )
             shutil.rmtree(work, ignore_errors=True)
             return
+        session_log.log_stage(
+            front_session, "writing the words down", "finish",
+            f"{len(words)} words, route: {route}",
+        )
         stage("Measuring the silences from the sound itself…", 3, total)
         spans = speech.measure_speech_spans(wav_path)
         stage("Laying out the first plan…", 4, total)
@@ -6479,8 +6634,17 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             config.session_dir, "first edit", "finish"
         )
     except speech.TranscribeError as exc:
+        session_log.log_stage(
+            front_session, "first edit", "fail",
+            exc.detail or str(exc),
+        )
+        _log_raw_error("first edit", exc)
         state.update({"status": "failed", "message": str(exc)})
     except Exception as exc:  # the page still gets one plain sentence
+        session_log.log_stage(
+            front_session, "first edit", "fail",
+            f"{type(exc).__name__}: {exc}",
+        )
         _log_raw_error("first edit", exc)
         state.update(
             {
@@ -7394,6 +7558,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_test_video()
         elif path == "/api/problem-report":
             self._post_problem_report()
+        elif path == "/api/problem-report/reveal":
+            self._post_problem_report_reveal()
         elif path == "/api/edit-note":
             self._post_edit_note()
         elif path == "/api/grades":
@@ -8515,6 +8681,7 @@ class _Handler(BaseHTTPRequestHandler):
             result = _check_hosted(self.config, route)
             if result is not None:
                 hosted[route] = result
+        elevenlabs = _check_elevenlabs(self.config)
         self._send_json(
             200,
             {
@@ -8522,6 +8689,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "accepted": accepted,
                 "message": message,
                 "hosted": hosted,
+                "elevenlabs": elevenlabs,
             },
         )
 
@@ -8927,8 +9095,8 @@ class _Handler(BaseHTTPRequestHandler):
         """Make the problem report zip (FIX B) and name the file.
 
         Works with no job open too: the zip then lands in the
-        app's home folder and carries the first page and the
-        costs page only.
+        app's home folder and still carries the session log, so
+        a failure at the front door can be read, not guessed at.
         """
         try:
             path = _build_problem_report(self.config)
@@ -8950,6 +9118,47 @@ class _Handler(BaseHTTPRequestHandler):
             )
         self._send_json(
             200, {"ok": True, "file": path.name, "message": message}
+        )
+
+    def _post_problem_report_reveal(self) -> None:
+        """Show a made problem report in Finder (v0.10.1).
+
+        Justin's ask: after a report is made, its name on the
+        page is something he can click, so the folder opens on
+        his Mac and he can drag the file into the chat. The name
+        is checked against the reports this app makes, in the
+        folder this app puts them in, and nothing else can be
+        asked for. Off a Mac there is no Finder to open; the
+        answer then names the folder in plain words instead.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        name = str(body.get("file") or "")
+        if (
+            not name.startswith("problem-report-")
+            or not name.endswith(".zip")
+            or "/" in name
+            or "\\" in name
+        ):
+            self._error(400, "That is not a problem report file.")
+            return
+        base = (
+            self.config.job_dir
+            if self.config.has_job
+            else self.config.launch_home
+        )
+        path = base / name
+        if not path.is_file():
+            self._error(
+                404,
+                "That problem report is not in the folder anymore.",
+            )
+            return
+        opened, message = _reveal_in_finder(path)
+        self._send_json(
+            200, {"ok": opened, "message": message}
         )
 
     def _post_why(self) -> None:

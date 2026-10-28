@@ -47,7 +47,17 @@ SAMPLE_RATE = 16000
 
 
 class TranscribeError(RuntimeError):
-    """A speech failure whose message is already plain words."""
+    """A speech failure whose message is already plain words.
+
+    ``detail`` carries the raw evidence (the provider's status
+    and its own words) for the session log. The message a person
+    sees stays one plain sentence; the detail is what a problem
+    report reads when the plain sentence is not enough.
+    """
+
+    def __init__(self, message: str, detail: Optional[str] = None):
+        super().__init__(message)
+        self.detail = detail
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +302,12 @@ def _post(url: str, body: bytes, headers: dict,
     except urllib.error.HTTPError as err:
         raw = err.read().decode("utf-8", "replace")
         status = err.code
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
+        raise TranscribeError(
+            "The app could not reach the speech service. Check "
+            "the internet connection and try again.",
+            detail=f"network error reaching {url}: {err}",
+        )
     try:
         return status, json.loads(raw)
     except ValueError:
@@ -320,16 +336,143 @@ def _multipart(parts: list) -> tuple:
     return b"".join(out), f"multipart/form-data; boundary={boundary}"
 
 
-def _service_error(payload, service: str) -> str:
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict) and error.get("message"):
-            return str(error["message"])
-        if isinstance(payload.get("detail"), str):
-            return payload["detail"]
-        if isinstance(payload.get("message"), str):
-            return payload["message"]
-    return f"{service} could not take that recording."
+def _provider_message(payload) -> str:
+    """The provider's own words from an error body, or "".
+
+    Providers answer errors in several shapes: an ``error``
+    object with a message, a ``detail`` string, a ``detail``
+    object with a message (ElevenLabs' shape), a ``detail`` list
+    of validation notes, or a plain ``message``. Each is read;
+    anything else yields "", and the caller falls back to the
+    reason the status alone gives.
+    """
+    if isinstance(payload, str):
+        text = payload.strip()
+        if text and not text.startswith("<"):
+            return text[:300]
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    error = payload.get("error")
+    if isinstance(error, dict) and error.get("message"):
+        return str(error["message"])
+    if isinstance(error, str) and error:
+        return error
+    detail = payload.get("detail")
+    if isinstance(detail, str) and detail:
+        return detail
+    if isinstance(detail, dict):
+        for key in ("message", "msg"):
+            if detail.get(key):
+                return str(detail[key])
+    if isinstance(detail, list):
+        notes = []
+        for item in detail:
+            if isinstance(item, dict):
+                note = item.get("msg") or item.get("message")
+                if note:
+                    notes.append(str(note))
+            elif isinstance(item, str):
+                notes.append(item)
+        if notes:
+            return "; ".join(notes)
+    if isinstance(payload.get("message"), str) and payload["message"]:
+        return payload["message"]
+    return ""
+
+
+# Plain page sentences per service and reason. The words are the
+# person's, not the provider's: one sentence naming what happened
+# and what to do next, never the provider's sentence repeated as
+# the app's own claim.
+_SCRIBE_SENTENCES = {
+    "key": (
+        "ElevenLabs did not accept the key the app sent. Open "
+        "Settings, check the ElevenLabs key, and try again."
+    ),
+    "limit": (
+        "ElevenLabs is at its limit right now. Wait a little "
+        "while and try again."
+    ),
+    "side": (
+        "ElevenLabs had a problem on its side. Try again in a "
+        "little while."
+    ),
+    "missing": (
+        "ElevenLabs could not find the speech service the app "
+        "asked for. This copy of the app may need an update."
+    ),
+    "unreadable": (
+        "ElevenLabs answered in a way the app could not read. "
+        "Try again, and if it keeps happening, send a problem "
+        "report."
+    ),
+}
+
+_VOICE_SENTENCES = {
+    "key": (
+        "The voice service did not accept the Meta sign-in. "
+        "Open Settings, check the sign-in, and try again."
+    ),
+    "limit": (
+        "The voice service is at its limit right now. Wait a "
+        "little while and try again."
+    ),
+    "side": (
+        "The voice service had a problem on its side. Try again "
+        "in a little while."
+    ),
+    "missing": (
+        "The voice service could not find what the app asked "
+        "for. This copy of the app may need an update."
+    ),
+    "unreadable": (
+        "The voice service answered in a way the app could not "
+        "read. Try again, and if it keeps happening, send a "
+        "problem report."
+    ),
+}
+
+
+def _provider_error(status: int, payload, service: str) -> TranscribeError:
+    """A provider failure as a TranscribeError.
+
+    The exception's message is the one plain sentence the page
+    shows, chosen by the kind of failure the status names. Its
+    detail carries the evidence for the session log: the status
+    and the provider's own words, when it sent any.
+    """
+    name = "ElevenLabs" if service == "scribe" else "The voice service"
+    sentences = _SCRIBE_SENTENCES if service == "scribe" else _VOICE_SENTENCES
+    provider_words = _provider_message(payload)
+    if status == 200:
+        page = sentences["unreadable"]
+    elif status in (401, 403):
+        page = sentences["key"]
+    elif status == 404:
+        page = sentences["missing"]
+    elif status == 429:
+        page = sentences["limit"]
+    elif status in (400, 422):
+        if provider_words:
+            page = f"{name} refused that recording: {provider_words}"
+        else:
+            page = (
+                f"{name} refused that recording, and it did "
+                "not say why."
+            )
+    elif 500 <= status <= 599:
+        page = sentences["side"]
+    elif provider_words:
+        page = f"{name} sent back an error: {provider_words}"
+    else:
+        page = f"{name} sent back an error (HTTP {status})."
+    detail = f"HTTP {status} from {name}"
+    if provider_words:
+        detail += f": {provider_words}"
+    elif isinstance(payload, str) and payload.strip():
+        detail += f": {payload.strip()[:300]}"
+    return TranscribeError(page, detail=detail)
 
 
 # ---------------------------------------------------------------------------
@@ -434,10 +577,7 @@ def scribe_transcribe_wav(
             {"Content-Type": ctype, "xi-api-key": api_key},
         )
         if status != 200 or not isinstance(payload, dict):
-            raise TranscribeError(
-                "ElevenLabs Scribe did not take that recording: "
-                + _service_error(payload, "ElevenLabs Scribe")
-            )
+            raise _provider_error(status, payload, "scribe")
         language = payload.get("language_code") or language
         for entry in payload.get("words") or []:
             if not isinstance(entry, dict):
@@ -621,10 +761,7 @@ def meta_transcribe_wav(
         timeout=300,
     )
     if status != 200 or not isinstance(payload, dict):
-        raise TranscribeError(
-            "The voice service did not take that recording: "
-            + _service_error(payload, "The voice service")
-        )
+        raise _provider_error(status, payload, "voice")
     text = str(payload.get("transcript") or "").strip()
     heard_ms = payload.get("audioDurationMs")
     return {

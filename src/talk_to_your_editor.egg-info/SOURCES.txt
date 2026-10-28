@@ -14,6 +14,9 @@ src/talk_to_your_editor/learning.py
 src/talk_to_your_editor/meta_provider.py
 src/talk_to_your_editor/retakes.py
 src/talk_to_your_editor/schema.py
+src/talk_to_your_editor/session_log.py
+src/talk_to_your_editor/skills.py
+src/talk_to_your_editor/teaching.py
 src/talk_to_your_editor/timeline.py
 src/talk_to_your_editor/transcribe.py
 src/talk_to_your_editor/usual.py
@@ -41,4 +44,17 @@ tests/test_v072.py
 tests/test_v07_backend.py
 tests/test_v08.py
 tests/test_v081.py
+tests/test_v09_costs.py
+tests/test_v09_layout.py
+tests/test_v09_notes.py
+tests/test_v09_playback.py
+tests/test_v09_transcript.py
+tests/test_v101_fixes.py
+tests/test_v10_fixa.py
+tests/test_v10_fixb.py
+tests/test_v10_rules.py
+tests/test_v10_skills.py
+tests/test_v10_teaching.py
+tests/test_v10_testvideo.py
+tests/test_v10_why.py
 tests/test_webapp.py

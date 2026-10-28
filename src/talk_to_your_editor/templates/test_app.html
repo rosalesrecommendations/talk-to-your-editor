@@ -832,7 +832,14 @@
   .topbar-btn { min-height: 40px; padding: 8px 14px; font-size: 14px; }
   #commentsCount { font-weight: 700; }
   .popup-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 70; }
-  .popup-panel { position: fixed; top: 56px; right: 10px; width: min(580px, 94vw); max-height: calc(100dvh - 72px); overflow-y: auto; z-index: 80; margin: 0; }
+  /* The pop up scrolls inside itself, and only itself (v0.10.1):
+     its background is fully opaque so the page's words can never
+     show through and double up with its own, overscroll stays
+     contained so reaching its end cannot hand the scroll to the
+     page, and while it is open the page itself is locked still
+     by the popup-open rule below. */
+  .popup-panel { position: fixed; top: 56px; right: 10px; width: min(580px, 94vw); max-height: calc(100dvh - 72px); overflow-y: auto; z-index: 80; margin: 0; background: #1c1c1e; overscroll-behavior: contain; }
+  body.popup-open { overflow: hidden; }
   .popup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .popup-head h2 { margin: 0; }
   @media (prefers-reduced-motion: no-preference) {
@@ -1082,7 +1089,7 @@
     </div>
     <p class="note" id="signinState"></p>
     <div class="row">
-      <button id="checkSignin" type="button">Check the Meta sign-in</button>
+      <button id="checkSignin" type="button">Check the sign-ins</button>
     </div>
     <div class="row">
       <input id="signinKey" type="password" placeholder="Paste a Meta API key" autocomplete="off">
@@ -1741,10 +1748,12 @@
   var howItWorksPanel = document.getElementById("howItWorksPanel");
   var popupScrim = document.getElementById("popupScrim");
   function syncPopupScrim() {
-    if (!popupScrim) { return; }
     var anyOpen = (settingsPanel && !settingsPanel.hidden) ||
       (howItWorksPanel && !howItWorksPanel.hidden);
-    popupScrim.hidden = !anyOpen;
+    if (popupScrim) { popupScrim.hidden = !anyOpen; }
+    // While a pop up is open the page underneath does not move:
+    // the pop up takes the scroll, inside itself (v0.10.1).
+    document.body.classList.toggle("popup-open", !!anyOpen);
   }
   function closePopups() {
     if (settingsPanel) { settingsPanel.hidden = true; }
@@ -1759,7 +1768,15 @@
     if (settingsToggle) { settingsToggle.setAttribute("aria-expanded", "true"); }
     syncPopupScrim();
     var mc = document.getElementById("moneyCard");
-    if (mc && mc.scrollIntoView) { mc.scrollIntoView({ block: "start" }); }
+    if (mc && settingsPanel) {
+      // Scroll the panel itself to the money card. The old way
+      // (scrollIntoView) scrolled every ancestor too, the page
+      // included, so opening Settings moved the work underneath
+      // (v0.10.1).
+      var panelBox = settingsPanel.getBoundingClientRect();
+      var cardBox = mc.getBoundingClientRect();
+      settingsPanel.scrollTop += cardBox.top - panelBox.top - 12;
+    }
   }
   if (settingsToggle && settingsPanel) {
     settingsToggle.addEventListener("click", function () {
@@ -4319,6 +4336,9 @@
           }
         });
       }
+      if (data.elevenlabs && data.elevenlabs.message) {
+        parts.push(data.elevenlabs.message);
+      }
       signinStatusEl.textContent = parts.join(" ");
     }).catch(function (err) {
       signinStatusEl.textContent = "The check did not finish: " + err;
@@ -6870,6 +6890,15 @@
       moneyBody.appendChild(
         moneyLine("Running total: " + mac.total_text + ".")
       );
+      if (mac.entries) {
+        moneyBody.appendChild(
+          moneyLine(
+            "That total covers every run saved on this computer (" +
+            mac.entries + " recorded runs), including runs from " +
+            "earlier copies of the app. It is not just this edit."
+          )
+        );
+      }
     }
   }
 
@@ -6905,11 +6934,35 @@
       postJson("/api/problem-report", {}).then(function (res) {
         var data = res.data || {};
         problemReportBtn.disabled = false;
-        if (problemReportNote) {
-          problemReportNote.textContent = data.ok
-            ? (data.message || "")
-            : (data.error || "The problem report could not be made.");
+        if (!problemReportNote) { return; }
+        if (!data.ok) {
+          problemReportNote.textContent =
+            data.error || "The problem report could not be made.";
+          return;
         }
+        // The report's name is a button (Justin's ask, v0.10.1):
+        // clicking it opens the file's folder in Finder, so the
+        // file can be dragged straight into the chat.
+        problemReportNote.textContent = (data.message || "") + " ";
+        var revealBtn = document.createElement("button");
+        revealBtn.type = "button";
+        revealBtn.id = "problemReportReveal";
+        revealBtn.textContent = data.file || "Show it in Finder";
+        revealBtn.addEventListener("click", function () {
+          revealBtn.disabled = true;
+          postJson("/api/problem-report/reveal", { file: data.file })
+            .then(function (r2) {
+              var d2 = r2.data || {};
+              revealBtn.disabled = false;
+              var tail = document.createElement("span");
+              tail.textContent = " " + (d2.message || "");
+              problemReportNote.appendChild(tail);
+            })
+            .catch(function () {
+              revealBtn.disabled = false;
+            });
+        });
+        problemReportNote.appendChild(revealBtn);
       }).catch(function () {
         problemReportBtn.disabled = false;
         if (problemReportNote) {
