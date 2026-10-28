@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import html
 import json
+from difflib import SequenceMatcher
 import os
 import re
 import shutil
@@ -226,14 +227,55 @@ def _playback_copy_path(config: "WebAppConfig", name: str) -> Path:
 
 
 PLAYBACK_BUILDING_MESSAGE = (
-    "Your video is being made watchable here. A long video can "
-    "take a few minutes."
+    "Your video is being made watchable here. You can go back to "
+    "the app and keep working; the picture will appear when the "
+    "copy is ready."
 )
 PLAYBACK_FAILED_MESSAGE = (
     "This video could not be made watchable here, so it cannot be "
     "shown yet. The edit still works from the words."
 )
 PLAYBACK_GETTING_READY = "Getting your video ready to watch…"
+
+# The conversion log (v0.9.0): every watchable-copy build writes
+# its state changes, one JSON object per line, to this file in the
+# same playback folder as the copies themselves. A rehearsal (or
+# a person) can read it afterwards and see exactly what happened:
+# "building" when a build starts, "progress" as the converter's
+# own percent crosses each tenth, "ready" when the copy lands,
+# and "failed" when no copy could be made, with the failing
+# attempt's last words kept on an "attempt_failed" line. Before
+# this log existed, a conversion that stalled, died, or never
+# started left no trace anywhere a rehearsal could read: the page
+# just said "building" forever.
+PLAYBACK_LOG_NAME = "playback.log"
+
+
+def _playback_log_path(copy_path: Path) -> Path:
+    """Where the conversion log for this copy's folder lives."""
+    return copy_path.parent / PLAYBACK_LOG_NAME
+
+
+def _log_playback_event(copy_path: Path, event: str, **fields) -> None:
+    """Append one conversion state change to the playback log.
+
+    Logging never breaks a build: a folder that cannot be written
+    simply has no log, and the conversion carries on.
+    """
+    record = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        "copy": copy_path.name,
+    }
+    record.update(fields)
+    try:
+        copy_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(
+            _playback_log_path(copy_path), "a", encoding="utf-8"
+        ) as handle:
+            handle.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
 
 _ENCODERS_CACHE: Optional[frozenset] = None
 
@@ -496,6 +538,10 @@ def _convert_playback_copy(source: Path, dest: Path, progress=None) -> bool:
             f"[video] no ffmpeg available to convert {source.name}",
             file=sys.stderr,
         )
+        _log_playback_event(
+            dest, "failed", source=source.name,
+            reason="no ffmpeg available on this machine",
+        )
         return False
     attempts = _playback_attempts()
     if not attempts:
@@ -505,6 +551,10 @@ def _convert_playback_copy(source: Path, dest: Path, progress=None) -> bool:
             f"can be made of {source.name}",
             file=sys.stderr,
         )
+        _log_playback_event(
+            dest, "failed", source=source.name,
+            reason="no usable encoder on this machine",
+        )
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.parent / (dest.name + ".part")
@@ -512,8 +562,24 @@ def _convert_playback_copy(source: Path, dest: Path, progress=None) -> bool:
     duration_s = _probe_duration_s(source)
     attempt_cap, total_cap = _playback_bounds(duration_s)
     started = time.monotonic()
+    _log_playback_event(
+        dest, "start", source=source.name,
+        duration_s=duration_s, attempts=len(attempts),
+    )
+    last_logged_decile = [-1]
+
+    def report(pct: int) -> None:
+        if progress is not None:
+            progress(pct)
+        decile = pct // 10
+        if decile != last_logged_decile[0]:
+            last_logged_decile[0] = decile
+            _log_playback_event(dest, "progress", percent=pct)
+
     with _PLAYBACK_CONVERT_LOCK:
-        for input_args, video_args in attempts:
+        for attempt_no, (input_args, video_args) in enumerate(
+            attempts, start=1
+        ):
             remaining = total_cap - (time.monotonic() - started)
             if remaining <= 0:
                 break
@@ -535,11 +601,20 @@ def _convert_playback_copy(source: Path, dest: Path, progress=None) -> bool:
                 command,
                 duration_s,
                 min(attempt_cap, remaining),
-                progress,
+                report,
             )
             if ok and tmp.is_file() and tmp.stat().st_size > 0:
                 tmp.replace(dest)
+                _log_playback_event(
+                    dest, "finish", source=source.name,
+                    elapsed_s=round(time.monotonic() - started, 3),
+                    size=dest.stat().st_size,
+                )
                 return True
+            _log_playback_event(
+                dest, "attempt_failed", source=source.name,
+                attempt=attempt_no, detail=tail[-300:],
+            )
             if tail:
                 print(
                     f"[video] conversion of {source.name} failed:\n"
@@ -547,6 +622,10 @@ def _convert_playback_copy(source: Path, dest: Path, progress=None) -> bool:
                     file=sys.stderr,
                 )
             tmp.unlink(missing_ok=True)
+    _log_playback_event(
+        dest, "fail", source=source.name,
+        elapsed_s=round(time.monotonic() - started, 3),
+    )
     return False
 
 
@@ -627,6 +706,9 @@ def _ensure_playback_copy_for(source: Path, copy_path: Path) -> None:
             with _PLAYBACK_BUILD_LOCK:
                 _PLAYBACK_PROGRESS[key] = pct
 
+        _log_playback_event(
+            copy_path, "building", source=source.name
+        )
         try:
             ok = _convert_playback_copy(
                 source, copy_path, progress=report
@@ -638,6 +720,12 @@ def _ensure_playback_copy_for(source: Path, copy_path: Path) -> None:
             _PLAYBACK_PROGRESS.pop(key, None)
             if not ok:
                 _PLAYBACK_FAILED.add(key)
+        # The end state, written where a rehearsal can read it:
+        # a build always lands on exactly one of these two lines.
+        _log_playback_event(
+            copy_path, "ready" if ok else "failed",
+            source=source.name,
+        )
 
     threading.Thread(target=build, daemon=True).start()
 
@@ -661,6 +749,30 @@ def _playback_state(config: "WebAppConfig", name: str) -> str:
     return _playback_state_for(
         config.job_dir / name, _playback_copy_path(config, name)
     )
+
+
+def _playback_view(config: "WebAppConfig", videos: list) -> tuple:
+    """(states, percents) for the job summary, by video name.
+
+    A video whose copy has never been started is started here,
+    on the poll the page already runs: "unstarted" must never be
+    a resting state the page can poll forever while nothing is
+    actually building (the eternal "building" of the 0.8.0
+    session, where a surface could wait on a conversion nobody
+    had kicked). Starting is guarded and cheap, so a summary
+    that finds a build already running or failed changes nothing.
+    """
+    states = {}
+    for name in videos:
+        state = _playback_state(config, name)
+        if state == "unstarted":
+            _ensure_playback_copy(config, name)
+            state = _playback_state(config, name)
+        states[name] = state
+    progress = {
+        name: _playback_progress(config, name) for name in videos
+    }
+    return states, progress
 
 
 def _playback_progress(config: "WebAppConfig", name: str) -> Optional[int]:
@@ -1822,19 +1934,15 @@ def _incomplete_job_summary(config: WebAppConfig, missing: list) -> dict:
     the job is whole, instead of failing on the first missing file.
     """
     summary = _no_job_summary(config)
+    videos = _job_videos(config.job_dir)
+    states, progress = _playback_view(config, videos)
     summary.update(
         {
             "has_job": True,
             "job_name": config.job_dir.name,
-            "videos": _job_videos(config.job_dir),
-            "playback": {
-                name: _playback_state(config, name)
-                for name in _job_videos(config.job_dir)
-            },
-            "playback_progress": {
-                name: _playback_progress(config, name)
-                for name in _job_videos(config.job_dir)
-            },
+            "videos": videos,
+            "playback": states,
+            "playback_progress": progress,
             "front_door": _front_door_settings(config),
             "render_missing": config.render_missing(),
             "render_ready": False,
@@ -1918,12 +2026,8 @@ def _job_summary(config: WebAppConfig) -> dict:
         "transcript_words": transcript_entries,
         "word_corrections": corrections,
         "videos": videos,
-        "playback": {
-            name: _playback_state(config, name) for name in videos
-        },
-        "playback_progress": {
-            name: _playback_progress(config, name) for name in videos
-        },
+        "playback": _playback_view(config, videos)[0],
+        "playback_progress": _playback_view(config, videos)[1],
         "video_shapes": video_shapes,
         "feedback_exists": feedback_exists,
         "comments": comments,
@@ -2434,18 +2538,31 @@ def _direction_cost_entries(usage) -> list:
 
 def _usage_cost_entries(feature: str, usage, detail: str) -> list:
     """One feature's cost entries from a pass summary's usage,
-    one per pool the usage drew on."""
+    one per pool the usage drew on.
+
+    Spark usage prices onto the feature's own line; any Wonder
+    usage prices onto the Second review line instead (v0.9.0,
+    FLAG C). Folding Wonder dollars into the feature's line is
+    how a real job once showed about 97 cents for a retake check
+    published at about 2 cents: the line must only ever carry
+    the model the feature's price describes. Wonder is always
+    Meta's, whatever route an entry claims.
+    """
     by_route = costs.split_usage_cost_by_route(usage)
     if not by_route:
         return [costs.make_entry(feature, 0.0, detail, pool="meta")]
-    return [
-        costs.make_entry(
-            feature, spark_usd + wonder_usd, detail, pool=route
-        )
-        for route, (spark_usd, wonder_usd) in sorted(
+    entries = [
+        costs.make_entry(feature, spark_usd, detail, pool=route)
+        for route, (spark_usd, _wonder_usd) in sorted(
             by_route.items(), key=lambda item: costs.POOL_ORDER[item[0]]
         )
     ]
+    wonder_usd = sum(pair[1] for pair in by_route.values())
+    if wonder_usd > 0:
+        entries.append(
+            costs.make_entry("wonder", wonder_usd, detail, pool="meta")
+        )
+    return entries
 
 
 def _first_edit_cost_entries(
@@ -3220,7 +3337,13 @@ def _run_direction_pass(
         _record_gold_spans(
             config,
             _gold_candidates_from_direction(
-                page_operations, audit.get("verdicts") or [], words
+                page_operations,
+                audit.get("verdicts") or [],
+                words,
+                protected_ranges=[
+                    (span["word_start"], span["word_end"])
+                    for span in timeline.protected_spans(profile)
+                ],
             ),
         )
         summary["gold"] = len(_open_gold_spans(config))
@@ -3311,17 +3434,21 @@ def _run_direction_pass(
 # structural problem) still refuses, gold or not.
 GOLD_SOFT_HOLDS = {"negation_bearing_span", "wonder_review_required"}
 
+# Held-span reasons (v0.9.0): one plain sentence each, naming the
+# repeated words and the one call the creator has to make, so the
+# sentence can be acted on without being parsed first.
 _GOLD_REASON_NEGATION = (
-    "This part includes a negative statement. Changing a negative "
-    "can change the meaning, so the editor leaves this one to you."
+    "The editor recommends cutting this repeated part, but it "
+    "includes a negative statement, so check the meaning before "
+    "you decide."
 )
 _GOLD_REASON_HELD = (
-    "This is a bigger change, so the editor held it for your eyes "
-    "before it counts."
+    "The editor recommends removing these words, but the change "
+    "is a big one, so you decide whether they go."
 )
 _GOLD_REASON_RETAKE_HELD = (
-    "The editor measured this as a retake, and the safety check "
-    "held the cut, so this one is yours to call."
+    "This earlier take is said again right after, so the editor "
+    "recommends cutting it and leaves the call to you."
 )
 
 _GOLD_PATTERN_DESCRIPTIONS = {
@@ -3456,14 +3583,17 @@ def _mode_and_gold_lines(config: WebAppConfig, settings: dict) -> list:
     if mode == "tailor":
         if count:
             lines.append(
-                f"{spots} in gold "
+                f"{spots} marked as recommended to remove "
                 f"{'are' if count != 1 else 'is'} waiting for your call."
             )
         else:
-            lines.append("No spots are waiting in gold.")
+            lines.append(
+                "No spots are marked as recommended to remove."
+            )
     elif count:
         lines.append(
-            f"{spots} in gold for when you want "
+            f"{spots} marked as recommended to remove, "
+            f"for when you want "
             f"{'them' if count != 1 else 'it'}."
         )
     return lines
@@ -3604,8 +3734,95 @@ def _negation_policy(settings: dict, direction_text: str, flipped: list):
     return adjust
 
 
+def _split_around_protected(start: int, end: int, protected_ranges) -> list:
+    """The pieces of [start, end) that no protected span touches.
+
+    Protected material always wins: a held span that reaches into
+    a protected part narrows around it, and only the unprotected
+    pieces are ever offered for a call.
+    """
+    pieces = [(start, end)]
+    for p_start, p_end in protected_ranges or ():
+        narrowed = []
+        for piece_start, piece_end in pieces:
+            if p_end <= piece_start or piece_end <= p_start:
+                narrowed.append((piece_start, piece_end))
+                continue
+            if piece_start < p_start:
+                narrowed.append((piece_start, p_start))
+            if p_end < piece_end:
+                narrowed.append((p_end, piece_end))
+        pieces = narrowed
+    return [(s, e) for s, e in pieces if s < e]
+
+
+def _narrow_held_span(
+    words: list,
+    start: int,
+    end: int,
+    reference_indices,
+    protected_ranges=(),
+    min_run: int = 2,
+) -> list:
+    """Narrow a held span to the words that are actually repeated.
+
+    A held span can cover far more than the repeated words (one
+    hold over a whole hook, when only one clause in it is said
+    again later). The span is matched, word for word, against the
+    words it repeats (``reference_indices``: the take that stays,
+    or every word outside the span); each matching run of at
+    least ``min_run`` words becomes its own held span, so a part
+    that should stay and a part that should go are never settled
+    together. Protected words are cut out of every piece. When
+    no run qualifies, the span stands as it was (still narrowed
+    around protected words): a hold is never lost just because
+    its repeat is not exact, and a span that merely shares short
+    fragments with other sentences is never shredded into them.
+    """
+    if end - start < 2:
+        return _split_around_protected(start, end, protected_ranges)
+    span_tokens = [
+        _norm_word(str(words[i].get("word") or ""))
+        for i in range(start, end)
+    ]
+    reference_tokens = [
+        _norm_word(str(words[i].get("word") or ""))
+        for i in reference_indices
+    ]
+    if not reference_tokens or any(token == "" for token in span_tokens):
+        return _split_around_protected(start, end, protected_ranges)
+    matcher = SequenceMatcher(
+        None, span_tokens, reference_tokens, autojunk=False
+    )
+    runs = []
+    for block in matcher.get_matching_blocks():
+        if block.size >= min_run:
+            runs.append((start + block.a, start + block.a + block.size))
+    if not runs:
+        return _split_around_protected(start, end, protected_ranges)
+    runs.sort()
+    merged = [runs[0]]
+    for run_start, run_end in runs[1:]:
+        last_start, last_end = merged[-1]
+        if run_start <= last_end:
+            merged[-1] = (last_start, max(last_end, run_end))
+        else:
+            merged.append((run_start, run_end))
+    pieces = []
+    for run_start, run_end in merged:
+        pieces.extend(
+            _split_around_protected(run_start, run_end, protected_ranges)
+        )
+    return pieces or _split_around_protected(
+        start, end, protected_ranges
+    )
+
+
 def _gold_candidates_from_direction(
-    page_operations: list, verdict_dicts: list, words: list
+    page_operations: list,
+    verdict_dicts: list,
+    words: list,
+    protected_ranges=(),
 ) -> list:
     """Gold spans for the direction pass's held operations.
 
@@ -3616,6 +3833,13 @@ def _gold_candidates_from_direction(
     before: gold is for judgment calls, not for safety rails. The
     model's own flag_for_review proposals are not held operations
     and never become gold.
+
+    Each span is narrowed to the words that are actually repeated
+    before it is recorded (v0.9.0): a span that mixes words that
+    stay with a clause that is said again is split, and each part
+    is offered, and settled, on its own. A cut_words operation
+    narrows with its span, so a verdict cuts exactly the words
+    the span shows.
     """
     candidates = []
     for entry, verdict in zip(page_operations, verdict_dicts):
@@ -3646,38 +3870,67 @@ def _gold_candidates_from_direction(
             for key, value in entry.items()
             if key not in ("status", "plain_action", "negation_policy")
         }
-        candidates.append(
-            {
-                "gold_id": _gold_id(start, end, kind),
-                "word_start": start,
-                "word_end": end,
-                "kind": kind,
-                "source": "direction",
-                "reason": (
-                    _GOLD_REASON_NEGATION
-                    if kind == "negation"
-                    else _GOLD_REASON_HELD
-                ),
-                "text": " ".join(
-                    str(words[i].get("word") or "")
-                    for i in range(start, end)
-                ),
-                "keep_text": None,
-                "keep_word_start": None,
-                "keep_word_end": None,
-                "pair_id": None,
-                "pair_key": None,
-                "operation": operation,
-                "status": "open",
-                "note": None,
-                "created_at": _utc_now(),
-                "decided_at": None,
-            }
-        )
+        if entry.get("type") == "cut_words":
+            # The reference here is the whole rest of the
+            # transcript, where short shared fragments ("i am
+            # not", "because the") are common accidents: only a
+            # run of four or more words counts as the repeated
+            # part. (A retake span is matched against its own
+            # paired keeper instead, where two words are evidence.)
+            pieces = _narrow_held_span(
+                words,
+                start,
+                end,
+                [i for i in range(len(words)) if not start <= i < end],
+                protected_ranges,
+                min_run=4,
+            )
+        else:
+            pieces = _split_around_protected(
+                start, end, protected_ranges
+            )
+        for piece_start, piece_end in pieces:
+            piece_operation = dict(operation)
+            if entry.get("type") == "cut_words":
+                piece_operation["word_start"] = piece_start
+                piece_operation["word_end"] = piece_end
+            elif entry.get("type") == "replace_take":
+                piece_operation["cut_word_start"] = piece_start
+                piece_operation["cut_word_end"] = piece_end
+            candidates.append(
+                {
+                    "gold_id": _gold_id(piece_start, piece_end, kind),
+                    "word_start": piece_start,
+                    "word_end": piece_end,
+                    "kind": kind,
+                    "source": "direction",
+                    "reason": (
+                        _GOLD_REASON_NEGATION
+                        if kind == "negation"
+                        else _GOLD_REASON_HELD
+                    ),
+                    "text": " ".join(
+                        str(words[i].get("word") or "")
+                        for i in range(piece_start, piece_end)
+                    ),
+                    "keep_text": None,
+                    "keep_word_start": None,
+                    "keep_word_end": None,
+                    "pair_id": None,
+                    "pair_key": None,
+                    "operation": piece_operation,
+                    "status": "open",
+                    "note": None,
+                    "created_at": _utc_now(),
+                    "decided_at": None,
+                }
+            )
     return candidates
 
 
-def _gold_candidates_from_retakes(pairs: list, words: list) -> list:
+def _gold_candidates_from_retakes(
+    pairs: list, words: list, protected_ranges=()
+) -> list:
     """Gold spans for the retake pass's unapplied suspicions.
 
     A pair the pass flagged (a policy hold, or a borderline pair no
@@ -3685,6 +3938,11 @@ def _gold_candidates_from_retakes(pairs: list, words: list) -> list:
     same shape to the creator: the editor thinks this is a retake
     and could not settle it. Pairs the model judged and settled
     (keep both, not a pair) are decisions already, not gold.
+
+    Each span is narrowed to the words the take that stays
+    actually repeats (v0.9.0): a cut side that runs past the
+    repeated words is split, and each repeated part is offered,
+    and settled, on its own.
     """
     candidates = []
     for pair in pairs:
@@ -3704,27 +3962,45 @@ def _gold_candidates_from_retakes(pairs: list, words: list) -> list:
         else:
             reason = _GOLD_REASON_RETAKE_HELD
         keep = pair.get("keep") or {}
-        candidates.append(
-            {
-                "gold_id": _gold_id(start, end, "retake"),
-                "word_start": start,
-                "word_end": end,
-                "kind": "retake",
-                "source": "retakes",
-                "reason": reason,
-                "text": str(cut.get("text") or ""),
-                "keep_text": keep.get("text"),
-                "keep_word_start": keep.get("word_start"),
-                "keep_word_end": keep.get("word_end"),
-                "pair_id": pair.get("pair_id"),
-                "pair_key": retakes.pair_key(pair),
-                "operation": None,
-                "status": "open",
-                "note": None,
-                "created_at": _utc_now(),
-                "decided_at": None,
-            }
-        )
+        keep_start = keep.get("word_start")
+        keep_end = keep.get("word_end")
+        if isinstance(keep_start, int) and isinstance(keep_end, int):
+            pieces = _narrow_held_span(
+                words,
+                start,
+                end,
+                list(range(keep_start, keep_end)),
+                protected_ranges,
+            )
+        else:
+            pieces = _split_around_protected(
+                start, end, protected_ranges
+            )
+        for piece_start, piece_end in pieces:
+            candidates.append(
+                {
+                    "gold_id": _gold_id(piece_start, piece_end, "retake"),
+                    "word_start": piece_start,
+                    "word_end": piece_end,
+                    "kind": "retake",
+                    "source": "retakes",
+                    "reason": reason,
+                    "text": " ".join(
+                        str(words[i].get("word") or "")
+                        for i in range(piece_start, piece_end)
+                    ),
+                    "keep_text": keep.get("text"),
+                    "keep_word_start": keep.get("word_start"),
+                    "keep_word_end": keep.get("word_end"),
+                    "pair_id": pair.get("pair_id"),
+                    "pair_key": retakes.pair_key(pair),
+                    "operation": None,
+                    "status": "open",
+                    "note": None,
+                    "created_at": _utc_now(),
+                    "decided_at": None,
+                }
+            )
     return candidates
 
 
@@ -3767,7 +4043,7 @@ def _gold_verdict(
                 "comment_id": "gold-verdict",
                 "word_start": start,
                 "word_end": end,
-                "reason": "You looked at this spot in gold and said to cut it.",
+                "reason": "You looked at this spot, which the editor recommended removing, and said to cut it.",
                 "confidence": 1.0,
                 "model": "mock",
                 "risk_tier": 3,
@@ -3869,7 +4145,9 @@ def _gold_verdict(
     _save_gold(config, records)
     checkpoints.commit(
         config,
-        "Gold spot cut" if decision == "cut" else "Gold spot left in",
+        "Spot recommended to remove, cut"
+        if decision == "cut"
+        else "Spot recommended to remove, left in",
     )
     return {
         "ok": True,
@@ -4440,7 +4718,14 @@ def _run_retake_pass(
     # wait in gold for the creator's call.
     _record_gold_spans(
         config,
-        _gold_candidates_from_retakes(record["pairs"], timeline.words),
+        _gold_candidates_from_retakes(
+            record["pairs"],
+            timeline.words,
+            protected_ranges=[
+                (span["word_start"], span["word_end"])
+                for span in timeline.protected_spans(profile)
+            ],
+        ),
     )
     return summary
 
@@ -4776,6 +5061,83 @@ def _state_summary(summary: Optional[dict]) -> dict:
         }
 
 
+def _format_clock(seconds: float) -> str:
+    """Seconds as the progress line shows them: "0:07", "12:40"."""
+    total = max(0, int(round(float(seconds or 0.0))))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _progress_fields(
+    started_at: float,
+    stage_started_at: float,
+    index: int,
+    total: int,
+    now: Optional[float] = None,
+) -> dict:
+    """The run-progress numbers one stage carries (item 15).
+
+    Elapsed time is measured, never estimated: the whole run's
+    clock and the current step's own clock, both from the
+    monotonic timestamps the run recorded. The percentage is the
+    share of stages finished, the same count the step line has
+    always shown. The time remaining is computed from the run's
+    actual progress: the average time a finished stage has taken
+    so far, times the stages still to come. Before the first
+    stage finishes there is no honest average, so no remaining
+    figure is offered at all rather than a guess.
+    """
+    if now is None:
+        now = time.monotonic()
+    index = int(index or 0)
+    total = int(total or 0)
+    elapsed = (
+        max(0.0, now - started_at) if started_at is not None else 0.0
+    )
+    stage_elapsed = (
+        max(0.0, now - stage_started_at)
+        if stage_started_at is not None
+        else 0.0
+    )
+    percent = None
+    remaining = None
+    if total > 0 and index > 0:
+        percent = int(100.0 * min(index, total) / total + 0.5)
+        finished = index - 1
+        if finished > 0:
+            remaining = (elapsed / finished) * (total - index + 1)
+    return {
+        "elapsed_s": round(elapsed, 1),
+        "stage_elapsed_s": round(stage_elapsed, 1),
+        "percent": percent,
+        "remaining_s": (
+            round(remaining, 1) if remaining is not None else None
+        ),
+    }
+
+
+def _progress_line(fields: dict) -> str:
+    """One stage's progress as a single plain line (item 15).
+
+    "Step 3 of 8 · 38% · 0:42 so far · about 1:10 to go." The
+    remaining figure is an estimate from the run's own pace and
+    says "about"; a part with no honest value is left out rather
+    than filled with a guess.
+    """
+    parts = []
+    index = fields.get("stage_index")
+    total = fields.get("stage_total")
+    if index and total:
+        parts.append(f"Step {index} of {total}")
+    if fields.get("percent") is not None:
+        parts.append(f"{fields['percent']}%")
+    parts.append(f"{_format_clock(fields.get('elapsed_s') or 0)} so far")
+    if fields.get("remaining_s") is not None:
+        parts.append(
+            f"about {_format_clock(fields['remaining_s'])} to go"
+        )
+    return " · ".join(parts)
+
+
 def _run_first_edit(httpd, intake_id: str, direction_text: str,
                     captions_on: bool,
                     drop_settings: Optional[dict] = None) -> None:
@@ -4802,12 +5164,36 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
     video_path = base / record["video_rel"]
     job_root = video_path.parent
 
+    # The run's clocks (item 15): when the run started, and when
+    # the current stage started, both monotonic. Every stage
+    # carries the measured elapsed time, the percentage of stages
+    # finished, and a time remaining computed from the pace of
+    # the stages finished so far.
+    run_started_at = time.monotonic()
+    stage_marks = {"at": run_started_at}
+
     def stage(text: str, index: int, total: int) -> None:
         # The page shows the stage, its number, and how many there
-        # are: progress a person can see, not a gray button.
+        # are: progress a person can see, not a gray button. It
+        # also carries the run's measured progress (elapsed,
+        # percent, remaining), refreshed on the same write.
+        now = time.monotonic()
         state["stage"] = text
         state["stage_index"] = index
         state["stage_total"] = total
+        state["started_at"] = run_started_at
+        state["stage_started_at"] = now
+        stage_marks["at"] = now
+        state.update(
+            _progress_fields(run_started_at, now, index, total, now=now)
+        )
+        state["progress_line"] = _progress_line(
+            {
+                **state,
+                "stage_index": index,
+                "stage_total": total,
+            }
+        )
 
     def stage_total(settings: dict, has_direction: bool = False) -> int:
         return (
@@ -4832,7 +5218,13 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
     total = stage_total(standing, bool(direction_text.strip()))
 
     try:
-        stage("Listening to your video…", 1, total)
+        # Step copy names only what the step does (item 26): this
+        # step takes the sound out of the video, a quick step, and
+        # no step promises a long wait it does not take. The one
+        # honest length note in this run belongs to the local
+        # route's first-run model download, below, and the run's
+        # measured progress (item 15) carries the real timing.
+        stage("Taking the sound out of your video…", 1, total)
         media = speech.probe_media(video_path)
         work = job_root / FIRST_EDIT_WORK_NAME
         wav_path = work / "audio.wav"
@@ -4842,17 +5234,9 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
         route = _intake_word_route(httpd.config)  # type: ignore[attr-defined]
         if route is None:
             raise speech.TranscribeError(NO_ROUTE_MESSAGE)
-        minutes = duration / 60.0
-        long_note = ""
-        if minutes >= 5:
-            long_note = (
-                f" This video is about {minutes:.0f} minutes long, "
-                "so this step takes a while. Leave this page open."
-            )
         if route == "scribe":
             stage(
-                "Writing the words down with ElevenLabs Scribe…"
-                + long_note,
+                "Writing the words down with ElevenLabs Scribe…",
                 2,
                 total,
             )
@@ -4866,8 +5250,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             stage(
                 "Writing the words down on this computer. The "
                 "first time, the speech model downloads once "
-                "(about 150 MB), so this can take a few minutes."
-                + long_note,
+                "(about 150 MB), so this can take a few minutes.",
                 2,
                 total,
             )
@@ -5074,9 +5457,19 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             "direction": _state_summary(direction_summary),
         }
         state.update(
+            _progress_fields(
+                run_started_at,
+                stage_marks["at"],
+                total,
+                total,
+            )
+        )
+        state.update(
             {
                 "status": "done",
                 "stage": "The first edit is ready.",
+                "percent": 100,
+                "remaining_s": 0.0,
                 "job_name": job_root.name,
                 "engine": result["engine"],
                 "words": kept_before,
@@ -5272,8 +5665,9 @@ def _apply_word_range(
                     "why": "gold",
                     "gold_id": view.get("gold_id"),
                     "message": (
-                        "That spot is in gold, waiting for your "
-                        "call on its own card."
+                        "That spot is marked as recommended to "
+                        "remove, waiting for your call on its "
+                        "own card."
                     ),
                 }
             )
@@ -6046,14 +6440,26 @@ class _Handler(BaseHTTPRequestHandler):
             200, page.encode("utf-8"), "text/html; charset=utf-8"
         )
 
-    def _send_playback_pending(self, state: str) -> None:
+    def _send_playback_pending(
+        self, state: str, progress: Optional[int] = None
+    ) -> None:
         """The answer while a watchable copy is not ready: one
-        plain page, never the raw file in the copy's place."""
+        plain page, never the raw file in the copy's place. While
+        a copy builds, the page carries the converter's own
+        percent when one exists, the same number the in-app
+        surfaces show."""
         if state == "failed":
             self._send_plain_page(
                 503,
                 "This video cannot be shown here yet",
                 PLAYBACK_FAILED_MESSAGE,
+            )
+        elif isinstance(progress, int):
+            self._send_plain_page(
+                503,
+                PLAYBACK_GETTING_READY,
+                f"Getting your video ready to watch… {progress}%. "
+                + PLAYBACK_BUILDING_MESSAGE,
             )
         else:
             self._send_plain_page(
@@ -6076,7 +6482,8 @@ class _Handler(BaseHTTPRequestHandler):
         target = _playback_target(self.config, name)
         if target is None:
             self._send_playback_pending(
-                _playback_state(self.config, name)
+                _playback_state(self.config, name),
+                _playback_progress(self.config, name),
             )
             return
         self._serve_file_with_range(target, _video_content_type(target))
@@ -6092,7 +6499,8 @@ class _Handler(BaseHTTPRequestHandler):
             target = _playback_target(self.config, name)
             if target is None:
                 self._send_playback_pending(
-                    _playback_state(self.config, name)
+                    _playback_state(self.config, name),
+                    _playback_progress(self.config, name),
                 )
                 return
             self._serve_file_with_range(
@@ -6214,7 +6622,10 @@ class _Handler(BaseHTTPRequestHandler):
         served = _staged_playback_target(target)
         if served is None:
             self._send_playback_pending(
-                _playback_state_for(target, _staged_copy_path(target))
+                _playback_state_for(target, _staged_copy_path(target)),
+                _playback_progress_for(
+                    target, _staged_copy_path(target)
+                ),
             )
             return
         self._serve_file_with_range(served, _video_content_type(served))
@@ -6482,7 +6893,17 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
-        states[intake_id] = {"status": "working", "stage": "Starting…"}
+        states[intake_id] = {
+            "status": "working",
+            "stage": "Starting…",
+            "started_at": time.monotonic(),
+            "stage_started_at": time.monotonic(),
+            "elapsed_s": 0.0,
+            "stage_elapsed_s": 0.0,
+            "percent": None,
+            "remaining_s": None,
+            "progress_line": "0:00 so far",
+        }
         thread = threading.Thread(
             target=_run_first_edit,
             args=(
@@ -6508,9 +6929,20 @@ class _Handler(BaseHTTPRequestHandler):
         record = self._intakes().get(intake_id)
         if record is not None and record.get("video_rel"):
             staged = Path(record["dir"]) / record["video_rel"]
-            payload["playback"] = _playback_state_for(
+            state = _playback_state_for(
                 staged, _staged_copy_path(staged)
             )
+            if state == "unstarted":
+                # The front-door poll starts a build that never
+                # started, the same rule as the job summary: this
+                # surface must never wait on nothing.
+                _ensure_playback_copy_for(
+                    staged, _staged_copy_path(staged)
+                )
+                state = _playback_state_for(
+                    staged, _staged_copy_path(staged)
+                )
+            payload["playback"] = state
             payload["playback_progress"] = _playback_progress_for(
                 staged, _staged_copy_path(staged)
             )
@@ -6876,20 +7308,52 @@ class _Handler(BaseHTTPRequestHandler):
             ):
                 self._error(400, f"comment {index} has a bad scope")
                 return
-            comments.append(
-                {
-                    "id": str(item.get("id") or f"c{index + 1}"),
-                    "ts": round(ts, 1),
-                    # A pinned time is an estimate, never a claim of
-                    # the exact frame: direction resolves it to the
-                    # nearest words within a few seconds either way.
-                    "time_is_estimate": True,
-                    "fmt": str(item.get("fmt") or "vertical"),
-                    "scope": _normalize_scope(item.get("scope")),
-                    "text": text,
-                    "done": bool(item.get("done", False)),
-                }
-            )
+            # A comment may be pinned to a word selection instead
+            # of a bare time (v0.9.0, item 20): the range is the
+            # note's target, stored with it and shown only there.
+            # Both ends or neither; a half range is rejected rather
+            # than guessed at, so a note can never land on words it
+            # was not written on.
+            word_start = item.get("word_start")
+            word_end = item.get("word_end")
+            if (word_start is None) != (word_end is None):
+                self._error(
+                    400,
+                    f"comment {index} has only half a word range",
+                )
+                return
+            stored = {
+                "id": str(item.get("id") or f"c{index + 1}"),
+                "ts": round(ts, 1),
+                # A pinned time is an estimate, never a claim of
+                # the exact frame: direction resolves it to the
+                # nearest words within a few seconds either way.
+                "time_is_estimate": True,
+                "fmt": str(item.get("fmt") or "vertical"),
+                "scope": _normalize_scope(item.get("scope")),
+                "text": text,
+                "done": bool(item.get("done", False)),
+            }
+            if word_start is not None:
+                try:
+                    word_start = int(word_start)
+                    word_end = int(word_end)
+                except (TypeError, ValueError):
+                    self._error(
+                        400, f"comment {index} has a bad word range"
+                    )
+                    return
+                if word_start < 0 or word_end <= word_start:
+                    self._error(
+                        400, f"comment {index} has a bad word range"
+                    )
+                    return
+                stored["word_start"] = word_start
+                stored["word_end"] = word_end
+                word_text = str(item.get("word_text") or "").strip()
+                if word_text:
+                    stored["word_text"] = word_text
+            comments.append(stored)
         if "overall_feedback" in body:
             overall, error = self._read_overall(body["overall_feedback"])
             if error is not None:

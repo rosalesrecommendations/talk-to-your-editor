@@ -63,6 +63,18 @@ its pool (Meta, Baseten credits, Fireworks credits, ElevenLabs,
 or this computer), the recap names a hosted pool on the line it
 paid for, and the money view keeps the pools apart so each
 pool's drain is visible on its own.
+
+The retake check (v0.9.0, FLAG C): the published price of about
+2 cents is the one Spark judgment call the pass makes, priced
+from the typicals below. The roughly 97 cents a real job once
+showed on that line was not that call: every judged cut used to
+be escalated to Wonder, one review call per cut, and the
+accounting folded those Wonder dollars into the retake line.
+The pass now makes the one Spark call only (the safety check
+holds any cut that needs a second review), and the accounting
+splits any Wonder usage a pass does record onto the Second
+review line, the way direction runs have always been split, so
+no feature's line can silently carry another model's money.
 """
 
 from __future__ import annotations
@@ -720,4 +732,64 @@ def estimate_run(
         "total_usd": total,
         "total_text": format_usd(total),
         "sentence": f"{opener} {format_usd(total)}.",
+        "explanation": estimate_explanation(
+            surface, settings, has_direction, route, spark_route
+        ),
     }
+
+
+def estimate_explanation(
+    surface: str,
+    settings: dict,
+    has_direction: bool,
+    route: str = "local",
+    spark_route: str = "meta",
+) -> str:
+    """Why the estimate is what it is, in plain words (item 25).
+
+    The number moves when the run's work changes, and the line
+    under the button has to say what changed it: writing direction
+    adds the direction read and its second review (the expensive
+    part), the retake check is one reading of the measured pairs,
+    and the words are written by ElevenLabs Scribe or on this
+    computer. The sentence names only the parts this run would
+    actually use, in the order they run, and names the hosted
+    pool when Spark work rides one, so the figure's movement as
+    the creator types, toggles, and picks a route is predictable.
+    """
+    settings = settings or {}
+    parts = []
+    if surface == "first_edit":
+        if route == "scribe":
+            parts.append(
+                "writing the words down with ElevenLabs Scribe"
+            )
+        else:
+            parts.append("writing the words down on this computer")
+    if settings.get("remove_retakes"):
+        parts.append("checking for retakes")
+    if has_direction:
+        parts.append(
+            "reading your direction and a second review of the "
+            "riskier changes"
+        )
+    if settings.get("remove_fillers"):
+        parts.append("taking out the ums and uhs on this computer")
+    if settings.get("cut_silence"):
+        parts.append("cutting the silence on this computer")
+    if not parts:
+        return "Nothing that costs anything is turned on for this edit."
+    text = "That covers " + ", ".join(parts) + "."
+    if has_direction:
+        text += (
+            " The second review is the biggest part. Clear the "
+            "direction box and the estimate drops to the checks "
+            "alone."
+        )
+    if spark_route in POOL_SUFFIX:
+        text += (
+            " The reading work runs on "
+            + POOL_LABELS[spark_route]
+            + "; the second review always runs on Meta."
+        )
+    return text

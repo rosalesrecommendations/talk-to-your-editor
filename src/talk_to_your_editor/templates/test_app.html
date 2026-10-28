@@ -121,6 +121,14 @@
     pointer-events: none;
     animation: vidPulse 1.8s ease-in-out infinite;
   }
+  /* The hidden attribute must win over the overlays' own display
+     (v0.9.0): .vid-loading and .vid-error set display:flex, which
+     beats the browser's built-in [hidden] rule, so in 0.8.x every
+     overlay showed at once, the stale "could not be played" text
+     ghosting behind "Getting your video ready" no matter what
+     setPlayerStatus did. This guard is what makes exactly one
+     player message able to show at a time. */
+  .vid-loading[hidden], .vid-error[hidden] { display: none; }
   .vid-error {
     position: absolute;
     inset: 0;
@@ -190,9 +198,12 @@
     outline-offset: 3px;
   }
   .clock { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-  .tl-wrap { margin: 4px 0 14px; }
+  .tl-wrap { margin: 4px 0 14px; min-width: 0; max-width: 100%; }
   .tl-track {
     position: relative;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
     height: 36px;
     background: rgba(120, 120, 128, 0.22);
     border: 0.5px solid rgba(255, 255, 255, 0.08);
@@ -309,18 +320,47 @@
   .remove-heading { font-size: 17px; font-weight: 700; margin: 16px 0 8px; }
   .remove-group { border-top: 0.5px solid var(--line); margin-top: 14px; padding-top: 4px; }
   /* The edit popup is a floating card (v0.7.0): it opens next to the
-     dot or flag that was picked, and scrolls inside itself. */
+     dot or flag that was picked, and scrolls inside itself.
+     v0.9.0: compact, sized to its content, with small inline
+     actions instead of full-width stacked buttons. */
   #editPopup {
     position: fixed;
-    width: min(320px, 92vw);
-    max-height: 45vh;
+    width: min(272px, 92vw);
+    max-height: 60vh;
     overflow-y: auto;
     z-index: 60;
     margin: 0;
+    padding: 10px 12px;
+    font-size: 14px;
     background: rgba(38, 38, 40, 0.97);
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
   #editPopup[hidden] { display: none; }
+  #editPopup .comment-text { font-size: 14px; line-height: 1.4; margin: 3px 0 5px; }
+  #editPopup .action, #editPopup .note { font-size: 13px; line-height: 1.4; }
+  #editPopup .status-line { font-size: 13px; min-height: 0; margin: 5px 0 0; }
+  #editPopup .row { gap: 6px; margin: 6px 0; flex-wrap: wrap; }
+  #editPopup button {
+    min-height: 30px;
+    padding: 4px 10px;
+    font-size: 13px;
+    flex: 0 0 auto;
+  }
+  #editPopup textarea { width: 100%; font-size: 14px; margin-top: 6px; }
+  #editPopupTitle { font-weight: 600; font-size: 14px; }
+  /* The comment button the timeline surfaces at the spot that was
+     clicked (v0.9.0, item 20). */
+  .tl-wrap { position: relative; }
+  .tl-comment-btn {
+    position: absolute;
+    top: -34px;
+    transform: translateX(-50%);
+    min-height: 28px;
+    padding: 3px 10px;
+    font-size: 13px;
+    z-index: 6;
+    white-space: nowrap;
+  }
   /* Transcript panel (v0.7.0): lines with time chips, a pinned header,
      and an action strip for the words picked. */
   .tx-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-top: 10px; }
@@ -361,7 +401,7 @@
      exactly today's sequence. */
   @media (max-width: 1023.98px) {
     main { display: flex; flex-direction: column; }
-    .review-split, .review-left, .review-right { display: contents; }
+    .review-split, .review-left, .review-right, .review-tools { display: contents; }
     #pinCard { order: 31; }
     #list { order: 32; }
     #overallCard { order: 33; }
@@ -423,25 +463,33 @@
     cursor: pointer;
   }
   .tflag::after { content: ""; position: absolute; inset: -6.5px; border-radius: 50%; }
-  /* Gold opportunities (v0.7.1): the spots a pass was not sure
-     about wash gold in the transcript, with a gold marker of their
-     own, distinct from the blue edit dots and the amber flags. */
-  .tgold {
+  /* Held spots, recommended to remove (v0.9.0, reversing the
+     v0.7.1 gold choice on Justin's word): the spots a pass was
+     not sure about wash light red in the transcript, with a
+     light red marker of their own, distinct from the blue edit
+     dots and the amber flags, so the color itself reads as
+     "recommended to remove". */
+  .theld {
     position: relative;
     display: inline-block;
     width: 15px; height: 15px;
     min-height: 0; padding: 0;
     border-radius: 50%;
-    background: rgba(227, 179, 65, 0.16);
-    border: 1.5px solid #e3b341;
-    color: #e3b341;
+    background: rgba(255, 120, 110, 0.16);
+    border: 1.5px solid #ff8a80;
+    color: #ff8a80;
     font-size: 9px; line-height: 1;
     vertical-align: middle;
     margin: 0 3px;
     cursor: pointer;
   }
-  .tgold::after { content: ""; position: absolute; inset: -6.5px; border-radius: 50%; }
-  .tw-gold { background: rgba(227, 179, 65, 0.20); box-shadow: inset 0 -2px 0 rgba(227, 179, 65, 0.85); }
+  .theld::after { content: ""; position: absolute; inset: -6.5px; border-radius: 50%; }
+  .tw-held { background: rgba(255, 120, 110, 0.22); box-shadow: inset 0 -2px 0 rgba(255, 120, 110, 0.85); }
+  /* Follow state (v0.9.0): the control always says which state
+     it is in. Paused is a filled, clearly different button, so
+     tracking never stops silently. */
+  #txFollow { min-height: 40px; padding: 8px 14px; font-size: 14px; }
+  #txFollow.follow-paused { background: var(--amber); color: #1c1c1e; font-weight: 700; }
   .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); cursor: pointer; min-height: 44px; }
   .switch input {
     appearance: none;
@@ -668,273 +716,126 @@
     video { box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42); }
     .tl-tip { max-width: 200px; }
   }
+
+  /* ==== v0.9.0 Cluster 2: front door, layout, progressive disclosure ==== */
+  [hidden] { display: none !important; }
+  /* Type scale (item 24): size and weight track importance. */
+  h1 { font-size: 32px; }
+  h2 { font-size: 20px; }
+  h3 { font-size: 17px; }
+  button.primary {
+    box-shadow: 0 8px 24px rgba(0, 122, 255, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  }
+  .hero-action { font-size: 17px; min-height: 56px; padding: 14px 30px; }
+  .app-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  .settings-btn { flex: none; margin-top: 10px; }
+  .settings-panel { border-color: rgba(10, 132, 255, 0.35); }
+  .settings-panel > .card { margin: 14px 0 0; }
+  .settings-summary { cursor: pointer; font-weight: 700; font-size: 17px; padding: 8px 0; }
+  /* Drop card slim bar (item 18): once a job is loaded the card
+     collapses to one bar; the full card returns on demand. */
+  #dropSlimBar { display: none; }
+  body.job-loaded #dropSlimBar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  body.job-loaded #dropCard { padding: 12px 18px; }
+  body.job-loaded #dropCard .drop-full { display: none; }
+  body.job-loaded #dropCard.expanded .drop-full { display: block; margin-top: 12px; }
+  .drop-slim-text { font-weight: 600; font-size: 15px; }
+  .drop-line { font-size: 15px; margin: 0 0 8px; }
+  details.more-info { margin-top: 10px; }
+  details.more-info summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  /* Hero (item 13): the direction box leads the first-edit screen. */
+  .hero {
+    border: 1px solid rgba(10, 132, 255, 0.38);
+    border-radius: 20px;
+    padding: 18px;
+    background: rgba(10, 132, 255, 0.07);
+  }
+  .hero-title { font-size: 24px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.015em; }
+  .hero textarea { font-size: 17px; }
+  /* Staged flow (item 16). */
+  .stages-panel { margin-top: 18px; }
+  .stages-title { margin: 0 0 4px; }
+  .stage-row { display: flex; gap: 12px; padding: 10px 0; border-top: 0.5px solid var(--line); }
+  .stage-num {
+    flex: none; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--sent-gradient); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px; margin-top: 2px;
+  }
+  .stage-body { flex: 1; min-width: 0; }
+  .stage-title { font-weight: 600; margin: 2px 0 0; }
+  .stage-timeline { position: relative; height: 14px; border-radius: 999px; background: rgba(120, 120, 128, 0.25); margin-top: 10px; }
+  .stage-tick { position: absolute; top: 2px; width: 3px; height: 10px; background: #fff; border-radius: 2px; transform: translateX(-50%); }
+  /* Tool rows (items 11 and 12): compact rows; options only when
+     the row is opened; a tool that is off collapses completely. */
+  .tool-row { border-top: 0.5px solid var(--line); padding: 10px 0 4px; }
+  .tool-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .tool-head .switch { min-height: 36px; font-size: 15px; font-weight: 600; color: var(--text); }
+  .tool-name { font-weight: 600; font-size: 15px; }
+  .tool-summary { color: var(--muted); font-size: 13px; }
+  .tool-off .tool-summary { opacity: 0.6; }
+  .tool-open { margin-left: auto; min-height: 36px; padding: 6px 14px; font-size: 13px; }
+  .tool-options { padding: 2px 0 8px; }
+  .pass-row { display: flex; gap: 10px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  .pass-btn { min-height: 40px; padding: 8px 14px; font-size: 14px; }
+  /* Front door on desktop (item 9): hero and stages in the main
+     column, the Remove tools in a side panel. */
+  @media (min-width: 900px) {
+    body.no-job main { max-width: 1180px; }
+    #firstEditBlock:not([hidden]) {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      grid-template-areas: "hero tools" "stages tools";
+      gap: 4px 22px;
+      align-items: start;
+    }
+    #directionHero { grid-area: hero; }
+    #stagedFlow { grid-area: stages; }
+    #inRemoveGroup { grid-area: tools; margin-top: 0; }
+  }
+  /* One-screen workspace (item 14): the review fits the window,
+     panes scroll inside themselves, dividers resize them. */
+  .pane-divider { display: none; }
+  @media (min-width: 1024px) {
+    body.job-loaded main {
+      max-width: 1600px; height: 100vh; height: 100dvh;
+      padding: 16px 18px 12px; display: flex; flex-direction: column; overflow: hidden;
+    }
+    body.job-loaded .subtitle { margin-bottom: 10px; }
+    body.job-loaded .review-split {
+      flex: 1 1 auto; min-height: 0; display: grid;
+      grid-template-columns: minmax(280px, var(--pane-a, 34%)) 12px minmax(280px, 1fr) 12px minmax(240px, var(--pane-c, 26%));
+      gap: 0; align-items: stretch; margin: 0;
+    }
+    body.job-loaded .review-left {
+      position: static; max-height: none; overflow-y: auto; min-height: 0; min-width: 0; padding: 2px 6px 8px 2px;
+    }
+    body.job-loaded .review-right { overflow: hidden; min-height: 0; min-width: 0; display: flex; padding: 2px 2px 8px 6px; }
+    body.job-loaded .review-right .card { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-bottom: 0; }
+    body.job-loaded .review-right #transcriptPanel { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
+    body.job-loaded .review-tools { overflow-y: auto; min-height: 0; min-width: 0; padding: 2px 2px 8px 6px; }
+    body.job-loaded .review-tools .card { margin-bottom: 16px; }
+    body.job-loaded .pane-divider {
+      display: block; width: 6px; justify-self: center; border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14); cursor: col-resize; touch-action: none;
+    }
+    body.job-loaded .pane-divider:hover, body.job-loaded .pane-divider:focus-visible { background: var(--accent); }
+  }
 </style>
 </head>
 <body>
 <main>
-  <h1>Talk to Your Editor</h1>
-  <p class="subtitle">{{SUBTITLE}}</p>
-
-  <div class="card" id="jobIncompleteBanner" hidden>
-    <h2>This job is not whole yet</h2>
-    <p class="note">That job is missing a file it needs. Drop the folder again, or try the built-in sample. Everything that works on the job stays out of sight until the job is whole, and comes back on its own when it is.</p>
-  </div>
-
-  <div class="card" id="dropCard">
-    <h2>Bring in a job</h2>
-    <p class="note">Drop a runner job folder anywhere on this page and the app takes it in and runs on it. No path typing, no Terminal. The app works on the copy it takes in; your original folder is never changed. A single video can be dropped too: it plays here, and the app can make its first edit itself.</p>
-    <div class="drop-area" id="dropArea">
-      <p class="drop-big">Drop the job folder or a video here</p>
-      <p class="note">or <button id="dropPickFolder" type="button">choose a folder</button> <button id="dropPickFiles" type="button">choose files</button></p>
-    </div>
-    <input type="file" id="dropFolderInput" webkitdirectory hidden>
-    <input type="file" id="dropFilesInput" multiple hidden>
-    <p class="status-line" id="dropStatus"></p>
-    <div id="dropVideoWrap" hidden>
-      <video id="dropVideo" controls playsinline preload="metadata"></video>
-    </div>
-    <div id="firstEditBlock" hidden>
-      <div class="remove-group" id="inRemoveGroup">
-        <h3 class="remove-heading">Remove</h3>
-        <div>
-          <label class="switch"><input type="checkbox" id="inRetakes" checked> Retakes</label>
-          <p class="fd-note" id="inRetakesNote">When a line is said more than once, the last take stays.</p>
-          <div class="row" id="inKeepPills">
-            <button type="button" data-keep="last">The last take</button>
-            <button type="button" data-keep="first">The first clean take</button>
-            <button type="button" data-keep="best">Best delivery (Beta)</button>
-          </div>
-        </div>
-        <div>
-          <label class="switch"><input type="checkbox" id="inSilence" checked> Silence</label>
-          <p class="fd-note" id="inSilenceNote">Pauses over the buffer are shortened to the buffer. Every pause over that length is cut down the same way.</p>
-        </div>
-        <div class="row" id="inBufferRow">
-          <label for="inBufferRange">Silence left between words</label>
-          <input type="range" id="inBufferRange" min="0.05" max="0.5" step="0.05" value="0.2">
-          <input type="number" id="inBufferNum" min="0.05" max="0.5" step="0.05" value="0.2">
-          <span>seconds</span>
-        </div>
-        <p class="note">Breaths:</p>
-        <div class="row" id="inBreathsPills">
-          <button type="button" data-breaths="keep">Keep the natural breath</button>
-          <button type="button" data-breaths="trim">Trim breaths with the pause</button>
-        </div>
-        <p class="note" id="inBreathsNote"></p>
-        <div>
-          <p class="note">Filler words:</p>
-          <label class="switch"><input type="checkbox" id="inFillers"> Take out the ums and uhs</label>
-        </div>
-        <div>
-          <p class="note">How involved do you want to be?</p>
-          <div class="row" id="inModePills">
-            <button type="button" data-mode="cleanest">Cleanest cut</button>
-            <button type="button" data-mode="tailor">Tailor it with me</button>
-          </div>
-          <p class="note" id="inModeNote"></p>
-        </div>
-      </div>
-      <p class="note">Direction for the first edit, if you have any. Plain words are fine: "remove retakes, last take is the best take," or "keep the first clean take and leave 0.2 seconds of silence." What you say here outranks the saved choices for this video. Anything that is not one of the app's choices is saved as overall guidance for the model.</p>
-      <textarea id="intakeDirection" rows="2" placeholder="Direction for the first edit (you can leave this empty)"></textarea>
-      <div class="row">
-        <button id="intakeDictate" type="button">Dictate</button>
-        <button id="firstEditBtn" class="primary" type="button">Make the first edit</button>
-      </div>
-      <p class="note" id="firstEditCost"></p>
-      <p class="note">Captions come with the first edit, with ums and uhs hidden in the caption text only. The sound and the transcript keep them. You can change that where the captions are handed back, under Revised edit.</p>
-      <p class="status-line" id="firstEditStatus"></p>
-      <div id="firstEditProgress" hidden>
-        <p class="fe-stage" id="firstEditStageText"></p>
-        <div class="fe-track"><div class="fe-bar" id="firstEditBar"></div></div>
-        <p class="note" id="firstEditStepCount"></p>
-      </div>
-      <div id="firstEditRecap"></div>
-    </div>
-    <p class="note" id="sampleRow">Just looking around? <button id="loadSample" type="button">Try the built-in sample</button> <span id="sampleStatus"></span></p>
-  </div>
-
-  <div class="card job-only" id="novid" hidden>
-    <h2>No video in this job folder</h2>
-    <p class="note">There is no video file here (mp4, mov, or m4v), so there is nothing to play. You can still pin comments by typing a time in seconds.</p>
-  </div>
-
-  <div class="review-split" id="reviewSplit">
-  <div class="review-left">
-  <div class="vid-wrap job-only" id="vidWrap">
-    <video id="vid" controls playsinline preload="metadata"></video>
-    <div class="vid-loading" id="vidLoading" hidden>Loading the video…</div>
-    <div class="vid-error" id="vidError" hidden>This video could not be played here; the file may be in a format this browser cannot show.</div>
-    <div class="vid-error" id="vidPending" hidden>Getting your video ready to watch… A long video can take a few minutes.</div>
-  </div>
-  <div class="tl-wrap job-only" id="tlbar">
-    <div class="tl-track" id="tlTrack">
-      <div id="tlDots"></div>
-      <div class="tl-playhead" id="tlPlayhead" style="left: 0%"></div>
-      <div class="tl-bubble" id="tlBubble" hidden></div>
-    </div>
-  </div>
-  <div class="row job-only" id="fmtRow">
-    <button id="btnV" class="on" type="button">Vertical (9:16)</button>
-    <button id="btnL" type="button">Landscape (16:9)</button>
-    <button id="back5" type="button">Back 5s</button>
-    <button id="back1" type="button">Back 1s</button>
-    <span class="clock">Now at <b id="clock">0:00.0</b></span>
-  </div>
-  <p class="note job-only" id="fmtNote" hidden></p>
-  <p class="note job-only" id="shortcutLine"><span>Shortcuts: Space play or pause · K pause · J back 5 seconds · L forward 5 seconds · ←/→ step 1 second · Shift+←/→ step 5 seconds · M pin a note here.</span><label class="switch"><input type="checkbox" id="shortcutToggle" checked> Keyboard shortcuts</label></p>
-
-  <div class="card job-only" id="makeEditCard">
-    <h2>Make the edit</h2>
-    <p class="note">Choices, on unless you turn them off. Set them while you watch, then make the edit. The choices are: remove retakes, cut silence, and take out filler words.</p>
-    <h3 class="remove-heading">Remove</h3>
+  <header class="app-head">
     <div>
-      <label class="switch"><input type="checkbox" id="fdRetakes" checked> Remove retakes</label>
-      <p class="fd-note" id="fdRetakesNote">When a line is said more than once, the last take stays.</p>
+      <h1>Talk to Your Editor</h1>
+      <p class="subtitle">{{SUBTITLE}}</p>
     </div>
-    <div>
-      <label class="switch"><input type="checkbox" id="fdSilence" checked> Cut silence</label>
-      <p class="fd-note">Pauses over the buffer are shortened to the buffer. Every pause over that length is cut down the same way.</p>
-    </div>
-    <div class="row" id="fdBufferRow">
-      <label for="fdBufferRange">Silence left between words</label>
-      <input type="range" id="fdBufferRange" min="0.05" max="0.5" step="0.05" value="0.2">
-      <input type="number" id="fdBufferNum" min="0.05" max="0.5" step="0.05" value="0.2">
-      <span>seconds</span>
-    </div>
-    <div>
-      <p class="note">Filler words:</p>
-      <label class="switch"><input type="checkbox" id="fdFillers"> Take out the ums and uhs</label>
-      <p class="fd-note">Filler words like um and uh are taken out of the edit, not just hidden in the captions.</p>
-    </div>
-    <div>
-      <p class="note">How involved do you want to be?</p>
-      <div class="row" id="fdModePills">
-        <button type="button" data-mode="cleanest">Cleanest cut</button>
-        <button type="button" data-mode="tailor">Tailor it with me</button>
-      </div>
-      <p class="note" id="fdModeNote"></p>
-    </div>
-    <div class="row">
-      <button id="fdFire" class="primary" type="button">Make the edit</button>
-    </div>
-    <p class="note" id="fdCostEstimate"></p>
-    <p class="status-line" id="fdStatus"></p>
-    <div id="fdResults"></div>
-    <details>
-      <summary>More choices</summary>
-      <div class="row">
-        <select id="fdScope" aria-label="Formats to make">
-          <option value="both" selected>Both formats</option>
-          <option value="vertical">Vertical only</option>
-          <option value="landscape">Landscape only</option>
-        </select>
-      </div>
-      <p class="note">When a line is said more than once, keep:</p>
-      <div class="row" id="fdKeepPills">
-        <button type="button" data-keep="last">The last take</button>
-        <button type="button" data-keep="first">The first clean take</button>
-        <button type="button" data-keep="best">Best delivery (Beta)</button>
-      </div>
-      <p class="note" id="fdBetaLine"></p>
-      <p class="note">Breaths:</p>
-      <div class="row" id="fdBreathsPills">
-        <button type="button" data-breaths="keep">Keep the natural breath</button>
-        <button type="button" data-breaths="trim">Trim breaths with the pause</button>
-      </div>
-      <p class="note" id="fdBreathsNote"></p>
-      <textarea id="fdDirection" rows="3" placeholder="Anything else for this video? What you say adds to the choices above. Say unless when one spot should be treated differently."></textarea>
-      <div class="row">
-        <button id="fdDictate" type="button">Dictate</button>
-        <span class="note" id="fdDictateStatus"></span>
-      </div>
-      <p class="note" id="fdProviderNote"></p>
-    </details>
-  </div>
+    <button id="settingsToggle" class="settings-btn" type="button" aria-expanded="false" aria-controls="settingsPanel">&#9881; Settings</button>
+  </header>
 
-  </div>
-  <div class="review-right">
-  <div class="card job-only" id="transcriptCard">
-    <h2>Transcript</h2>
-    <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Drag across words to pick a whole phrase, or click a word to pick it; the strip under the words cuts the pick or brings it back, and Backspace cuts it too. Clicking a struck-through phrase picks the whole phrase, so one click brings it back. Every change passes the same safety check as a direction change.</p>
-    <div class="tx-header">
-      <span class="tx-counts" id="txCounts"></span>
-      <label class="switch"><input type="checkbox" id="txFollow" checked> Follow the video</label>
-    </div>
-    <div id="transcriptPanel">
-      <p class="transcript" id="transcriptWords"></p>
-    </div>
-    <div id="txActionStrip" hidden>
-      <span id="txSelLabel"></span>
-      <button id="txCutBtn" type="button">Cut these words</button>
-      <button id="txRestoreBtn" type="button">Bring these words back</button>
-      <button id="txFixBtn" type="button">Fix the words</button>
-      <button id="txClearSel" type="button">Clear</button>
-      <span class="note">Drag picks a phrase · Backspace cuts it</span>
-    </div>
-    <p class="status-line" id="transcriptStatus"></p>
-    <div class="row">
-      <button id="fixWordsBtn" type="button">Fix words</button>
-    </div>
-    <div id="fixPanel" hidden>
-      <p class="note">Click the first word of the part to fix, then the last word, and retype the words exactly as they should read. One word can become two or three, or a few fragments can become one. Fixing words changes the words in the transcript only. The sound and the timing never change, and a video you build from the edit still shows the original words in its captions.</p>
-      <input id="fixText" type="text" placeholder="The corrected words">
-      <div class="row">
-        <button id="fixSave" class="primary" type="button">Save correction</button>
-        <button id="fixRemove" type="button" hidden>Remove correction</button>
-        <button id="fixDone" type="button">Done</button>
-      </div>
-    </div>
-  </div>
-  </div>
-  </div>
-
-  <div class="card job-only" id="pinCard">
-    <h2>Pin a comment</h2>
-    <div class="row">
-      <button id="pin" class="primary" type="button">Comment at current time</button>
-      <label class="note">or at <input id="manualTs" type="number" step="0.1" min="0" placeholder="sec"> seconds</label>
-    </div>
-    <textarea id="draft" rows="3" placeholder="What did you notice here? Type it, or dictate it with the button below."></textarea>
-    <div class="row">
-      <button id="draftDictate" type="button">Dictate</button>
-      <span class="note" id="draftDictateStatus"></span>
-    </div>
-    <p class="pin-note" id="pinNote"></p>
-    <div class="row">
-      <button id="save" class="primary" type="button">Save comment</button>
-      <select id="scope" aria-label="This comment applies to">
-        <option value="both" selected>Both formats</option>
-        <option value="vertical">Vertical only</option>
-        <option value="landscape">Landscape only</option>
-      </select>
-      <label class="switch"><input type="checkbox" id="keepPlaying"> Keep playing while I type</label>
-    </div>
-    <p class="status-line" id="saveStatus"></p>
-  </div>
-
-  <section id="list" class="job-only"></section>
-
-  <div class="card job-only" id="overallCard">
-    <h2>Overall feedback</h2>
-    <p class="note">Notes about the whole video, not tied to a moment, like "too many retakes in this one." Overall notes go along with every direction run, for both formats.</p>
-    <textarea id="overallDraft" rows="2" placeholder="What applies to the whole video?"></textarea>
-    <div class="row">
-      <button id="saveOverall" class="primary" type="button">Save overall note</button>
-      <button id="overallDictate" type="button">Dictate</button>
-      <span class="note" id="overallDictateStatus"></span>
-    </div>
-    <p class="status-line" id="overallStatus"></p>
-    <section id="overallList"></section>
-  </div>
-
-  <div class="card job-only" id="styleCard">
-    <h2>Your style</h2>
-    <p class="note">Rules you save here ride into every run as standing direction. Nothing is saved without your yes.</p>
-    <div id="ruleSuggestions"></div>
-    <div id="savedRulesList"></div>
-    <p class="empty" id="rulesEmpty">No saved rules yet. When a kind of change keeps working, you will be offered it here as a rule.</p>
-  </div>
-
+  <div class="card settings-panel" id="settingsPanel" hidden>
+    <h2>Settings</h2>
+    <p class="note">Standing choices live here, out of the way of the work. Your Remove choices and how involved you want to be are saved as your usual choices each time you make an edit, so they are already set this way when you come back.</p>
   <div class="card" id="directionCard">
     <h2 id="directionTitle">Run direction</h2>
     <p class="note job-only">Muse Spark proposes the edits, Muse Wonder reviews the risky ones, and the safety verifier decides what may change. Mock is a deterministic stand-in for trying the loop offline.</p>
@@ -987,6 +888,385 @@
     <p class="status-line" id="signinStatus"></p>
     <p class="status-line job-only" id="directStatus"></p>
     <div id="results" class="job-only"></div>
+  </div>
+  </div>
+
+  <div class="card" id="jobIncompleteBanner" hidden>
+    <h2>This job is not whole yet</h2>
+    <p class="note">That job is missing a file it needs. Drop the folder again, or try the built-in sample. Everything that works on the job stays out of sight until the job is whole, and comes back on its own when it is.</p>
+  </div>
+
+  <div class="card" id="dropCard">
+    <div id="dropSlimBar">
+      <span class="drop-slim-text">Job loaded. The review below belongs to this job.</span>
+      <button id="dropSlimToggle" type="button">Bring in another job</button>
+    </div>
+    <div class="drop-full" id="dropFull">
+    <h2>Bring in a job</h2>
+    <div class="drop-area" id="dropArea">
+      <p class="drop-big">Drop the job folder or a video here</p>
+      <p class="drop-line" id="dropAcceptsLine">One video: it plays here and you can make its first edit. A job folder: it opens as one job, ready to review.</p>
+      <p class="note">or <button id="dropPickFolder" type="button">choose a folder</button> <button id="dropPickFiles" type="button">choose files</button></p>
+    </div>
+    <details class="more-info">
+      <summary>How bringing in a job works</summary>
+      <p class="note">Drop anywhere on this page. No path typing, no Terminal. The app works on the copy it takes in; your original folder is never changed.</p>
+    </details>
+    <input type="file" id="dropFolderInput" webkitdirectory hidden>
+    <input type="file" id="dropFilesInput" multiple hidden>
+    <p class="status-line" id="dropStatus"></p>
+    <div id="dropVideoWrap" hidden>
+      <video id="dropVideo" controls playsinline preload="metadata"></video>
+    </div>
+    <div id="firstEditBlock" hidden>
+      <div class="hero" id="directionHero">
+        <h3 class="hero-title"><label for="intakeDirection">Describe your edit</label></h3>
+        <p class="note hero-note">Say what you want in plain words, or leave it empty and the Remove choices do the work.</p>
+        <textarea id="intakeDirection" rows="3" placeholder="What do you want in this edit? (you can leave this empty)"></textarea>
+        <div class="row">
+          <button id="intakeDictate" type="button">Dictate</button>
+          <button id="firstEditBtn" class="primary hero-action" type="button">Make the first edit</button>
+        </div>
+        <p class="note" id="firstEditCost"></p>
+        <p class="note" id="firstEditCostWhy"></p>
+        <details class="more-info">
+          <summary>About direction and captions</summary>
+          <p class="note">What you say here outranks the saved choices for this video. Anything that is not one of the app's choices is saved as overall guidance for the model. Captions come with the first edit, with ums and uhs hidden in the caption text only. The sound and the transcript keep them. You can change that where the captions are handed back, under Revised edit.</p>
+        </details>
+        <p class="status-line" id="firstEditStatus"></p>
+        <div id="firstEditProgress" hidden>
+          <p class="fe-stage" id="firstEditStageText"></p>
+          <div class="fe-track"><div class="fe-bar" id="firstEditBar"></div></div>
+          <p class="note" id="firstEditStepCount"></p>
+          <p class="note" id="firstEditProgressDetail"></p>
+        </div>
+        <div id="firstEditRecap"></div>
+      </div>
+      <div class="stages-panel" id="stagedFlow">
+        <h3 class="stages-title">The stages, in order</h3>
+        <div class="stage-row">
+          <span class="stage-num">1</span>
+          <div class="stage-body">
+            <p class="stage-title">Your video on its timeline</p>
+            <p class="note">The marks are every quarter of the video. No words are written down yet, and nothing has been cut.</p>
+            <div class="stage-timeline" id="stageTimeline" aria-hidden="true"></div>
+            <p class="note" id="stageTimelineLabel"></p>
+          </div>
+        </div>
+        <div class="stage-row">
+          <span class="stage-num">2</span>
+          <div class="stage-body">
+            <p class="stage-title">Write down the words</p>
+            <p class="note">Transcribe on its own if you want to read the words before any cuts are made. The words then open on the review screen.</p>
+            <div class="row"><button id="transcribeBtn" type="button">Transcribe</button></div>
+          </div>
+        </div>
+        <div class="stage-row">
+          <span class="stage-num">3</span>
+          <div class="stage-body">
+            <p class="stage-title">Run the Remove passes you want</p>
+            <p class="note">Retakes: when a line is said more than once, one take stays. Word gaps: pauses are shortened. Ums and uhs: filler words come out. Each one is its own row in the Remove panel, and after Transcribe each one is its own button on the review screen.</p>
+          </div>
+        </div>
+        <div class="stage-row">
+          <span class="stage-num">4</span>
+          <div class="stage-body">
+            <p class="stage-title">Make the edit from these stages</p>
+            <p class="note">Recommended: Make the first edit, above, runs every stage in this order in one go, through these same steps.</p>
+          </div>
+        </div>
+      </div>
+      <div class="remove-group tools-panel" id="inRemoveGroup">
+        <h3 class="remove-heading">Remove</h3>
+        <div class="tool-row" data-tool="retakes">
+          <div class="tool-head">
+            <label class="switch"><input type="checkbox" class="tool-toggle" id="inRetakes" checked> Remove retakes</label>
+            <span class="tool-summary">Last take stays (recommended)</span>
+            <button type="button" class="tool-open" aria-expanded="false">Options</button>
+          </div>
+          <div class="tool-options" hidden>
+            <p class="fd-note" id="inRetakesNote">When a line is said more than once, the last take stays.</p>
+            <div class="row" id="inKeepPills">
+              <button type="button" data-keep="last">The last take</button>
+              <button type="button" data-keep="first">The first clean take</button>
+              <button type="button" data-keep="best">Best delivery (Beta)</button>
+            </div>
+          </div>
+        </div>
+        <div class="tool-row" data-tool="silence">
+          <div class="tool-head">
+            <label class="switch"><input type="checkbox" class="tool-toggle" id="inSilence" checked> Word gaps (silence)</label>
+            <span class="tool-summary">Leave 0.2 seconds (recommended)</span>
+            <button type="button" class="tool-open" aria-expanded="false">Options</button>
+          </div>
+          <div class="tool-options" hidden>
+            <p class="fd-note" id="inSilenceNote">Pauses over the buffer are shortened to the buffer. Every pause over that length is cut down the same way.</p>
+            <div class="row" id="inBufferRow">
+              <label for="inBufferRange">Silence left between words</label>
+              <input type="range" id="inBufferRange" min="0.05" max="0.5" step="0.05" value="0.2">
+              <input type="number" id="inBufferNum" min="0.05" max="0.5" step="0.05" value="0.2">
+              <span>seconds</span>
+            </div>
+            <p class="note">Breaths:</p>
+            <div class="row" id="inBreathsPills">
+              <button type="button" data-breaths="keep">Keep the natural breath</button>
+              <button type="button" data-breaths="trim">Trim breaths with the pause</button>
+            </div>
+            <p class="note" id="inBreathsNote"></p>
+          </div>
+        </div>
+        <div class="tool-row" data-tool="fillers">
+          <div class="tool-head">
+            <label class="switch"><input type="checkbox" class="tool-toggle" id="inFillers"> Remove filler words</label>
+            <span class="tool-summary">Ums and uhs come out (recommended)</span>
+            <button type="button" class="tool-open" aria-expanded="false">Options</button>
+          </div>
+          <div class="tool-options" hidden>
+            <p class="fd-note">Filler words like um and uh are taken out of the edit, not just hidden in the captions.</p>
+          </div>
+        </div>
+        <div class="tool-row" data-tool="mode">
+          <div class="tool-head">
+            <span class="tool-name">How involved do you want to be?</span>
+            <span class="tool-summary">Cleanest cut (recommended)</span>
+            <button type="button" class="tool-open" aria-expanded="false">Options</button>
+          </div>
+          <div class="tool-options" hidden>
+            <div class="row" id="inModePills">
+              <button type="button" data-mode="cleanest">Cleanest cut</button>
+              <button type="button" data-mode="tailor">Tailor it with me</button>
+            </div>
+            <p class="note" id="inModeNote"></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note" id="sampleRow">Just looking around? <button id="loadSample" type="button">Try the built-in sample</button> <span id="sampleStatus"></span></p>
+    </div>
+
+  <div class="card job-only" id="novid" hidden>
+    <h2>No video in this job folder</h2>
+    <p class="note">There is no video file here (mp4, mov, or m4v), so there is nothing to play. You can still pin comments by typing a time in seconds.</p>
+  </div>
+
+  <div class="review-split" id="reviewSplit">
+  <div class="review-left">
+  <div class="vid-wrap job-only" id="vidWrap">
+    <video id="vid" controls playsinline preload="metadata"></video>
+    <div class="vid-loading" id="vidLoading" hidden>Loading the video…</div>
+    <div class="vid-error" id="vidError" hidden>This video could not be played here. The file could not be shown as a picture.</div>
+    <div class="vid-error" id="vidPending" hidden>Getting your video ready to watch…</div>
+  </div>
+  <div class="tl-wrap job-only" id="tlbar">
+    <button id="tlCommentBtn" class="tl-comment-btn" type="button" hidden>&#128172; Leave a comment here</button>
+    <div class="tl-track" id="tlTrack">
+      <div id="tlDots"></div>
+      <div class="tl-playhead" id="tlPlayhead" style="left: 0%"></div>
+      <div class="tl-bubble" id="tlBubble" hidden></div>
+    </div>
+  </div>
+  <div class="row job-only" id="fmtRow">
+    <button id="btnV" class="on" type="button">Vertical (9:16)</button>
+    <button id="btnL" type="button">Landscape (16:9)</button>
+    <button id="back5" type="button">Back 5s</button>
+    <button id="back1" type="button">Back 1s</button>
+    <button id="fwd1" type="button">Forward 1s</button>
+    <button id="fwd5" type="button">Forward 5s</button>
+    <span class="clock">Now at <b id="clock">0:00.0</b></span>
+  </div>
+  <p class="note job-only" id="fmtNote" hidden></p>
+  <p class="note job-only" id="shortcutLine"><span>Shortcuts: Space play or pause · K pause · J back 5 seconds · L forward 5 seconds · ←/→ step 1 second · Shift+←/→ step 5 seconds · M pin a note here · Cmd+Z undo · Cmd+Shift+Z redo.</span><label class="switch"><input type="checkbox" id="shortcutToggle" checked> Keyboard shortcuts</label></p>
+
+  <div class="card job-only" id="makeEditCard">
+    <h2>Make the edit</h2>
+    <p class="note">Watch, set the choices, then make the edit. The Remove choices live in exactly one place: Edit settings, right here.</p>
+    <details class="settings-details" id="editSettings">
+      <summary class="settings-summary">&#9881; Edit settings</summary>
+      <p class="note">These choices are saved as your usual choices, so they start this way next time too.</p>
+      <div class="tool-row" data-tool="retakes">
+        <div class="tool-head">
+          <label class="switch"><input type="checkbox" class="tool-toggle" id="fdRetakes" checked> Remove retakes</label>
+          <span class="tool-summary">Last take stays (recommended)</span>
+          <button type="button" class="tool-open" aria-expanded="false">Options</button>
+        </div>
+        <div class="tool-options" hidden>
+          <p class="fd-note" id="fdRetakesNote">When a line is said more than once, the last take stays.</p>
+          <div class="row" id="fdKeepPills">
+            <button type="button" data-keep="last">The last take</button>
+            <button type="button" data-keep="first">The first clean take</button>
+            <button type="button" data-keep="best">Best delivery (Beta)</button>
+          </div>
+          <p class="note" id="fdBetaLine"></p>
+        </div>
+      </div>
+      <div class="tool-row" data-tool="silence">
+        <div class="tool-head">
+          <label class="switch"><input type="checkbox" class="tool-toggle" id="fdSilence" checked> Word gaps (silence)</label>
+          <span class="tool-summary">Leave 0.2 seconds (recommended)</span>
+          <button type="button" class="tool-open" aria-expanded="false">Options</button>
+        </div>
+        <div class="tool-options" hidden>
+          <p class="fd-note">Pauses over the buffer are shortened to the buffer. Every pause over that length is cut down the same way.</p>
+          <div class="row" id="fdBufferRow">
+            <label for="fdBufferRange">Silence left between words</label>
+            <input type="range" id="fdBufferRange" min="0.05" max="0.5" step="0.05" value="0.2">
+            <input type="number" id="fdBufferNum" min="0.05" max="0.5" step="0.05" value="0.2">
+            <span>seconds</span>
+          </div>
+          <p class="note">Breaths:</p>
+          <div class="row" id="fdBreathsPills">
+            <button type="button" data-breaths="keep">Keep the natural breath</button>
+            <button type="button" data-breaths="trim">Trim breaths with the pause</button>
+          </div>
+          <p class="note" id="fdBreathsNote"></p>
+        </div>
+      </div>
+      <div class="tool-row" data-tool="fillers">
+        <div class="tool-head">
+          <label class="switch"><input type="checkbox" class="tool-toggle" id="fdFillers"> Remove filler words</label>
+          <span class="tool-summary">Ums and uhs come out (recommended)</span>
+          <button type="button" class="tool-open" aria-expanded="false">Options</button>
+        </div>
+        <div class="tool-options" hidden>
+          <p class="fd-note">Filler words like um and uh are taken out of the edit, not just hidden in the captions.</p>
+        </div>
+      </div>
+      <div class="tool-row" data-tool="mode">
+        <div class="tool-head">
+          <span class="tool-name">How involved do you want to be?</span>
+          <span class="tool-summary">Cleanest cut (recommended)</span>
+          <button type="button" class="tool-open" aria-expanded="false">Options</button>
+        </div>
+        <div class="tool-options" hidden>
+          <div class="row" id="fdModePills">
+            <button type="button" data-mode="cleanest">Cleanest cut</button>
+            <button type="button" data-mode="tailor">Tailor it with me</button>
+          </div>
+          <p class="note" id="fdModeNote"></p>
+        </div>
+      </div>
+      <div class="tool-row" data-tool="more">
+        <div class="tool-head">
+          <span class="tool-name">Formats and anything else</span>
+          <span class="tool-summary">Both formats (recommended)</span>
+          <button type="button" class="tool-open" aria-expanded="false">Options</button>
+        </div>
+        <div class="tool-options" hidden>
+          <div class="row">
+            <select id="fdScope" aria-label="Formats to make">
+              <option value="both" selected>Both formats</option>
+              <option value="vertical">Vertical only</option>
+              <option value="landscape">Landscape only</option>
+            </select>
+          </div>
+          <textarea id="fdDirection" rows="3" placeholder="Anything else for this video? What you say adds to the choices above. Say unless when one spot should be treated differently."></textarea>
+          <div class="row">
+            <button id="fdDictate" type="button">Dictate</button>
+            <span class="note" id="fdDictateStatus"></span>
+          </div>
+          <p class="note" id="fdProviderNote"></p>
+        </div>
+      </div>
+      <div class="pass-list" id="passList">
+        <p class="note">Or run one pass at a time. Each button sets the choices to just that pass and makes the edit:</p>
+        <div class="pass-row"><button type="button" class="pass-btn" id="passRetakesBtn">Remove retakes</button><span class="note">When a line is said more than once, the last take stays.</span></div>
+        <div class="pass-row"><button type="button" class="pass-btn" id="passSilenceBtn">Cut silence</button><span class="note">Pauses over the buffer are shortened to the buffer.</span></div>
+        <div class="pass-row"><button type="button" class="pass-btn" id="passFillersBtn">Take out the ums and uhs</button><span class="note">Filler words like um and uh come out of the edit.</span></div>
+      </div>
+    </details>
+    <div class="row">
+      <button id="fdFire" class="primary hero-action" type="button">Make the edit</button>
+    </div>
+    <p class="note" id="fdCostEstimate"></p>
+    <p class="note" id="fdCostWhy"></p>
+    <p class="status-line" id="fdStatus"></p>
+    <div id="fdResults"></div>
+  </div>
+
+  </div>
+  <div class="pane-divider" id="paneDivider" role="separator" aria-orientation="vertical" aria-label="Resize the video and transcript panes" tabindex="0"></div>
+  <div class="review-right">
+  <div class="card job-only" id="transcriptCard">
+    <h2>Transcript</h2>
+    <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Drag across words to pick a whole phrase, or click a word to pick just that word; the strip under the words cuts the pick or brings it back, and Backspace cuts it too. Clicking struck-through words picks exactly those words, so bringing words back brings back only what you picked. Cmd+Z undoes the last change, and Cmd+Shift+Z does it again. Every change passes the same safety check as a direction change.</p>
+    <div class="tx-header">
+      <span class="tx-counts" id="txCounts"></span>
+      <button id="txFollow" type="button" aria-pressed="true">Follow the video: on</button>
+    </div>
+    <div id="transcriptPanel">
+      <p class="transcript" id="transcriptWords"></p>
+    </div>
+    <div id="txActionStrip" hidden>
+      <span id="txSelLabel"></span>
+      <button id="txCutBtn" type="button">Cut these words</button>
+      <button id="txRestoreBtn" type="button">Bring these words back</button>
+      <button id="txCommentBtn" type="button">Leave a note on these words</button>
+      <button id="txFixBtn" type="button">Fix the words</button>
+      <button id="txClearSel" type="button">Clear</button>
+      <span class="note" id="txUndoHint">Cmd+Z to undo · Drag picks a phrase · Backspace cuts it</span>
+    </div>
+    <p class="status-line" id="transcriptStatus"></p>
+    <div class="row">
+      <button id="fixWordsBtn" type="button">Fix words</button>
+    </div>
+    <div id="fixPanel" hidden>
+      <p class="note">Click the first word of the part to fix, then the last word, and retype the words exactly as they should read. One word can become two or three, or a few fragments can become one. Fixing words changes the words in the transcript only. The sound and the timing never change, and a video you build from the edit still shows the original words in its captions.</p>
+      <input id="fixText" type="text" placeholder="The corrected words">
+      <div class="row">
+        <button id="fixSave" class="primary" type="button">Save correction</button>
+        <button id="fixRemove" type="button" hidden>Remove correction</button>
+        <button id="fixDone" type="button">Done</button>
+      </div>
+    </div>
+  </div>
+  </div>
+  <div class="pane-divider" id="toolsDivider" role="separator" aria-orientation="vertical" aria-label="Resize the transcript and tools panes" tabindex="0"></div>
+  <aside class="review-tools job-only" id="toolsPane" aria-label="More tools">
+  <div class="card job-only" id="pinCard">
+    <h2>Pin a comment</h2>
+    <div class="row">
+      <button id="pin" class="primary" type="button">Comment at current time</button>
+      <label class="note">or at <input id="manualTs" type="number" step="0.1" min="0" placeholder="sec"> seconds</label>
+    </div>
+    <textarea id="draft" rows="3" placeholder="What did you notice here? Type it, or dictate it with the button below."></textarea>
+    <div class="row">
+      <button id="draftDictate" type="button">Dictate</button>
+      <span class="note" id="draftDictateStatus"></span>
+    </div>
+    <p class="pin-note" id="pinNote"></p>
+    <div class="row">
+      <button id="save" class="primary" type="button">Save comment</button>
+      <select id="scope" aria-label="This comment applies to">
+        <option value="both" selected>Both formats</option>
+        <option value="vertical">Vertical only</option>
+        <option value="landscape">Landscape only</option>
+      </select>
+      <label class="switch"><input type="checkbox" id="keepPlaying"> Keep playing while I type</label>
+    </div>
+    <p class="status-line" id="saveStatus"></p>
+  </div>
+
+  <section id="list" class="job-only"></section>
+
+  <div class="card job-only" id="overallCard">
+    <h2>Overall feedback</h2>
+    <p class="note">Notes about the whole video, not tied to a moment, like "too many retakes in this one." Overall notes go along with every direction run, for both formats.</p>
+    <textarea id="overallDraft" rows="2" placeholder="What applies to the whole video?"></textarea>
+    <div class="row">
+      <button id="saveOverall" class="primary" type="button">Save overall note</button>
+      <button id="overallDictate" type="button">Dictate</button>
+      <span class="note" id="overallDictateStatus"></span>
+    </div>
+    <p class="status-line" id="overallStatus"></p>
+    <section id="overallList"></section>
+  </div>
+
+  <div class="card job-only" id="styleCard">
+    <h2>Your style</h2>
+    <p class="note">Rules you save here ride into every run as standing direction. Nothing is saved without your yes.</p>
+    <div id="ruleSuggestions"></div>
+    <div id="savedRulesList"></div>
+    <p class="empty" id="rulesEmpty">No saved rules yet. When a kind of change keeps working, you will be offered it here as a rule.</p>
   </div>
 
   <div class="card job-only" id="revisedCard">
@@ -1044,6 +1324,9 @@
     </div>
     <p class="status-line" id="historyStatus"></p>
   </div>
+  </aside>
+  </div>
+
 </main>
 
   <div class="comment" id="editPopup" role="dialog" hidden>
@@ -1070,11 +1353,8 @@
     <textarea id="editNoteText" rows="2" placeholder="Leave a note on this edit. It travels with the removed words into the next run."></textarea>
     <div class="row">
       <button id="editNoteSpeak" type="button">Dictate the note</button>
-      <button id="editNoteSave" class="primary" type="button">Save note</button>
+      <button id="editNoteSave" class="primary" type="button">Save</button>
       <button id="editPopupClose" type="button">Close</button>
-    </div>
-    <div class="row">
-      <button id="editNoteSpeakBrowser" type="button" hidden>Use the browser's voice typing instead</button>
     </div>
     <p class="status-line" id="editNoteStatus"></p>
   </div>
@@ -1103,6 +1383,29 @@
     document.body.classList.add("job-incomplete");
     var incompleteBanner = document.getElementById("jobIncompleteBanner");
     if (incompleteBanner) { incompleteBanner.hidden = false; }
+  }
+
+  if (HAS_JOB) {
+    document.body.classList.add("job-loaded");
+  }
+
+  var settingsToggle = document.getElementById("settingsToggle");
+  var settingsPanel = document.getElementById("settingsPanel");
+  if (settingsToggle && settingsPanel) {
+    settingsToggle.addEventListener("click", function () {
+      var open = settingsPanel.hidden;
+      settingsPanel.hidden = !open;
+      settingsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
+  var dropCardEl = document.getElementById("dropCard");
+  var dropSlimToggle = document.getElementById("dropSlimToggle");
+  if (dropSlimToggle && dropCardEl) {
+    dropSlimToggle.addEventListener("click", function () {
+      var expanded = dropCardEl.classList.toggle("expanded");
+      dropSlimToggle.textContent = expanded ? "Hide the bring-in card" : "Bring in another job";
+    });
   }
 
   var loadSampleBtn = document.getElementById("loadSample");
@@ -1165,11 +1468,12 @@
   var lastTxSync = 0;
   var currentWordIndex = null;
   var transcriptPanel = document.getElementById("transcriptPanel");
-  var txFollowEl = document.getElementById("txFollow");
+  var txFollowBtn = document.getElementById("txFollow");
   var txCountsEl = document.getElementById("txCounts");
   var txActionStrip = document.getElementById("txActionStrip");
   var txSelLabel = document.getElementById("txSelLabel");
   var txCutBtn = document.getElementById("txCutBtn");
+  var txCommentBtn = document.getElementById("txCommentBtn");
   var txRestoreBtn = document.getElementById("txRestoreBtn");
   var txFixBtn = document.getElementById("txFixBtn");
   var txClearSel = document.getElementById("txClearSel");
@@ -1183,6 +1487,12 @@
   var state = { comments: [], overall: [], outputDuration: 0 };
   var pinnedTs = null;
   var pinnedFmt = "vertical";
+  // A comment pinned to picked words (v0.9.0, item 20): the word
+  // range the note belongs to, or null for a plain time pin. The
+  // range rides with the saved comment, so the note is stored on
+  // and shown at exactly those words, nowhere else.
+  var pinnedWordStart = null;
+  var pinnedWordEnd = null;
   var draftWasEmpty = true;
   var curFmt = "vertical";
   var videos = [];
@@ -1234,7 +1544,7 @@
     if (playerStatus === "pending") { return; }
     setPlayerStatus(
       "error",
-      "This video could not be played here; the file may be in a format this browser cannot show."
+      "This video could not be played here. The file could not be shown as a picture."
     );
   });
 
@@ -1254,7 +1564,23 @@
 
   function tlDuration() {
     if (isFinite(vid.duration) && vid.duration > 0) { return vid.duration; }
+    // Before the file's own length is known, the source length is
+    // the honest scale for this clock: the transcript and the
+    // timeline both run on source time. The edit's shorter output
+    // length used to stand in here, which put the playhead and
+    // the "Now at" readout on two different scales (v0.9.0).
+    if (jobSourceDuration > 0) { return jobSourceDuration; }
     return state.outputDuration || 0;
+  }
+
+  // A position on the timeline strip, inset from both ends by
+  // half the marker that sits there, so the playhead, its knob,
+  // and the comment dots stay inside the strip at 0% and at
+  // 100% instead of hanging past its edges (v0.9.0).
+  function tlInsetLeft(frac, insetPx) {
+    frac = Math.max(0, Math.min(1, frac || 0));
+    return "calc(" + insetPx + "px + (100% - " + (insetPx * 2) +
+      "px) * " + frac + ")";
   }
 
   function seekTo(ts, fmt) {
@@ -1273,8 +1599,8 @@
 
   function updatePlayhead() {
     var d = tlDuration();
-    var pct = d > 0 ? (vid.currentTime / d) * 100 : 0;
-    tlPlayhead.style.left = Math.max(0, Math.min(100, pct)) + "%";
+    var frac = d > 0 ? (vid.currentTime / d) : 0;
+    tlPlayhead.style.left = tlInsetLeft(frac, 6);
   }
 
   function renderDots() {
@@ -1285,7 +1611,7 @@
       var dot = document.createElement("button");
       dot.type = "button";
       dot.className = "tl-dot";
-      dot.style.left = ((c.ts / d) * 100) + "%";
+      dot.style.left = tlInsetLeft(c.ts / d, 8);
       dot.setAttribute("aria-label", "Comment at " + fmtTime(c.ts) + ": " + c.text);
       var tip = document.createElement("span");
       tip.className = "tl-tip";
@@ -1299,6 +1625,33 @@
 
   var tlDragging = false;
   var tlBubble = document.getElementById("tlBubble");
+  // The comment button the timeline surfaces at the clicked spot
+  // (v0.9.0, item 20), and the time it points at.
+  var tlCommentBtn = document.getElementById("tlCommentBtn");
+  var tlCommentTs = null;
+  function showTimelineCommentButton(ts) {
+    if (!tlCommentBtn) { return; }
+    var d = tlDuration();
+    tlCommentTs = ts;
+    var pct = d > 0 ? (ts / d) * 100 : 0;
+    tlCommentBtn.style.left = Math.max(6, Math.min(94, pct)) + "%";
+    tlCommentBtn.hidden = false;
+  }
+  if (tlCommentBtn) {
+    // The track seeks on pointerdown; the button must not seek.
+    tlCommentBtn.addEventListener("pointerdown", function (e) { e.stopPropagation(); });
+    tlCommentBtn.addEventListener("click", function () {
+      if (tlCommentTs === null) { return; }
+      // A time pin: any word pin from an earlier note is over.
+      pinnedWordStart = null;
+      pinnedWordEnd = null;
+      pinDraft(tlCommentTs);
+      draft.placeholder = "Comment pinned at " + fmtTime(pinnedTs) + " (" + pinnedFmt + "). Type or dictate, then Save comment.";
+      var pinCard = document.getElementById("pinCard");
+      if (pinCard && pinCard.scrollIntoView) { pinCard.scrollIntoView({ block: "nearest" }); }
+      draft.focus();
+    });
+  }
   function tlSeekEvent(e) {
     var rect = tlTrack.getBoundingClientRect();
     if (!rect.width) { return; }
@@ -1309,7 +1662,10 @@
     vid.currentTime = Math.round(frac * d * 10) / 10;
     updatePlayhead();
     if (tlBubble) {
-      tlBubble.style.left = (frac * 100) + "%";
+      var halfBubble = Math.max(
+        24, (tlBubble.offsetWidth || 48) / 2
+      );
+      tlBubble.style.left = tlInsetLeft(frac, halfBubble);
       tlBubble.textContent = fmtTime(vid.currentTime);
     }
   }
@@ -1317,6 +1673,7 @@
     tlDragging = true;
     tlTrack.classList.add("scrubbing");
     if (tlBubble) { tlBubble.hidden = false; }
+    if (tlCommentBtn) { tlCommentBtn.hidden = true; }
     try { tlTrack.setPointerCapture(e.pointerId); } catch (err) {}
     tlSeekEvent(e);
   });
@@ -1327,6 +1684,9 @@
     tlDragging = false;
     tlTrack.classList.remove("scrubbing");
     if (tlBubble) { tlBubble.hidden = true; }
+    // Clicking (or scrubbing to) a spot surfaces the comment
+    // button right there (v0.9.0, item 20).
+    showTimelineCommentButton(vid.currentTime || 0);
   });
   tlTrack.addEventListener("pointercancel", function () {
     tlDragging = false;
@@ -1507,6 +1867,15 @@
       p.textContent = c.text;
       card.appendChild(header);
       card.appendChild(p);
+      if (typeof c.word_start === "number" && typeof c.word_end === "number") {
+        // A word-pinned comment is shown at its own words, with
+        // the words named, and nowhere else (item 20).
+        var target = document.createElement("p");
+        target.className = "action";
+        target.textContent = "On these words: \"" +
+          (c.word_text || spanTextFor(c.word_start, c.word_end)) + "\"";
+        card.appendChild(target);
+      }
       listEl.appendChild(card);
     });
   }
@@ -1608,7 +1977,7 @@
       }
       if (needLine) { startLine(w); }
       var span = document.createElement("span");
-      span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "") + (inGold(w) ? " tw-gold" : "");
+      span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "") + (inGold(w) ? " tw-held" : "");
       span.dataset.index = w.index;
       span.dataset.end = w.word_end || (w.index + 1);
       span.textContent = w.word;
@@ -1658,9 +2027,9 @@
           goldByLast[k].forEach(function (g) {
             var marker = document.createElement("button");
             marker.type = "button";
-            marker.className = "tgold";
+            marker.className = "theld";
             marker.textContent = "◆";
-            marker.setAttribute("aria-label", "The editor is not sure about this one: " + (g.reason || ""));
+            marker.setAttribute("aria-label", "Recommended to remove: " + (g.reason || ""));
             marker.setAttribute("aria-haspopup", "dialog");
             marker.setAttribute("aria-expanded", "false");
             wirePopupAnchor(marker, function (anchor) { openGoldPopup(g, anchor); });
@@ -1714,7 +2083,10 @@
       if (w.status === "cut") { anyCut = true; }
     });
     if (txSelLabel) {
-      txSelLabel.textContent = count + (count === 1 ? " word picked" : " words picked");
+      txSelLabel.textContent = count + (count === 1 ? " word picked" : " words picked") +
+        (anyCut && !anyKept
+          ? " — these words are cut"
+          : (anyKept && !anyCut ? " — these words are in the edit" : ""));
     }
     if (txCutBtn) { txCutBtn.disabled = !anyKept; }
     if (txRestoreBtn) { txRestoreBtn.disabled = !anyCut; }
@@ -1818,6 +2190,28 @@
     runSelectionToggle("cut");
   });
 
+  // Cmd+Z / Ctrl+Z undoes the last edit, and Cmd+Shift+Z /
+  // Ctrl+Shift+Z (or Ctrl+Y) does it again (v0.9.0, item 8):
+  // the keyboard route a Mac user reaches for first, working
+  // from anywhere on the page through the same History
+  // checkpoints the Undo and Redo buttons walk. When the focus
+  // is inside a text field or textarea, the field's own text
+  // undo wins and this handler stays out of the way, so typing
+  // a note is never undone by the app-level history.
+  document.addEventListener("keydown", function (e) {
+    var mod = e.metaKey || e.ctrlKey;
+    if (!mod || e.altKey) { return; }
+    var key = (e.key || "").toLowerCase();
+    var isUndoKey = key === "z" && !e.shiftKey;
+    var isRedoKey = (key === "z" && e.shiftKey) || (e.ctrlKey && key === "y");
+    if (!isUndoKey && !isRedoKey) { return; }
+    if (typingInField(e.target)) { return; }
+    if (isUndoKey && undoBtn && undoBtn.disabled) { return; }
+    if (isRedoKey && redoBtn && redoBtn.disabled) { return; }
+    e.preventDefault();
+    moveHistory(isUndoKey ? "undo" : "redo");
+  });
+
   // -- playback sync ------------------------------------------------------
   function syncTranscriptPlayback(force) {
     var now = Date.now();
@@ -1858,11 +2252,83 @@
     }
   }
 
+  // Follow (v0.9.0): the control is a button that always names
+  // its state. Following: the transcript tracks the playhead.
+  // Paused (after a manual scroll): the button turns amber and
+  // reads "Follow the video: paused — tap to go back to the
+  // playhead", so the
+  // paused state is visible and returning is one tap. Playback
+  // starting again never turns following back on by itself.
   function setFollow(on) {
     followOn = !!on;
-    if (txFollowEl) { txFollowEl.checked = followOn; }
+    if (txFollowBtn) {
+      txFollowBtn.textContent = followOn
+        ? "Follow the video: on"
+        : "Follow the video: paused — tap to go back to the playhead";
+      txFollowBtn.classList.toggle("follow-paused", !followOn);
+      txFollowBtn.setAttribute("aria-pressed", followOn ? "true" : "false");
+    }
     if (followOn) { syncTranscriptPlayback(true); }
   }
+
+  // -- play the edit as edited (v0.9.0) --------------------------------
+  // When the file in the player runs on the source clock (a lone
+  // video's first edit, where the player holds the original), the
+  // cut words are still in the file. Playing must skip them: cut
+  // parts are jumped over, kept parts play, and playback keeps
+  // going until pause. In 0.8.x nothing skipped, so playback
+  // rolled through the cut takes and appeared to stall around
+  // them while the kept take the creator wanted sat just past.
+  // A file whose own length is the shorter edited length is
+  // already the edit, so nothing is skipped in it.
+  var jobIsIntake = false;
+  function editPlaybackApplies() {
+    if (!transcriptEntries.length) { return false; }
+    var d = vid.duration;
+    if (!isFinite(d) || d <= 0) { return false; }
+    if (jobSourceDuration > 0) {
+      return Math.abs(d - jobSourceDuration) < 2.0;
+    }
+    return jobIsIntake;
+  }
+
+  function cutSkipRanges() {
+    var ranges = [];
+    transcriptEntries.forEach(function (w) {
+      if (w.status !== "cut") { return; }
+      if (typeof w.start !== "number" || typeof w.end !== "number") { return; }
+      if (!(w.end > w.start)) { return; }
+      var last = ranges[ranges.length - 1];
+      if (last && w.start <= last.end + 0.05) {
+        if (w.end > last.end) { last.end = w.end; }
+      } else {
+        ranges.push({ start: w.start, end: w.end });
+      }
+    });
+    return ranges;
+  }
+
+  function skipCutParts() {
+    if (vid.paused || vid.ended) { return false; }
+    if (!editPlaybackApplies()) { return false; }
+    var ct = vid.currentTime || 0;
+    var ranges = cutSkipRanges();
+    for (var i = 0; i < ranges.length; i++) {
+      var r = ranges[i];
+      if (ct >= r.start && ct < r.end) {
+        var d = vid.duration;
+        if (isFinite(d) && r.end >= d - 0.05) {
+          vid.pause();
+          return true;
+        }
+        vid.currentTime = r.end;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  vid.addEventListener("play", function () { skipCutParts(); });
 
   // -- word corrections -------------------------------------------------
   // In fix mode, clicks pick a run of neighboring words instead of
@@ -1996,7 +2462,7 @@
 
   transcriptEl.addEventListener("pointerdown", function (e) {
     if (fixMode) { return; }
-    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag") || e.target.closest(".tgold") || e.target.closest(".tx-chip"))) { return; }
+    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag") || e.target.closest(".theld") || e.target.closest(".tx-chip"))) { return; }
     var span = e.target && e.target.closest ? e.target.closest(".tw") : null;
     if (!span) { return; }
     var index = parseInt(span.dataset.index, 10);
@@ -2037,8 +2503,8 @@
   // Clicking a word outside fix mode seeks the video to the word
   // and picks it. Shift and click extends the pick from the first
   // picked word to the word clicked. Clicking a struck-through
-  // word picks its whole struck phrase, so bringing the phrase
-  // back is one click on the strip. Cutting and bringing back run
+  // word picks exactly that word, so bringing words back
+  // restores exactly the words picked. Cutting and bringing back run
   // from the strip under the panel, through one /api/word-range
   // post for the whole pick. In fix mode, clicks keep picking the
   // run for the correction editor.
@@ -2053,7 +2519,7 @@
       }
       return;
     }
-    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag") || e.target.closest(".tgold"))) { return; }
+    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag") || e.target.closest(".theld"))) { return; }
     var span = e.target && e.target.closest ? e.target.closest(".tw") : null;
     if (!span) { return; }
     if (dragJustEnded) { return; }
@@ -2075,29 +2541,13 @@
       if (index >= selStart && spanEnd <= selEnd) { /* inside the pick already */ }
       else if (index >= selStart && index < selEnd) { selEnd = spanEnd; }
     } else {
+      // A click picks exactly the word that was clicked, struck
+      // through or not (v0.9.0): picking struck words and
+      // bringing them back restores exactly those words, never
+      // the whole struck phrase around them. Dragging across
+      // struck words picks exactly the dragged run, the same way.
       selStart = index;
       selEnd = spanEnd;
-      // A click on a struck-through word picks its whole struck
-      // phrase: the unbroken run of cut entries around it.
-      // Dragging still picks exactly the dragged words, so a
-      // single word inside a run can be brought back on its own.
-      if (entry && entry.status === "cut") {
-        var pos = transcriptEntries.indexOf(entry);
-        var loPos = pos;
-        var hiPos = pos;
-        while (loPos > 0) {
-          var before = transcriptEntries[loPos - 1];
-          if (before.status !== "cut" || (before.word_end || (before.index + 1)) !== selStart) { break; }
-          loPos -= 1;
-          selStart = before.index;
-        }
-        while (hiPos >= 0 && hiPos < transcriptEntries.length - 1) {
-          var after = transcriptEntries[hiPos + 1];
-          if (after.status !== "cut" || after.index !== selEnd) { break; }
-          hiPos += 1;
-          selEnd = after.word_end || (after.index + 1);
-        }
-      }
     }
     refreshFixSelection();
     updateTxActionStrip();
@@ -2105,6 +2555,25 @@
   });
 
   if (txCutBtn) { txCutBtn.addEventListener("click", function () { runSelectionToggle("cut"); }); }
+  if (txCommentBtn) {
+    // Picked words get a comment button in the same strip
+    // (v0.9.0, item 20): tapping it opens the note editor in the
+    // Pin a comment card, pinned to exactly these words. Saving
+    // there stores the note with this word range as its target.
+    txCommentBtn.addEventListener("click", function () {
+      if (selStart === null || selEnd === null) { return; }
+      var picked = selectedEntries();
+      if (!picked.length) { return; }
+      pinnedWordStart = selStart;
+      pinnedWordEnd = selEnd;
+      var first = picked[0];
+      pinDraft(typeof first.start === "number" ? first.start : (vid.currentTime || 0));
+      draft.placeholder = "Comment pinned to these words. Type or dictate, then Save comment.";
+      var pinCard = document.getElementById("pinCard");
+      if (pinCard && pinCard.scrollIntoView) { pinCard.scrollIntoView({ block: "nearest" }); }
+      draft.focus();
+    });
+  }
   if (txRestoreBtn) { txRestoreBtn.addEventListener("click", function () { runSelectionToggle("kept"); }); }
   if (txClearSel) { txClearSel.addEventListener("click", function () { clearSelection(); }); }
   if (txFixBtn) {
@@ -2121,13 +2590,15 @@
       updateTxActionStrip();
     });
   }
-  if (txFollowEl) {
-    txFollowEl.addEventListener("change", function () { setFollow(txFollowEl.checked); });
+  if (txFollowBtn) {
+    txFollowBtn.addEventListener("click", function () { setFollow(!followOn); });
   }
+  setFollow(true);
   if (transcriptPanel) {
     transcriptPanel.addEventListener("scroll", function () {
       if (followScrolling) { return; }
-      closeEditPopup();
+      // Scrolling the transcript no longer closes an open note
+      // popover (v0.9.0, item 5): it stays until Save or Close.
       if (followOn) { setFollow(false); }
     });
     transcriptPanel.addEventListener("wheel", function () {
@@ -2137,23 +2608,36 @@
       if (followOn) { setFollow(false); }
     }, { passive: true });
   }
-  vid.addEventListener("play", function () { setFollow(true); });
-  vid.addEventListener("seeked", function () { syncTranscriptPlayback(true); });
+  vid.addEventListener("seeked", function () {
+    clockEl.textContent = fmtTime(vid.currentTime);
+    updatePlayhead();
+    syncTranscriptPlayback(true);
+  });
 
   document.getElementById("btnV").addEventListener("click", function () { setFmt("vertical"); });
   document.getElementById("btnL").addEventListener("click", function () { setFmt("landscape"); });
   document.getElementById("back5").addEventListener("click", function () { stepBy(-5); });
   document.getElementById("back1").addEventListener("click", function () { stepBy(-1); });
+  document.getElementById("fwd1").addEventListener("click", function () { stepBy(1); });
+  document.getElementById("fwd5").addEventListener("click", function () { stepBy(5); });
   vid.addEventListener("timeupdate", function () {
+    // Skip first, then read the clock: the readout always shows
+    // where the playhead actually is, never a cut part it has
+    // already jumped past.
+    skipCutParts();
     clockEl.textContent = fmtTime(vid.currentTime);
     updatePlayhead();
     syncTranscriptPlayback(false);
   });
 
   function updatePinNote() {
-    pinNoteEl.textContent = pinnedTs !== null
-      ? "Pinned at " + fmtTime(pinnedTs) + " (" + pinnedFmt + "). The time is an estimate; the editor checks a few seconds either way."
-      : "";
+    if (pinnedTs === null) { pinNoteEl.textContent = ""; return; }
+    if (pinnedWordStart !== null && pinnedWordEnd !== null) {
+      pinNoteEl.textContent = "Pinned to these words at " + fmtTime(pinnedTs) +
+        " (" + pinnedFmt + "): \"" + spanTextFor(pinnedWordStart, pinnedWordEnd) + "\"";
+      return;
+    }
+    pinNoteEl.textContent = "Pinned at " + fmtTime(pinnedTs) + " (" + pinnedFmt + "). The time is an estimate; the editor checks a few seconds either way.";
   }
 
   function pinDraft(ts) {
@@ -2170,6 +2654,8 @@
     var empty = draft.value === "";
     if (empty) {
       pinnedTs = null;
+      pinnedWordStart = null;
+      pinnedWordEnd = null;
       updatePinNote();
     } else if (draftWasEmpty) {
       if (pinnedTs === null) { pinDraft(vid.currentTime || 0); }
@@ -2179,6 +2665,10 @@
   });
 
   document.getElementById("pin").addEventListener("click", function () {
+    // The Pin a comment button pins a time; a word pin from an
+    // earlier note never rides along into it.
+    pinnedWordStart = null;
+    pinnedWordEnd = null;
     if (manualEl.value !== "" && !isNaN(parseFloat(manualEl.value))) {
       pinDraft(parseFloat(manualEl.value));
     } else {
@@ -2192,6 +2682,8 @@
   // right now. It is cleared on save, so it cannot leak into a later note.
   manualEl.addEventListener("change", function () {
     if (manualEl.value !== "" && !isNaN(parseFloat(manualEl.value))) {
+      pinnedWordStart = null;
+      pinnedWordEnd = null;
       pinDraft(parseFloat(manualEl.value));
     }
   });
@@ -2201,11 +2693,22 @@
     var status = document.getElementById("saveStatus");
     if (!text) { draft.focus(); return; }
     if (pinnedTs === null) { pinDraft(vid.currentTime || 0); }
-    state.comments.push({ id: Date.now(), ts: pinnedTs, fmt: pinnedFmt, scope: scopeEl.value || "both", text: text, done: false });
+    var comment = { id: Date.now(), ts: pinnedTs, fmt: pinnedFmt, scope: scopeEl.value || "both", text: text, done: false };
+    if (pinnedWordStart !== null && pinnedWordEnd !== null) {
+      // A word pin: the note's target is exactly these words, and
+      // it is stored with them (v0.9.0, item 20, on the item 6
+      // rule: a note lives on its own target only).
+      comment.word_start = pinnedWordStart;
+      comment.word_end = pinnedWordEnd;
+      comment.word_text = spanTextFor(pinnedWordStart, pinnedWordEnd);
+    }
+    state.comments.push(comment);
     state.comments.sort(function (a, b) { return a.ts - b.ts; });
     draft.value = "";
     draftWasEmpty = true;
     pinnedTs = null;
+    pinnedWordStart = null;
+    pinnedWordEnd = null;
     scopeEl.value = "both";
     manualEl.value = "";
     updatePinNote();
@@ -2241,11 +2744,19 @@
     return tag === "input" || tag === "textarea" || tag === "select" || !!el.isContentEditable;
   }
 
+  function spacePlaysVideo(el) {
+    if (!el || !el.closest) { return false; }
+    return !!el.closest(
+      "#vidWrap, #tlbar, #fmtRow, #transcriptCard"
+    );
+  }
+
   function stepBy(seconds) {
     var d = tlDuration();
     var t = Math.max(0, (vid.currentTime || 0) + seconds);
     if (d > 0) { t = Math.min(d, t); }
     vid.currentTime = t;
+    clockEl.textContent = fmtTime(vid.currentTime);
     updatePlayhead();
   }
 
@@ -2257,9 +2768,14 @@
     switch (e.key) {
       case " ":
       case "Spacebar":
-        // A focused button or link keeps its own Space. Everywhere
-        // else Space is play or pause, and never a page scroll.
-        if (tag === "button" || tag === "a") { return; }
+        // A focused button or link outside the player keeps its
+        // own Space. Inside the player, the timeline, the
+        // transport row, and the transcript, Space is play or
+        // pause: those controls are seek buttons, and in 0.8.x a
+        // Space there just re-ran the seek the creator had just
+        // clicked, so playback seemed stuck no matter how often
+        // Space was pressed. Enter still works those buttons.
+        if ((tag === "button" || tag === "a") && !spacePlaysVideo(e.target)) { return; }
         e.preventDefault();
         if (vid.paused) { vid.play(); } else { vid.pause(); }
         break;
@@ -2291,6 +2807,8 @@
         // Start a note at the playhead: pin it there and put the
         // typing in the comment box, where the note takes shape.
         e.preventDefault();
+        pinnedWordStart = null;
+        pinnedWordEnd = null;
         pinDraft(vid.currentTime || 0);
         draft.focus();
         break;
@@ -2637,8 +3155,8 @@
   // voice service and puts the words in the box to read and fix
   // before they count. Typing always works. With no Meta sign-in
   // the app answers with one plain sentence and nothing else
-  // changes; the browser's own voice typing stays available on the
-  // edit popup as a clearly separate second choice.
+  // changes. Dictation is the app's own Dictate button only
+  // (v0.9.0: the browser voice-typing option was removed).
   function appendDictated(area, text) {
     if (!area || !text) { return; }
     if (area.value && !/\s$/.test(area.value)) { area.value += " "; }
@@ -2766,6 +3284,74 @@
   wireDictation("overallDictate", "overallDraft", "overallDictateStatus");
   wireDictation("intakeDictate", "intakeDirection", "firstEditStatus");
 
+  // -- note-box state (v0.9.0) -------------------------------------------
+  // One shared note box serves every popover, so its text is kept
+  // PER TARGET, never in the box itself. Before v0.9.0 the typed
+  // text simply stayed in the shared textarea when the popover
+  // moved: open span A, type a note, open span B, and A's words sat
+  // in B's box directly under B's "No notes on this edit yet" line,
+  // looking like a note on B; pressing Save there would have stored
+  // A's words against B. Now opening a target returns only that
+  // target's own draft ("" when it has none), typing is recorded
+  // against the open target only, and closing keeps the draft on
+  // its own target for when it is reopened.
+  // [tye-note-box-begin]
+  function createNoteBox() {
+    var drafts = {};
+    var openKey = null;
+    var isOpen = false;
+    return {
+      // Open the box for one target; returns the text the box may
+      // show for it: its own unsaved draft, or "".
+      openFor: function (key) {
+        openKey = key || null;
+        isOpen = true;
+        return openKey === null ? "" : (drafts[openKey] || "");
+      },
+      // Record typing against the open target, and nowhere else.
+      noteTyped: function (text) {
+        if (openKey === null) { return; }
+        drafts[openKey] = String(text || "");
+      },
+      draftFor: function (key) { return drafts[key] || ""; },
+      currentKey: function () { return openKey; },
+      isOpen: function () { return isOpen; },
+      // A successful save consumes that target's draft only.
+      saved: function (key) { if (key) { delete drafts[key]; } },
+      // Closing never discards a draft and never moves one: the
+      // text stays on the target it was written on.
+      close: function () {
+        var wasOpen = isOpen;
+        isOpen = false;
+        openKey = null;
+        return wasOpen;
+      },
+      // Clicking elsewhere, the mouse leaving, or the page
+      // scrolling is never a close: the box stays open and its
+      // draft is untouched. Only Save and Close close it.
+      dismissAttempt: function () { return false; }
+    };
+  }
+  // [tye-note-box-end]
+  var noteBox = createNoteBox();
+  function noteKeyForEdit(span) {
+    return span && span.edit_id ? "edit:" + span.edit_id : null;
+  }
+  function noteKeyForGold(span) {
+    return span && span.gold_id ? "gold:" + span.gold_id : null;
+  }
+  // Set when the Close or Escape path returns focus to the anchor,
+  // so the anchor's own focus handler does not instantly reopen
+  // the popover that was just closed (the v0.8.x Close bug: the
+  // first click hid the card, then focus() reopened it at once).
+  var popupRefocusSuppress = false;
+  function refocusAnchorWithoutReopening(anchor) {
+    if (!anchor || !anchor.focus) { return; }
+    popupRefocusSuppress = true;
+    anchor.focus();
+    setTimeout(function () { popupRefocusSuppress = false; }, 0);
+  }
+
   // -- edit popup -------------------------------------------------------
   var editPopup = document.getElementById("editPopup");
   var editPopupTitle = document.getElementById("editPopupTitle");
@@ -2816,8 +3402,22 @@
     if (popupCloseTimer) { clearTimeout(popupCloseTimer); popupCloseTimer = null; }
   }
 
+  // Sync whatever the box currently shows into the draft of the
+  // target it was written on. Called before any switch or close,
+  // so text can never be carried into another target's box.
+  function stashNoteDraft() {
+    if (editNoteText && noteBox.currentKey()) {
+      noteBox.noteTyped(editNoteText.value);
+    }
+  }
+
   function closeEditPopup() {
     clearPopupTimers();
+    // One last sync of the box into its own target's draft, so
+    // nothing typed is ever lost by closing; the draft stays on
+    // that target and comes back when it is reopened.
+    stashNoteDraft();
+    noteBox.close();
     if (editPopup) { editPopup.hidden = true; }
     if (popupAnchor) { popupAnchor.setAttribute("aria-expanded", "false"); }
     popupAnchor = null;
@@ -2883,6 +3483,18 @@
       top = Math.max(8, window.innerHeight - cardH - 8);
     }
     if (top < 8) { top = 8; }
+    // If above and below would both cover the words the card is
+    // about, sit beside the words instead of on top of them.
+    if (overlapsSpan(top) && spanRect) {
+      var sideTop = Math.max(8, Math.min(spanRect.top, window.innerHeight - cardH - 8));
+      if (spanRect.right + 10 + cardW <= window.innerWidth - 8) {
+        left = spanRect.right + 10;
+        top = sideTop;
+      } else if (spanRect.left - 10 - cardW >= 8) {
+        left = spanRect.left - 10 - cardW;
+        top = sideTop;
+      }
+    }
     // Never cover the anchor itself.
     if (top < anchorRect.bottom && top + cardH > anchorRect.top) {
       top = (anchorRect.bottom + 10 + cardH <= window.innerHeight - 8)
@@ -2893,14 +3505,11 @@
   }
 
   function setPopupFlagMode(on) {
-    var noteBits = [editNotesList, editNoteText, editNoteSpeak, editNoteSave, editNoteSpeakBrowser];
-    noteBits.forEach(function (el) { if (el) { el.hidden = !!on || (el === editNoteSpeakBrowser ? el.hidden && !!on : false); } });
-    // The browser voice button keeps its own availability state in
-    // edit mode; in flag mode every note control is out of sight.
-    if (!on && editNoteSpeakBrowser) {
-      var BrowserRec2 = window.SpeechRecognition || window.webkitSpeechRecognition;
-      editNoteSpeakBrowser.hidden = !BrowserRec2;
-    }
+    // In flag mode every note control is out of sight; there is no
+    // other note option to step aside for (v0.9.0 removed the
+    // browser voice-typing button for good).
+    var noteBits = [editNotesList, editNoteText, editNoteSpeak, editNoteSave];
+    noteBits.forEach(function (el) { if (el) { el.hidden = !!on; } });
     if (editBringBack) { editBringBack.hidden = !!on; }
     if (editSwapTakes && on) { editSwapTakes.hidden = true; }
     if (editPopupKept && on) { editPopupKept.hidden = true; }
@@ -2930,17 +3539,23 @@
 
   function wirePopupAnchor(anchor, openFn) {
     anchor.addEventListener("mouseenter", function () {
-      if (popupCloseTimer) { clearTimeout(popupCloseTimer); popupCloseTimer = null; }
       if (popupOpenTimer) { clearTimeout(popupOpenTimer); }
       popupOpenTimer = setTimeout(function () { openFn(anchor); }, 300);
     });
     anchor.addEventListener("mouseleave", function () {
+      // Leaving the dot before the hover-open fires cancels the
+      // open. Leaving it after the popover is open closes NOTHING:
+      // the editor stays open until Save or Close (v0.9.0, item 5;
+      // the old 250 ms mouseleave close is what made the popover
+      // disappear while a note was being written).
       if (popupOpenTimer) { clearTimeout(popupOpenTimer); popupOpenTimer = null; }
-      if (popupCloseTimer) { clearTimeout(popupCloseTimer); }
-      popupCloseTimer = setTimeout(function () { closeEditPopup(); }, 250);
     });
     anchor.addEventListener("focus", function () {
-      if (popupCloseTimer) { clearTimeout(popupCloseTimer); popupCloseTimer = null; }
+      // A focus that the Close/Escape path itself caused (it
+      // returns focus to the anchor) must not reopen the popover
+      // that was just closed; that race is why Close appeared not
+      // to work on the first click (v0.9.0, item 7).
+      if (popupRefocusSuppress) { popupRefocusSuppress = false; return; }
       openFn(anchor);
     });
     anchor.addEventListener("click", function (e) {
@@ -2951,20 +3566,14 @@
     });
   }
 
-  if (editPopup) {
-    editPopup.addEventListener("mouseenter", function () {
-      if (popupCloseTimer) { clearTimeout(popupCloseTimer); popupCloseTimer = null; }
-    });
-    editPopup.addEventListener("mouseleave", function () {
-      if (popupCloseTimer) { clearTimeout(popupCloseTimer); }
-      popupCloseTimer = setTimeout(function () { closeEditPopup(); }, 250);
-    });
-  }
+  // The popover itself has no mouseleave close either, and no
+  // outside-click close is registered anywhere: clicking elsewhere
+  // on the page never discards a note in progress (item 5).
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && editPopup && !editPopup.hidden) {
       var anchor = popupAnchor;
       closeEditPopup();
-      if (anchor && anchor.focus) { anchor.focus(); }
+      refocusAnchorWithoutReopening(anchor);
     }
   });
   window.addEventListener("scroll", function () {
@@ -2987,6 +3596,11 @@
     popupGoldRef = null;
     popupAnchor = anchor || null;
     currentEditId = null;
+    // A flag has no note box: park any draft on its own target and
+    // show no text here, so nothing from another span can appear.
+    stashNoteDraft();
+    noteBox.openFor(null);
+    if (editNoteText) { editNoteText.value = ""; }
     if (editPopupGoldActions) { editPopupGoldActions.hidden = true; }
     if (editPopupTitle) { editPopupTitle.textContent = "Also noticed"; }
     var quoted = (typeof flag.word_start === "number" && typeof flag.word_end === "number")
@@ -3012,7 +3626,7 @@
     currentEditId = null;
     setPopupFlagMode(false);
     setPopupGoldMode(true);
-    if (editPopupTitle) { editPopupTitle.textContent = "The editor is not sure about this one"; }
+    if (editPopupTitle) { editPopupTitle.textContent = "Recommended to remove"; }
     var quoted = (typeof span.word_start === "number" && typeof span.word_end === "number")
       ? spanTextFor(span.word_start, span.word_end) : (span.text || "");
     if (editPopupRemoved) { editPopupRemoved.textContent = '"' + quoted + '"'; }
@@ -3026,7 +3640,12 @@
         if (editPopupKeptText) { editPopupKeptText.textContent = ""; }
       }
     }
-    if (editNoteText) { editNoteText.value = ""; }
+    // The box shows only THIS gold spot's own draft, never text
+    // typed on another span (v0.9.0, item 6). Before v0.9.0 this
+    // line wiped the shared box, silently discarding an unsaved
+    // note written on a different span.
+    stashNoteDraft();
+    if (editNoteText) { editNoteText.value = noteBox.openFor(noteKeyForGold(span)); }
     if (editNoteStatus) { editNoteStatus.textContent = ""; }
     editPopup.hidden = false;
     if (popupAnchor) { popupAnchor.setAttribute("aria-expanded", "true"); }
@@ -3035,11 +3654,13 @@
 
   function runGoldVerdict(decision) {
     if (!popupGoldRef) { return; }
+    var verdictSpan = popupGoldRef;
+    var verdictKey = noteKeyForGold(verdictSpan);
     var note = editNoteText ? editNoteText.value.trim() : "";
     if (editGoldCut) { editGoldCut.disabled = true; }
     if (editGoldLeave) { editGoldLeave.disabled = true; }
     postJson("/api/gold-verdict", {
-      gold_id: popupGoldRef.gold_id,
+      gold_id: verdictSpan.gold_id,
       decision: decision,
       note: note
     }).then(function (res) {
@@ -3050,10 +3671,15 @@
         if (editGoldStatus) { editGoldStatus.textContent = data.error || "That call could not be saved."; }
         return;
       }
+      // The verdict consumed this spot's note draft; other spans'
+      // drafts are untouched.
+      noteBox.saved(verdictKey);
       jobGold = data.gold || [];
       if (data.suggestions) { ruleSuggestions = data.suggestions; renderRules(); }
       var message = data.message || "Done.";
-      closeEditPopup();
+      // Close only if this spot's popover is still the open one;
+      // a verdict landing late must not close another span's card.
+      if (popupGoldRef === verdictSpan) { closeEditPopup(); }
       if (transcriptStatus) { transcriptStatus.textContent = message; }
       refreshHistory();
       reloadJobState();
@@ -3120,6 +3746,12 @@
     if (editSwapTakes) { editSwapTakes.hidden = !(span.retake && span.retake.keep_text); }
     if (editActionStatus) { editActionStatus.textContent = ""; }
     renderEditNotes(span);
+    // The box shows only THIS edit's own unsaved draft ("" when it
+    // has none). Before v0.9.0 the shared box was left as it was,
+    // so a note typed on one edit rendered inside the next edit's
+    // popover, under its "No notes on this edit yet" line (item 6).
+    stashNoteDraft();
+    if (editNoteText) { editNoteText.value = noteBox.openFor(noteKeyForEdit(span)); }
     if (editNoteStatus) { editNoteStatus.textContent = ""; }
     editPopup.hidden = false;
     if (popupAnchor) { popupAnchor.setAttribute("aria-expanded", "true"); }
@@ -3162,53 +3794,42 @@
   }
 
   if (editPopupClose) {
-    editPopupClose.addEventListener("click", function () {
+    editPopupClose.addEventListener("click", function (e) {
+      // One click, closed, every time (v0.9.0, item 7): stop the
+      // click reaching anything else, close, and return focus to
+      // the anchor WITHOUT the anchor's focus handler reopening
+      // the popover (the race that ate the first click before).
+      if (e && e.stopPropagation) { e.stopPropagation(); }
       var anchor = popupAnchor;
       closeEditPopup();
-      if (anchor && anchor.focus) { anchor.focus(); }
+      refocusAnchorWithoutReopening(anchor);
     });
   }
 
-  // The note popup's Dictate button uses the Meta voice route, like
-  // every other box. The browser's own voice typing remains here,
-  // clearly labeled as the second choice it is.
-  wireDictation("editNoteSpeak", "editNoteText", "editNoteStatus");
-  var editNoteSpeakBrowser = document.getElementById("editNoteSpeakBrowser");
-  if (editNoteSpeakBrowser) {
-    var BrowserRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    editNoteSpeakBrowser.hidden = !BrowserRec;
-    if (BrowserRec) {
-      editNoteSpeakBrowser.addEventListener("click", function () {
-        try {
-          var rec = new BrowserRec();
-          rec.lang = "en-US";
-          rec.interimResults = false;
-          rec.onresult = function (e) {
-            var transcript = "";
-            if (e.results && e.results[0] && e.results[0][0]) {
-              transcript = e.results[0][0].transcript || "";
-            }
-            if (!transcript) { return; }
-            if (editNoteText.value && !/\s$/.test(editNoteText.value)) {
-              editNoteText.value += " ";
-            }
-            editNoteText.value += transcript;
-          };
-          rec.onerror = function () {
-            editNoteStatus.textContent = "The browser's voice typing did not work here. The Dictate button and typing both work.";
-          };
-          rec.start();
-        } catch (err) {
-          editNoteStatus.textContent = "The browser's voice typing did not work here. The Dictate button and typing both work.";
-        }
-      });
-    }
+  // Typing (and dictated text, which fires the same input event)
+  // is recorded against the open target as it happens, so the
+  // draft is already on its own span before anything can switch.
+  if (editNoteText) {
+    editNoteText.addEventListener("input", function () {
+      noteBox.noteTyped(editNoteText.value);
+    });
   }
+
+  // The note popup's Dictate button uses the app's own voice
+  // route, like every other box. It is the only dictation path
+  // here (v0.9.0, item 22).
+  wireDictation("editNoteSpeak", "editNoteText", "editNoteStatus");
 
   if (editNoteSave) {
     editNoteSave.addEventListener("click", function () {
       if (currentEditId === null || currentEditId === undefined) { return; }
-      postJson("/api/edit-note", { edit_id: currentEditId, text: editNoteText.value }).then(function (res) {
+      // Capture the target at click time: the response must land
+      // on the edit the note was written on, even if another
+      // span's popover was opened while the save was in flight.
+      var saveEditId = currentEditId;
+      var saveKey = noteBox.currentKey();
+      var saveText = editNoteText.value;
+      postJson("/api/edit-note", { edit_id: saveEditId, text: saveText }).then(function (res) {
         var data = res.data || {};
         if (!data.ok) {
           editNoteStatus.textContent = data.error || "That note could not be saved.";
@@ -3216,14 +3837,22 @@
         }
         var notes = data.notes || [];
         for (var i = 0; i < editSpans.length; i++) {
-          if (String(editSpans[i].edit_id) === String(currentEditId)) {
+          if (String(editSpans[i].edit_id) === String(saveEditId)) {
             editSpans[i].notes = notes;
-            renderEditNotes(editSpans[i]);
+            // Re-render the list only if that edit's popover is
+            // still the open one; never draw one edit's notes
+            // inside another edit's popover.
+            if (String(currentEditId) === String(saveEditId)) {
+              renderEditNotes(editSpans[i]);
+            }
             break;
           }
         }
-        editNoteText.value = "";
-        editNoteStatus.textContent = "Saved. This note stays with this edit, and goes into the next run.";
+        noteBox.saved(saveKey);
+        if (String(currentEditId) === String(saveEditId)) {
+          editNoteText.value = "";
+          editNoteStatus.textContent = "Saved. This note stays with this edit, and goes into the next run.";
+        }
       }).catch(function () {
         editNoteStatus.textContent = "That note could not be saved.";
       });
@@ -3308,6 +3937,47 @@
     }
   }
 
+  // -- tool rows (v0.9.0) ------------------------------------------
+  // A row's options appear only when the row is opened, and turning
+  // a tool off collapses its options completely.
+  function syncToolRow(row) {
+    var toggle = row.querySelector(".tool-toggle");
+    var options = row.querySelector(".tool-options");
+    var openBtn = row.querySelector(".tool-open");
+    var on = !toggle || toggle.checked;
+    row.classList.toggle("tool-off", !on);
+    if (!on) {
+      if (options) { options.hidden = true; }
+      if (openBtn) {
+        openBtn.setAttribute("aria-expanded", "false");
+        openBtn.disabled = true;
+      }
+    } else if (openBtn) {
+      openBtn.disabled = false;
+    }
+  }
+  function wireToolRows(root) {
+    if (!root) { return; }
+    Array.prototype.forEach.call(root.querySelectorAll(".tool-row"), function (row) {
+      var options = row.querySelector(".tool-options");
+      var openBtn = row.querySelector(".tool-open");
+      var toggle = row.querySelector(".tool-toggle");
+      if (openBtn && options) {
+        openBtn.addEventListener("click", function () {
+          var show = options.hidden;
+          options.hidden = !show;
+          openBtn.setAttribute("aria-expanded", show ? "true" : "false");
+        });
+      }
+      if (toggle) {
+        toggle.addEventListener("change", function () { syncToolRow(row); });
+      }
+      syncToolRow(row);
+    });
+  }
+  wireToolRows(document.getElementById("inRemoveGroup"));
+  wireToolRows(document.getElementById("makeEditCard"));
+
   // -- front door -------------------------------------------------------
   var fdRetakes = document.getElementById("fdRetakes");
   var fdSilence = document.getElementById("fdSilence");
@@ -3386,8 +4056,8 @@
   var fdMode = "cleanest";
 
   var MODE_NOTES = {
-    cleanest: "The editor finishes everything it is sure about. The spots it is unsure about wait in gold, for whenever you want them.",
-    tailor: "The editor brings every spot it is unsure about to you, in gold, before it counts."
+    cleanest: "The editor finishes everything it is sure about. The spots it is unsure about are marked in light red as recommended to remove, for whenever you want them.",
+    tailor: "The editor brings every spot it is unsure about to you, marked in light red as recommended to remove, before it counts."
   };
 
   function setFdMode(mode) {
@@ -3437,7 +4107,7 @@
 
   function updateBufferDim() {
     if (fdBufferRow && fdSilence) {
-      fdBufferRow.style.opacity = fdSilence.checked ? "" : "0.5";
+      fdBufferRow.hidden = !fdSilence.checked;
     }
   }
 
@@ -3595,6 +4265,40 @@
     });
   }
 
+  // -- one pass at a time (v0.9.0) --------------------------------
+  // Each button sets the choices to just that pass and fires the
+  // same Make the edit run, so a single pass is the same pipeline
+  // with the other choices off, never a separate one.
+  function wirePassButton(id, apply) {
+    var btn = document.getElementById(id);
+    if (!btn) { return; }
+    btn.addEventListener("click", function () {
+      apply();
+      var root = document.getElementById("makeEditCard");
+      if (root) {
+        Array.prototype.forEach.call(
+          root.querySelectorAll(".tool-row"), syncToolRow
+        );
+      }
+      if (fdFire) { fdFire.click(); }
+    });
+  }
+  wirePassButton("passRetakesBtn", function () {
+    if (fdRetakes) { fdRetakes.checked = true; }
+    if (fdSilence) { fdSilence.checked = false; }
+    if (fdFillers) { fdFillers.checked = false; }
+  });
+  wirePassButton("passSilenceBtn", function () {
+    if (fdRetakes) { fdRetakes.checked = false; }
+    if (fdSilence) { fdSilence.checked = true; }
+    if (fdFillers) { fdFillers.checked = false; }
+  });
+  wirePassButton("passFillersBtn", function () {
+    if (fdRetakes) { fdRetakes.checked = false; }
+    if (fdSilence) { fdSilence.checked = false; }
+    if (fdFillers) { fdFillers.checked = true; }
+  });
+
   // -- history --------------------------------------------------------
   // Every change the session makes is recorded on the server as a
   // checkpoint. The list below shows them in order; Undo and Redo
@@ -3644,7 +4348,14 @@
 
   function applyJobState(job) {
     state.comments = (job.comments || []).map(function (c) {
-      return { id: c.id, ts: c.ts, fmt: c.fmt || "vertical", scope: c.scope || "both", text: c.text, done: !!c.done };
+      return {
+        id: c.id, ts: c.ts, fmt: c.fmt || "vertical", scope: c.scope || "both",
+        text: c.text, done: !!c.done,
+        // A word pin rides through reloads intact (item 20).
+        word_start: typeof c.word_start === "number" ? c.word_start : null,
+        word_end: typeof c.word_end === "number" ? c.word_end : null,
+        word_text: c.word_text || null
+      };
     });
     state.overall = (job.overall_feedback || []).map(function (n) {
       return { id: n.id, text: n.text };
@@ -3669,7 +4380,7 @@
         if (fdBR) { fdBR.value = clamped; }
         if (fdBN) { fdBN.value = clamped; }
       }
-      if (fdRow && fdS) { fdRow.style.opacity = fdS.checked ? "" : "0.5"; }
+      if (fdRow && fdS) { fdRow.hidden = !fdS.checked; }
       if (fd.keep_mode) { setKeepMode(fd.keep_mode); }
       if (fd.breaths) { setBreaths(fd.breaths); }
       if (fd.mode) { setFdMode(fd.mode); }
@@ -3747,8 +4458,11 @@
   var firstEditStageText = document.getElementById("firstEditStageText");
   var firstEditBar = document.getElementById("firstEditBar");
   var firstEditStepCount = document.getElementById("firstEditStepCount");
+  var firstEditProgressDetail = document.getElementById("firstEditProgressDetail");
   var currentIntakeId = null;
   var firstEditTimer = null;
+  var firstEditTick = null;
+  var firstEditProgressState = null;
 
   // -- the first edit's Remove choices --------------------------------
   // The same choices as the front door card, seeded from
@@ -3833,7 +4547,7 @@
   }
   function updateInBufferDim() {
     if (inBufferRow && inSilence) {
-      inBufferRow.style.opacity = inSilence.checked ? "" : "0.5";
+      inBufferRow.hidden = !inSilence.checked;
     }
   }
   if (inBufferRange) {
@@ -3896,8 +4610,36 @@
   // The progress block in the card: current stage in plain words,
   // which step of how many, and a bar that moves. Updated from the
   // status endpoint on every poll, so working is never just a gray
-  // button and a small line.
-  function showFirstEditProgress(stageText, index, total) {
+  // button and a small line. The detail line under it (item 15)
+  // carries the run's measured progress: how long it has been
+  // running, the percentage of steps done, and about how long is
+  // left at the pace of the steps finished so far. Between polls
+  // a one-second tick advances the elapsed figure from the last
+  // server reading, so the clock never sits frozen while a long
+  // step works.
+  function fmtClock(seconds) {
+    var total = Math.max(0, Math.round(Number(seconds) || 0));
+    return Math.floor(total / 60) + ":" +
+      ("0" + (total % 60)).slice(-2);
+  }
+
+  function renderFirstEditProgressDetail() {
+    if (!firstEditProgressDetail || !firstEditProgressState) { return; }
+    var st = firstEditProgressState;
+    var elapsed = (st.elapsedBase || 0) +
+      (Date.now() - st.at) / 1000;
+    var parts = [];
+    if (typeof st.percent === "number") {
+      parts.push(st.percent + "% done");
+    }
+    parts.push(fmtClock(elapsed) + " so far");
+    if (typeof st.remaining === "number") {
+      parts.push("about " + fmtClock(st.remaining) + " to go");
+    }
+    firstEditProgressDetail.textContent = parts.join(" · ");
+  }
+
+  function showFirstEditProgress(stageText, index, total, progress) {
     if (firstEditProgress) { firstEditProgress.hidden = false; }
     if (firstEditStageText) {
       firstEditStageText.textContent = stageText || "Working…";
@@ -3906,15 +4648,39 @@
       firstEditStepCount.textContent =
         index && total ? "Step " + index + " of " + total : "";
     }
+    var pct = progress && typeof progress.percent === "number"
+      ? progress.percent
+      : (index && total
+        ? Math.round((index / total) * 100)
+        : null);
     if (firstEditBar) {
-      var pct = index && total
-        ? Math.max(4, Math.round((index / total) * 100))
-        : 12;
-      firstEditBar.style.width = pct + "%";
+      firstEditBar.style.width =
+        (pct === null ? 12 : Math.max(4, pct)) + "%";
+    }
+    if (progress) {
+      firstEditProgressState = {
+        percent: pct,
+        elapsedBase: Number(progress.elapsed_s) || 0,
+        remaining: typeof progress.remaining_s === "number"
+          ? progress.remaining_s : null,
+        at: Date.now()
+      };
+      renderFirstEditProgressDetail();
+      if (!firstEditTick) {
+        firstEditTick = setInterval(renderFirstEditProgressDetail, 1000);
+      }
+    }
+  }
+
+  function stopFirstEditTick() {
+    if (firstEditTick) {
+      clearInterval(firstEditTick);
+      firstEditTick = null;
     }
   }
 
   function hideFirstEditProgress() {
+    stopFirstEditTick();
     if (firstEditProgress) { firstEditProgress.hidden = true; }
   }
 
@@ -3925,7 +4691,7 @@
         if (!data || data.status === "idle") { return; }
         if (data.status === "working") {
           showFirstEditProgress(
-            data.stage, data.stage_index, data.stage_total
+            data.stage, data.stage_index, data.stage_total, data
           );
           firstEditTimer = setTimeout(pollFirstEdit, 2000);
           return;
@@ -3934,8 +4700,11 @@
           showFirstEditProgress(
             "The first edit is ready.",
             data.stage_total || 1,
-            data.stage_total || 1
+            data.stage_total || 1,
+            { percent: 100, elapsed_s: data.elapsed_s, remaining_s: 0 }
           );
+          stopFirstEditTick();
+          renderFirstEditProgressDetail();
           firstEditSay("");
           if (firstEditRecap) { firstEditRecap.innerHTML = ""; }
           (data.recap || []).forEach(firstEditLine);
@@ -3956,31 +4725,57 @@
       });
   }
 
+  function startFirstEdit(settings, directionText) {
+    if (!currentIntakeId) { return; }
+    if (firstEditBtn) { firstEditBtn.disabled = true; }
+    var transcribeBtnEl = document.getElementById("transcribeBtn");
+    if (transcribeBtnEl) { transcribeBtnEl.disabled = true; }
+    if (firstEditRecap) { firstEditRecap.innerHTML = ""; }
+    firstEditSay("");
+    showFirstEditProgress("Starting…", 0, 0,
+      { percent: null, elapsed_s: 0, remaining_s: null });
+    postJson("/api/intake/first-edit", {
+      intake_id: currentIntakeId,
+      direction: directionText || "",
+      settings: settings
+    }).then(function (res) {
+      var data = (res && res.data) || {};
+      if (!data.ok) {
+        hideFirstEditProgress();
+        firstEditSay(data.error || "The first edit could not be started.");
+        if (firstEditBtn) { firstEditBtn.disabled = false; }
+        if (transcribeBtnEl) { transcribeBtnEl.disabled = false; }
+        return;
+      }
+      pollFirstEdit();
+    }).catch(function () {
+      hideFirstEditProgress();
+      firstEditSay("The first edit could not be started. Check the connection and try again.");
+      if (firstEditBtn) { firstEditBtn.disabled = false; }
+      if (transcribeBtnEl) { transcribeBtnEl.disabled = false; }
+    });
+  }
+
   if (firstEditBtn) {
     firstEditBtn.addEventListener("click", function () {
-      if (!currentIntakeId) { return; }
-      firstEditBtn.disabled = true;
-      if (firstEditRecap) { firstEditRecap.innerHTML = ""; }
-      firstEditSay("");
-      showFirstEditProgress("Starting…", 0, 0);
-      postJson("/api/intake/first-edit", {
-        intake_id: currentIntakeId,
-        direction: intakeDirectionEl ? intakeDirectionEl.value : "",
-        settings: collectIntakeSettings()
-      }).then(function (res) {
-        var data = (res && res.data) || {};
-        if (!data.ok) {
-          hideFirstEditProgress();
-          firstEditSay(data.error || "The first edit could not be started.");
-          firstEditBtn.disabled = false;
-          return;
-        }
-        pollFirstEdit();
-      }).catch(function () {
-        hideFirstEditProgress();
-        firstEditSay("The first edit could not be started. Check the connection and try again.");
-        firstEditBtn.disabled = false;
-      });
+      startFirstEdit(
+        collectIntakeSettings(),
+        intakeDirectionEl ? intakeDirectionEl.value : ""
+      );
+    });
+  }
+
+  // Transcribe on its own (v0.9.0): the same first-edit run with
+  // every Remove pass off and no direction, so the words land and
+  // open on the review screen before any cuts are made.
+  var transcribeBtn = document.getElementById("transcribeBtn");
+  if (transcribeBtn) {
+    transcribeBtn.addEventListener("click", function () {
+      var settings = collectIntakeSettings();
+      settings.remove_retakes = false;
+      settings.cut_silence = false;
+      settings.remove_fillers = false;
+      startFirstEdit(settings, "");
     });
   }
 
@@ -4050,6 +4845,7 @@
       return;
     }
     dropBusy = true;
+    if (dropCardEl) { dropCardEl.classList.add("expanded"); }
     dropVideoWrap.hidden = true;
     if (firstEditBlock) { firstEditBlock.hidden = true; }
     if (firstEditTimer) { clearTimeout(firstEditTimer); firstEditTimer = null; }
@@ -4261,6 +5057,10 @@
     stopPlaybackPoll();
     currentVideoName = name;
     document.getElementById("novid").hidden = true;
+    // No sound without a picture: whatever was playing stops
+    // before the player hides, so a format whose copy is still
+    // being made never talks over the pending message.
+    vid.pause();
     vid.hidden = true;
     tlbarEl.hidden = true;
     var s = jobPlayback[name] || "building";
@@ -4396,17 +5196,24 @@
     });
   }
 
-  function showEstimate(el, payload) {
+  function showEstimate(el, whyEl, payload) {
     if (!el) { return; }
     postJson("/api/cost-estimate", payload).then(function (res) {
       var data = res.data || {};
       if (data.ok && data.estimate) {
         el.textContent = data.estimate.sentence;
+        // The number explains itself (item 25): what work it
+        // covers, and what would make it move, in plain words
+        // under the figure.
+        if (whyEl) {
+          whyEl.textContent = data.estimate.explanation || "";
+        }
       }
     }).catch(function () {});
   }
 
   var firstEditCost = document.getElementById("firstEditCost");
+  var firstEditCostWhy = document.getElementById("firstEditCostWhy");
   function refreshFirstEditCost() {
     if (!firstEditCost || !firstEditBlock || firstEditBlock.hidden) {
       return;
@@ -4416,7 +5223,7 @@
     if (video && isFinite(video.duration) && video.duration > 0) {
       duration = video.duration;
     }
-    showEstimate(firstEditCost, {
+    showEstimate(firstEditCost, firstEditCostWhy, {
       surface: "first_edit",
       duration_s: duration,
       settings: collectIntakeSettings(),
@@ -4427,9 +5234,10 @@
   }
 
   var fdCostEstimate = document.getElementById("fdCostEstimate");
+  var fdCostWhy = document.getElementById("fdCostWhy");
   function refreshFdCost() {
     if (!fdCostEstimate || !HAS_JOB) { return; }
-    showEstimate(fdCostEstimate, {
+    showEstimate(fdCostEstimate, fdCostWhy, {
       surface: "front_door",
       duration_s: jobSourceDuration,
       settings: {
@@ -4468,6 +5276,66 @@
   });
   if (fdDirection) {
     fdDirection.addEventListener("input", refreshFdCost);
+  }
+
+  // -- pane dividers (v0.9.0): drag to resize the panes; the
+  // sizes are remembered on this computer.
+  function wirePaneDivider(dividerId, varName, key, fromRight) {
+    var divider = document.getElementById(dividerId);
+    var split = document.getElementById("reviewSplit");
+    if (!divider || !split) { return; }
+    try {
+      var saved = window.localStorage.getItem(key);
+      if (saved) { split.style.setProperty(varName, saved); }
+    } catch (e) {}
+    divider.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      if (divider.setPointerCapture) {
+        try { divider.setPointerCapture(e.pointerId); } catch (err) {}
+      }
+      var move = function (ev) {
+        var rect = split.getBoundingClientRect();
+        if (!rect.width) { return; }
+        var frac = fromRight
+          ? (rect.right - ev.clientX) / rect.width
+          : (ev.clientX - rect.left) / rect.width;
+        frac = Math.min(0.55, Math.max(0.2, frac));
+        var pct = Math.round(frac * 100) + "%";
+        split.style.setProperty(varName, pct);
+        try { window.localStorage.setItem(key, pct); } catch (err) {}
+      };
+      var up = function () {
+        divider.removeEventListener("pointermove", move);
+        divider.removeEventListener("pointerup", up);
+        divider.removeEventListener("pointercancel", up);
+      };
+      divider.addEventListener("pointermove", move);
+      divider.addEventListener("pointerup", up);
+      divider.addEventListener("pointercancel", up);
+    });
+  }
+  wirePaneDivider("paneDivider", "--pane-a", "tye-pane-a", false);
+  wirePaneDivider("toolsDivider", "--pane-c", "tye-pane-c", true);
+
+  // -- stage timeline marks (v0.9.0): quarters of the dropped video.
+  var stageTimeline = document.getElementById("stageTimeline");
+  var stageTimelineLabel = document.getElementById("stageTimelineLabel");
+  var dropVideoForTicks = document.getElementById("dropVideo");
+  if (dropVideoForTicks) {
+    dropVideoForTicks.addEventListener("loadedmetadata", function () {
+      if (!stageTimeline || !isFinite(dropVideoForTicks.duration)) { return; }
+      stageTimeline.innerHTML = "";
+      [0, 0.25, 0.5, 0.75, 1].forEach(function (f) {
+        var tick = document.createElement("span");
+        tick.className = "stage-tick";
+        tick.style.left = (f * 100) + "%";
+        stageTimeline.appendChild(tick);
+      });
+      if (stageTimelineLabel) {
+        stageTimelineLabel.textContent =
+          "Length: " + fmtMinSec(dropVideoForTicks.duration) + ".";
+      }
+    });
   }
 
   fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
@@ -4510,6 +5378,7 @@
       }
     }
     renderMoney(job.money);
+    jobIsIntake = !!job.is_intake;
     jobSourceDuration = job.source_duration_s || 0;
     jobCommentsCount = (job.comments || []).length;
     refreshFdCost();

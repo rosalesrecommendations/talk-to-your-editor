@@ -144,7 +144,7 @@ class ModeTests(IsolatedHomeCase):
             lines,
             [
                 "Your way of working: Tailor it with me.",
-                "No spots are waiting in gold.",
+                "No spots are marked as recommended to remove.",
             ],
         )
 

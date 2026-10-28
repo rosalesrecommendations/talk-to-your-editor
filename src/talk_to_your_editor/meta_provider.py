@@ -1093,6 +1093,9 @@ class MetaProvider:
     ) -> Optional[tuple[list[dict], dict]]:
         """Judge the borderline retake pairs in one Spark call.
 
+        One call is the whole pass (v0.9.0): judged cuts are not
+        escalated to Wonder per pair; the safety check holds any
+        cut that needs a second review for the creator instead.
         The local detector has already measured every pair; the model
         only picks a verdict per pair id and never draws a span, so a
         judged cut always lands on the measured words. Returns
@@ -1190,7 +1193,6 @@ class MetaProvider:
         by_id = {pair["pair_id"]: pair for pair in pairs}
         verdicts: dict = {}
         operations: list[dict] = []
-        routing: list[dict] = []
         for item in raw_verdicts:
             if not isinstance(item, dict):
                 continue
@@ -1241,27 +1243,28 @@ class MetaProvider:
                 )
             except SchemaError:
                 continue
-            comment = {
-                "id": pair_id,
-                "text": (
-                    "Retake check. First delivery: "
-                    f"\"{spans[0]['text']}\" Second delivery: "
-                    f"\"{spans[1]['text']}\""
-                ),
-            }
-            evidence = {
-                "_timeline": timeline,
-                "pair": {
-                    "first_delivery": spans[0]["text"],
-                    "second_delivery": spans[1]["text"],
-                    "measured": packet[
-                        [p["pair_id"] for p in packet].index(pair_id)
-                    ]["measured"],
-                },
-            }
+            # A judged cut is NOT escalated to Wonder here, one
+            # review call per pair (v0.9.0, FLAG C). This pass used
+            # to hand every cut to ``_route``, which made one
+            # Wonder call for each cut whose tier was 2 (a verdict
+            # under 0.80 confidence, a span over 20 words or 10
+            # seconds, or a span near the opening or closing):
+            # borderline verdicts are low-confidence by nature, so
+            # nearly every judged cut escalated, and at Wonder's
+            # rates (about $138 per million prompt tokens against
+            # Spark's $0.35) a handful of those calls cost about
+            # 97 cents against the published estimate of about 2
+            # cents for the one Spark judgment call. The spans here
+            # were measured locally and never redrawn by a reviewer,
+            # so the escalation bought nothing the safety check
+            # does not already do: the operation keeps
+            # ``wonder_reviewed`` False, and the verifier in the
+            # retake pass holds any cut that needs a second review
+            # for the creator's call instead of applying it. The
+            # whole pass is the one Spark call above, which is what
+            # the published per-feature price describes.
             for op in proposed:
-                route = self._route(op, comment, evidence, operations, routing)
-                routing.append(route)
+                operations.append(op.to_dict())
         return operations, verdicts
 
     def judge_shadow(

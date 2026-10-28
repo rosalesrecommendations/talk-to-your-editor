@@ -148,13 +148,12 @@ def _pair_reason(
 
 
 _FLAG_NEGATION_REASON = (
-    "This line and the one after it match closely, and one of them "
-    "carries a 'not'. Which copy stays changes the meaning, so a "
-    "person decides."
+    "This line is said again right after and one copy includes "
+    "a 'not', so you decide which copy stays."
 )
 _FLAG_DOUBLE_REASON = (
-    "This short line is said twice in a row. It may be emphasis, "
-    "so a person decides."
+    "This short line is said twice in a row and may be on "
+    "purpose, so you decide whether one copy goes."
 )
 
 
@@ -1027,14 +1026,13 @@ def band_b_flag_reason(pair: dict) -> str:
     coverage = pair.get("coverage")
     if coverage is None:
         return (
-            "These words were started, then said again. Retake, or "
-            "said twice on purpose? A person decides."
+            "These words were started and then said again, so you "
+            "decide whether they were a first try or said twice "
+            "on purpose."
         )
     return (
-        "These two lines match closely, and the match is not clean "
-        "enough to trust on its own. Does the second one carry the "
-        "story forward better, or was the line said twice on "
-        "purpose? A person decides."
+        "These words are said again in the line after, so you "
+        "decide whether this first copy should be cut."
     )
 
 

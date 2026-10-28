@@ -12,7 +12,21 @@ This version is built around one idea: keep the front door simple. Two choices, 
 
 ## Mac test
 
-### 0. New in 0.8.1: Spark work can ride your Baseten or Fireworks credits
+### 0. New in 0.9.0: your feedback video, answered
+
+This version is your 15-minute walkthrough of 0.8.0, item by item. Test it against the same moves you made in that video.
+
+1. Drop the same long video on the front door and press **Make the first edit**. The player shows one message with a percentage that climbs while the watchable copy is made, and the picture arrives on its own. There is no second message underneath, and the words "A long video can take a few minutes" appear nowhere. (On the build machine, far weaker than your MacBook Pro, a 13-minute HEVC video's copy was ready in about 6 to 9 minutes; yours should be faster.)
+2. Notice the order on the front door: **Describe your edit** is at the top now, with the button. Under it, the stages are listed in order, and the Remove choices are one-line summaries. Open one row's **Options** only if you want the detail. Try the **Transcribe** button in stage 2: the words are written down and open on the review screen before any cuts.
+3. On the review screen, the Remove choices now live in one place: the **Edit settings** panel (the gear). Open it and close it; nothing is duplicated anywhere else on the screen.
+4. Drag the divider between the video and the transcript. The transcript side gets wider or narrower and stays that way next time. Arrow keys work on it too.
+5. Cut a phrase in the transcript, then press **Cmd+Z**. The cut undoes without touching History. Cmd+Shift+Z redoes it.
+6. Look at a held spot: it is light red now and reads **Recommended to remove**, with its reason in one plain sentence. Cut it or leave it, the same as before.
+7. Pin a road sign on one edit, then write a note on a different one. Each note stays on its own edit. Click somewhere else while a note popover is open: it stays open until you Save or Close it, and you can dictate into it.
+8. Scroll the transcript while the video plays. **Follow** turns off and stays off until you press its button; the transcript no longer jumps when you make a cut.
+9. Open **What the editing has cost** after a run: the retake check line reads about 2 cents on a normal video, not 97. Under the estimate by the edit buttons, the "Why this number" line says what drives the price and what it would be with no second review.
+
+### 0b. New in 0.8.1: Spark work can ride your Baseten or Fireworks credits
 
 The hackathon gave you two $100 credit pools that serve the same Spark model the editor uses for its reading work: Baseten and Fireworks. This version lets that work ride a pool instead of your Meta balance. Muse Wonder, the second review, exists only on Meta, so it stays there no matter what you choose.
 
@@ -27,7 +41,7 @@ The hackathon gave you two $100 credit pools that serve the same Spark model the
 
 Costs on the hosted routes are estimates, derived the same documented way as the Meta rates (neither provider publishes per-token prices in our records): the retake check prices at about 2 cents a run and the direction read at about 5 cents, now drawn from the chosen pool's $100 instead of the Meta balance. The Wonder review, about 59 cents when a run needs it, is always Meta's.
 
-### 0b. New in 0.8.0 (last version): the picture arrives, side by side, highlight editing
+### 0c. New in 0.8.0: the picture arrives, side by side, highlight editing
 
 This version answers your first real test, the 13-minute video that sat on "Getting your video ready to watch" for 45 minutes.
 
