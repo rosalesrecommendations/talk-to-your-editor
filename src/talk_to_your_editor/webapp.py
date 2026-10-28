@@ -68,7 +68,14 @@ from .checkpoints import (
     RETAKE_PASS_FILENAME,
 )
 from .cli import _load_json, _verify_and_apply, _write_json
-from .meta_provider import MetaProvider, MockProvider, ProviderError
+from .meta_provider import (
+    HOSTED_SPARK_ROUTES,
+    ROUTE_LABELS,
+    MetaProvider,
+    MockProvider,
+    ProviderError,
+    check_hosted_signin,
+)
 from .schema import MAX_JOIN_PAUSE_S, MIN_JOIN_PAUSE_S, SchemaError, validate_operations
 from .timeline import Timeline
 from .verifier import (
@@ -806,6 +813,11 @@ class WebAppConfig:
         # (v0.6.1): session only, unless the creator saves it on
         # this Mac through the sign-in card's own action.
         self.session_elevenlabs_key: Optional[str] = None
+        # The same for the two hosted Spark routes' keys (v0.8.1):
+        # Baseten and Fireworks keys pasted on the page live here,
+        # session only, under the same discipline.
+        self.session_baseten_key: Optional[str] = None
+        self.session_fireworks_key: Optional[str] = None
         # Watchable-copy builds are tracked by copy path in the
         # module-level registry (see _ensure_playback_copy_for),
         # so their state survives this config being swapped when
@@ -874,6 +886,56 @@ class WebAppConfig:
         if self.session_elevenlabs_key:
             return self.session_elevenlabs_key
         return os.environ.get("ELEVENLABS_API_KEY") or None
+
+    def baseten_key(self) -> Optional[str]:
+        """The creator's Baseten key, when the server has one.
+
+        Used only by Spark-tier model work when the Baseten route
+        is chosen. A key pasted on the page for this session wins
+        over the environment the server started with, the way the
+        other keys work.
+        """
+        if self.session_baseten_key:
+            return self.session_baseten_key
+        return os.environ.get("BASETEN_API_KEY") or None
+
+    def fireworks_key(self) -> Optional[str]:
+        """The creator's Fireworks key, when the server has one.
+
+        Used only by Spark-tier model work when the Fireworks
+        route is chosen, under the same discipline as the Baseten
+        key.
+        """
+        if self.session_fireworks_key:
+            return self.session_fireworks_key
+        return os.environ.get("FIREWORKS_API_KEY") or None
+
+    def hosted_key(self, route: str) -> Optional[str]:
+        """The key for one hosted Spark route, or None."""
+        if route == "baseten":
+            return self.baseten_key()
+        if route == "fireworks":
+            return self.fireworks_key()
+        return None
+
+    def spark_route(self) -> str:
+        """The route Spark-tier work rides: the creator's usual.
+
+        The choice is creator-level, so it is read from the usual
+        (default "meta") rather than from any one job's session.
+        It names the CHOSEN route; a provider built from it
+        resolves to Meta on its own when the chosen route has no
+        key, and ``spark_route_effective`` says which that is.
+        """
+        return usual.load_usual({"spark_route": "meta"})["spark_route"]
+
+    def spark_route_effective(self) -> str:
+        """The route Spark-tier work will actually ride: the
+        chosen route when its key is here, Meta otherwise."""
+        route = self.spark_route()
+        if route != "meta" and not self.hosted_key(route):
+            return "meta"
+        return route
 
     def render_missing(self) -> list[str]:
         if self.is_intake_job:
@@ -1022,6 +1084,7 @@ FRONT_DOOR_DEFAULTS = {
     "breaths": "keep",
     "remove_fillers": True,
     "mode": "cleanest",
+    "spark_route": "meta",
 }
 # How involved the creator wants to be (v0.7.1). "cleanest" is the
 # Cleanest cut: the editor finishes what it is sure about and the
@@ -1137,6 +1200,8 @@ def _front_door_settings(config: WebAppConfig) -> dict:
             settings["breaths"] = saved["breaths"]
         if saved.get("mode") in INVOLVEMENT_MODES:
             settings["mode"] = saved["mode"]
+        if saved.get("spark_route") in HOSTED_SPARK_ROUTES + ("meta",):
+            settings["spark_route"] = saved["spark_route"]
     return settings
 
 
@@ -1894,6 +1959,30 @@ def _plain_direction_error(exc: Exception) -> str:
     """
     raw = str(exc)
     if isinstance(exc, ProviderError):
+        for route in HOSTED_SPARK_ROUTES:
+            label = ROUTE_LABELS[route]
+            if raw.startswith((f"{route}_api_http_401", f"{route}_api_http_403")):
+                return (
+                    f"The {label} sign-in was not accepted. Check "
+                    "the key and try again."
+                )
+            if raw.startswith(f"{route}_api_http_429"):
+                return (
+                    f"{label}'s service is busy right now. Wait a "
+                    "moment and try again."
+                )
+            if raw.startswith(f"{route}_api_http_"):
+                return (
+                    f"{label}'s service returned an error. Try "
+                    "again in a moment."
+                )
+            if raw.startswith(f"{route}_api_unreachable"):
+                return (
+                    f"{label}'s service could not be reached. "
+                    "Check the connection and try again."
+                )
+            if raw == f"{route} key is not set":
+                return f"No {label} key is set on this server yet."
         if raw.startswith(("meta_api_http_401", "meta_api_http_403")):
             return (
                 "The Meta sign-in was not accepted. Check the API key "
@@ -1971,8 +2060,26 @@ SIGNIN_NOT_ACCEPTED_MESSAGE = (
 # ---------------------------------------------------------------------------
 
 MAC_KEY_DIR_NAME = ".talk-to-your-editor"
-MAC_KEY_FILES = {"meta": "meta_key", "elevenlabs": "elevenlabs_key"}
+MAC_KEY_FILES = {
+    "meta": "meta_key",
+    "elevenlabs": "elevenlabs_key",
+    "baseten": "baseten_key",
+    "fireworks": "fireworks_key",
+}
 KEY_KINDS = tuple(MAC_KEY_FILES)
+# The session attribute each kind's pasted key lives in.
+_SESSION_KEY_ATTRS = {
+    "meta": "session_api_key",
+    "elevenlabs": "session_elevenlabs_key",
+    "baseten": "session_baseten_key",
+    "fireworks": "session_fireworks_key",
+}
+KEY_KIND_LABELS = {
+    "meta": "Meta",
+    "elevenlabs": "ElevenLabs",
+    "baseten": "Baseten",
+    "fireworks": "Fireworks",
+}
 
 
 def _mac_key_path(kind: str) -> Path:
@@ -2019,16 +2126,11 @@ def _remove_mac_key(kind: str) -> None:
 
 
 def _set_session_key(config: WebAppConfig, kind: str, key: Optional[str]) -> None:
-    if kind == "meta":
-        config.session_api_key = key
-    else:
-        config.session_elevenlabs_key = key
+    setattr(config, _SESSION_KEY_ATTRS[kind], key)
 
 
 def _session_key(config: WebAppConfig, kind: str) -> Optional[str]:
-    if kind == "meta":
-        return config.session_api_key
-    return config.session_elevenlabs_key
+    return getattr(config, _SESSION_KEY_ATTRS[kind], None)
 
 
 def _signin_state(config: WebAppConfig) -> dict:
@@ -2042,6 +2144,12 @@ def _signin_state(config: WebAppConfig) -> dict:
         "meta_saved_on_mac": _mac_key_saved("meta"),
         "elevenlabs_signin_set": bool(config.elevenlabs_key()),
         "elevenlabs_saved_on_mac": _mac_key_saved("elevenlabs"),
+        "baseten_signin_set": bool(config.baseten_key()),
+        "baseten_saved_on_mac": _mac_key_saved("baseten"),
+        "fireworks_signin_set": bool(config.fireworks_key()),
+        "fireworks_saved_on_mac": _mac_key_saved("fireworks"),
+        "spark_route": config.spark_route(),
+        "spark_route_effective": config.spark_route_effective(),
     }
 
 
@@ -2065,6 +2173,42 @@ def _check_signin(config: WebAppConfig) -> tuple[bool, str]:
     if accepted:
         return True, SIGNIN_ACCEPTED_MESSAGE
     return False, SIGNIN_NOT_ACCEPTED_MESSAGE
+
+
+def _check_hosted(config: WebAppConfig, route: str) -> Optional[dict]:
+    """Check one hosted route's key, when one is set.
+
+    Returns None when the route has no key at all (nothing to
+    check, and nothing to say). Otherwise {accepted, message}:
+    an accepted key names the pool Spark work can ride; a
+    refused key says so in plain words and names the standing
+    fallback, that Spark work runs on Meta until the key works.
+    """
+    key = config.hosted_key(route)
+    if not key:
+        return None
+    label = ROUTE_LABELS[route]
+    try:
+        accepted = check_hosted_signin(route, key)
+    except ProviderError as exc:
+        _log_raw_error(f"{route} signin check", exc)
+        return {"accepted": False, "message": _plain_direction_error(exc)}
+    if accepted:
+        return {
+            "accepted": True,
+            "message": (
+                f"The {label} sign-in was accepted. Spark work "
+                f"can ride the {label} credits."
+            ),
+        }
+    return {
+        "accepted": False,
+        "message": (
+            f"The {label} sign-in was not accepted. Check the "
+            "key and try again. Until it works, Spark work "
+            "runs on Meta."
+        ),
+    }
 
 
 def _next_round_number(config: WebAppConfig) -> int:
@@ -2099,6 +2243,23 @@ def _archive_direction_round(config: WebAppConfig, number: int) -> None:
         source = session / name
         if source.is_file():
             shutil.copyfile(source, target / name)
+
+
+def _live_provider(config: WebAppConfig) -> MetaProvider:
+    """The live provider, built the one way every run builds it.
+
+    The Meta sign-in keys it; the creator's chosen Spark route
+    and any hosted keys ride along, so Spark-tier work (the
+    direction reads, the retake judge and its shadow) runs on
+    the chosen pool while Wonder stays on Meta.
+    """
+    return MetaProvider(
+        api_key=config.signin_key(),
+        allow_wonder=True,
+        spark_route=config.spark_route(),
+        baseten_key=config.baseten_key(),
+        fireworks_key=config.fireworks_key(),
+    )
 
 
 def _run_direction(
@@ -2157,9 +2318,7 @@ def _run_direction(
         _load_json(str(base_cuts_path)),
     )
     if provider_name == "meta":
-        provider = MetaProvider(
-            api_key=config.signin_key(), allow_wonder=True
-        )
+        provider = _live_provider(config)
     else:
         provider = MockProvider()
     run_feedback = _feedback_for_run(feedback, fmt)
@@ -2199,6 +2358,10 @@ def _run_direction(
     # routing made on this same provider.
     drain = getattr(provider, "drain_usage", None)
     audit_with_routing["usage"] = (drain() or []) if callable(drain) else []
+    drain_events = getattr(provider, "drain_route_events", None)
+    audit_with_routing["route_events"] = (
+        (drain_events() or []) if callable(drain_events) else []
+    )
     if front_door is not None:
         audit_with_routing["front_door"] = front_door
     # Number the round before the audit is saved, so the saved audit
@@ -2234,25 +2397,55 @@ def _account_costs(config: WebAppConfig, entries: list) -> None:
 
 def _direction_cost_entries(usage) -> list:
     """The cost entries for one direction run's captured usage:
-    the Spark read under Reading your direction, any Wonder
-    escalation under its own line, and the also-noticed flags
-    at $0 (they ride along on the direction read)."""
-    spark_usd, wonder_usd = costs.split_usage_cost(usage)
-    entries = [costs.make_entry("direction", spark_usd, "direction run")]
+    the Spark read under Reading your direction, charged to the
+    pool whose route actually served it (v0.8.1), any Wonder
+    escalation under its own line (Wonder is always Meta's),
+    and the also-noticed flags at $0 (they ride along on the
+    direction read, so they carry its pool)."""
+    by_route = costs.split_usage_cost_by_route(usage)
+    routes = sorted(by_route, key=lambda r: costs.POOL_ORDER[r])
+    entries = []
+    for route in routes:
+        spark_usd, _wonder_usd = by_route[route]
+        entries.append(
+            costs.make_entry(
+                "direction", spark_usd, "direction run", pool=route
+            )
+        )
+    wonder_usd = sum(pair[1] for pair in by_route.values())
     if wonder_usd > 0:
         entries.append(
-            costs.make_entry("wonder", wonder_usd, "direction run")
+            costs.make_entry("wonder", wonder_usd, "direction run", pool="meta")
+        )
+    if not entries:
+        entries.append(
+            costs.make_entry("direction", 0.0, "direction run", pool="meta")
         )
     entries.append(
-        costs.make_entry("flags", 0.0, "rides along with the direction read")
+        costs.make_entry(
+            "flags",
+            0.0,
+            "rides along with the direction read",
+            pool=routes[0] if routes else "meta",
+        )
     )
     return entries
 
 
 def _usage_cost_entries(feature: str, usage, detail: str) -> list:
-    """One feature's cost entry from a pass summary's usage."""
-    spark_usd, wonder_usd = costs.split_usage_cost(usage)
-    return [costs.make_entry(feature, spark_usd + wonder_usd, detail)]
+    """One feature's cost entries from a pass summary's usage,
+    one per pool the usage drew on."""
+    by_route = costs.split_usage_cost_by_route(usage)
+    if not by_route:
+        return [costs.make_entry(feature, 0.0, detail, pool="meta")]
+    return [
+        costs.make_entry(
+            feature, spark_usd + wonder_usd, detail, pool=route
+        )
+        for route, (spark_usd, wonder_usd) in sorted(
+            by_route.items(), key=lambda item: costs.POOL_ORDER[item[0]]
+        )
+    ]
 
 
 def _first_edit_cost_entries(
@@ -2269,6 +2462,7 @@ def _first_edit_cost_entries(
             costs.transcription_cost(route, duration_s),
             "ElevenLabs Scribe" if route == "scribe" else "on this computer",
             duration_s=duration_s if route == "scribe" else None,
+            pool="elevenlabs" if route == "scribe" else "local",
         )
     ]
     if retake_summary is not None:
@@ -2283,11 +2477,11 @@ def _first_edit_cost_entries(
         )
     if settings.get("remove_fillers"):
         entries.append(
-            costs.make_entry("filler", 0.0, "on this computer")
+            costs.make_entry("filler", 0.0, "on this computer", pool="local")
         )
     if settings.get("cut_silence"):
         entries.append(
-            costs.make_entry("silence", 0.0, "on this computer")
+            costs.make_entry("silence", 0.0, "on this computer", pool="local")
         )
     return entries
 
@@ -2697,11 +2891,12 @@ def _run_filler_pass(config: WebAppConfig, settings: dict) -> dict:
 def _direction_provider(config: WebAppConfig):
     """The provider a direction pass reads with.
 
-    The same construction ``_run_direction`` uses for "meta": the
-    Meta provider keyed by the session sign-in. Kept as one small
-    helper so the pass has a single provider seam.
+    The same construction every live run uses (see
+    ``_live_provider``): the Meta provider keyed by the session
+    sign-in, riding the creator's chosen Spark route. Kept as
+    one small helper so the pass has a single provider seam.
     """
-    return MetaProvider(api_key=config.signin_key(), allow_wonder=True)
+    return _live_provider(config)
 
 
 def _format_flag_time(time_s: float) -> str:
@@ -2873,6 +3068,7 @@ def _run_direction_pass(
         "flags": [],
         "lines": [],
         "usage": [],
+        "route_events": [],
         "mode": settings.get("mode", "cleanest"),
         "negation_applied": 0,
         "gold": 0,
@@ -3031,6 +3227,9 @@ def _run_direction_pass(
     drain = getattr(provider, "drain_usage", None)
     if callable(drain):
         summary["usage"] = drain() or []
+    drain_events = getattr(provider, "drain_route_events", None)
+    if callable(drain_events):
+        summary["route_events"] = drain_events() or []
     post_timeline = Timeline(transcript, _effective_cuts(config))
     flags = _filter_direction_flags(
         raw_flags or [],
@@ -3067,6 +3266,13 @@ def _run_direction_pass(
             f"{summary['flagged_ops']} suggestion"
             f"{'s' if summary['flagged_ops'] != 1 else ''} set aside "
             "for your review."
+        )
+    for event in summary.get("route_events") or []:
+        # A hosted route that could not serve the read fell back
+        # to Meta; the recap says which route actually ran.
+        lines.append(
+            f"{ROUTE_LABELS.get(event.get('requested'), 'The hosted route')} "
+            "could not be reached, so this read ran on Meta."
         )
     lines.extend(flag["recap"] for flag in flags)
     if not lines:
@@ -3886,6 +4092,7 @@ def _run_shadow(
     """
     counts = {"scored": 0, "flips": 0, "ties": 0, "excluded": 0}
     counts["usage"] = []
+    counts["route_events"] = []
     decisions = record.get("decisions") or {}
     existing = {
         entry.get("pair_key"): entry
@@ -3933,7 +4140,7 @@ def _run_shadow(
     if to_judge:
         provider = None
         if provider_name == "meta":
-            provider = MetaProvider(config.signin_key())
+            provider = _live_provider(config)
         elif provider_name == "mock":
             provider = MockProvider()
         if provider is not None:
@@ -3952,6 +4159,9 @@ def _run_shadow(
             drain = getattr(provider, "drain_usage", None)
             if callable(drain):
                 counts["usage"] = drain() or []
+            drain_events = getattr(provider, "drain_route_events", None)
+            if callable(drain_events):
+                counts["route_events"] = drain_events() or []
     for pair in candidates:
         answer = judged.get(pair["pair_id"])
         if answer is None:
@@ -4033,6 +4243,7 @@ def _run_retake_pass(
         "flagged": 0,
         "kept_both": 0,
         "usage": [],
+        "route_events": [],
     }
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     profile = _load_optional_file(config.job_dir / "profile.json")
@@ -4062,6 +4273,7 @@ def _run_retake_pass(
             for key in ("scored", "flips", "ties", "excluded")
         }
         summary["usage"].extend(shadow.get("usage") or [])
+        summary["route_events"].extend(shadow.get("route_events") or [])
     summary["pairs"] = len(pairs)
     summary["band_a"] = len(
         [pair for pair in pairs if pair["band"] == "a"]
@@ -4091,7 +4303,7 @@ def _run_retake_pass(
     if borderline:
         provider = None
         if provider_name == "meta":
-            provider = MetaProvider(config.signin_key())
+            provider = _live_provider(config)
         elif provider_name == "mock":
             provider = MockProvider()
         judged = None
@@ -4114,6 +4326,9 @@ def _run_retake_pass(
             drain = getattr(provider, "drain_usage", None)
             if callable(drain):
                 summary["usage"].extend(drain() or [])
+            drain_events = getattr(provider, "drain_route_events", None)
+            if callable(drain_events):
+                summary["route_events"].extend(drain_events() or [])
         if judged is not None:
             judged_ops, verdicts = judged
         for pair in borderline:
@@ -4486,6 +4701,16 @@ def _adopt_job(httpd, job_root: Path) -> WebAppConfig:
         "session_elevenlabs_key",
         getattr(current, "session_elevenlabs_key", None),
     )
+    setattr(
+        config,
+        "session_baseten_key",
+        getattr(current, "session_baseten_key", None),
+    )
+    setattr(
+        config,
+        "session_fireworks_key",
+        getattr(current, "session_fireworks_key", None),
+    )
     httpd.config = config  # type: ignore[attr-defined]
     _kick_playback_copies(config)
     return config
@@ -4800,6 +5025,12 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 f"{retake_summary.get('flagged', 0)} set aside for "
                 "your call."
             )
+            for event in retake_summary.get("route_events") or []:
+                recap.append(
+                    f"{ROUTE_LABELS.get(event.get('requested'), 'The hosted route')} "
+                    "could not be reached, so the retake check "
+                    "ran on Meta."
+                )
         if filler_summary is not None:
             recap.extend(filler_summary.get("lines", []))
         if silence_summary is not None:
@@ -5722,6 +5953,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_signin_remove()
         elif path == "/api/signin/check":
             self._post_signin_check()
+        elif path == "/api/spark-route":
+            self._post_spark_route()
         elif path == "/api/direct":
             self._post_direct()
         elif path == "/api/front-door":
@@ -6001,6 +6234,10 @@ class _Handler(BaseHTTPRequestHandler):
         new_config.session_api_key = self.config.session_api_key
         new_config.session_elevenlabs_key = (
             self.config.session_elevenlabs_key
+        )
+        new_config.session_baseten_key = self.config.session_baseten_key
+        new_config.session_fireworks_key = (
+            self.config.session_fireworks_key
         )
         self.server.config = new_config  # type: ignore[attr-defined]
         _kick_playback_copies(new_config)
@@ -6368,6 +6605,7 @@ class _Handler(BaseHTTPRequestHandler):
             bool(body.get("has_direction")),
             route=route,
             history_entries=costs.load_money_entries(),
+            spark_route=self.config.spark_route(),
         )
         self._send_json(200, {"ok": True, "estimate": estimate})
 
@@ -6466,6 +6704,7 @@ class _Handler(BaseHTTPRequestHandler):
                     costs.dictation_cost(result["duration_s"]),
                     "one dictated note",
                     duration_s=result["duration_s"],
+                    pool="meta",
                 )
             ],
         )
@@ -6485,7 +6724,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         kind = str(body.get("kind") or "meta").strip().lower()
         if kind not in KEY_KINDS:
-            self._error(400, "Choose the Meta key or the ElevenLabs key.")
+            self._error(
+                400,
+                "Choose which key it is: Meta, ElevenLabs, "
+                "Baseten, or Fireworks.",
+            )
             return
         key = body.get("api_key")
         if not isinstance(key, str) or not key.strip():
@@ -6510,7 +6753,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         kind = str(body.get("kind") or "").strip().lower()
         if kind not in KEY_KINDS:
-            self._error(400, "Choose the Meta key or the ElevenLabs key.")
+            self._error(
+                400,
+                "Choose which key it is: Meta, ElevenLabs, "
+                "Baseten, or Fireworks.",
+            )
             return
         key = body.get("api_key")
         if not isinstance(key, str) or not key.strip():
@@ -6546,7 +6793,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         kind = str(body.get("kind") or "").strip().lower()
         if kind not in KEY_KINDS:
-            self._error(400, "Choose the Meta key or the ElevenLabs key.")
+            self._error(
+                400,
+                "Choose which key it is: Meta, ElevenLabs, "
+                "Baseten, or Fireworks.",
+            )
             return
         saved = _read_mac_key(kind)
         _remove_mac_key(kind)
@@ -6559,9 +6810,42 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, "request body must be a JSON object")
             return
         accepted, message = _check_signin(self.config)
+        hosted = {}
+        for route in HOSTED_SPARK_ROUTES:
+            result = _check_hosted(self.config, route)
+            if result is not None:
+                hosted[route] = result
         self._send_json(
-            200, {"ok": True, "accepted": accepted, "message": message}
+            200,
+            {
+                "ok": True,
+                "accepted": accepted,
+                "message": message,
+                "hosted": hosted,
+            },
         )
+
+    def _post_spark_route(self) -> None:
+        """Set the route Spark-tier work rides (v0.8.1).
+
+        The choice is creator-level: it is written into the
+        creator's usual, so it persists across jobs and restarts
+        like the front door choices do, and the next run on any
+        surface uses it. Wonder is not part of the choice: it
+        only exists on Meta.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        route = str(body.get("route") or "").strip().lower()
+        if route not in ("meta",) + HOSTED_SPARK_ROUTES:
+            self._error(400, "Choose Meta, Baseten, or Fireworks.")
+            return
+        settings = usual.load_usual(dict(FRONT_DOOR_DEFAULTS))
+        settings["spark_route"] = route
+        usual.save_usual(settings)
+        self._send_json(200, {"ok": True, **_signin_state(self.config)})
 
     def _post_comments(self) -> None:
         body = self._read_json_body()

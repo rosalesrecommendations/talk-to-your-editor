@@ -104,6 +104,28 @@ if [ -s "$EL_KEY_FILE" ]; then
   fi
   unset SAVED_EL_KEY
 fi
+# Baseten and Fireworks keys saved on this Mac the same way let
+# Spark-tier work ride those credit pools when the route chosen
+# on the page names them. With neither saved, Spark work runs
+# on the Meta sign-in alone, exactly as before.
+BT_KEY_FILE="$KEY_DIR/baseten_key"
+if [ -s "$BT_KEY_FILE" ]; then
+  IFS= read -r SAVED_BT_KEY < "$BT_KEY_FILE" || true
+  if [ -n "$SAVED_BT_KEY" ]; then
+    export BASETEN_API_KEY="$SAVED_BT_KEY"
+    printf 'Using the saved Baseten key from this Mac. The Baseten credit route is available.\n\n'
+  fi
+  unset SAVED_BT_KEY
+fi
+FW_KEY_FILE="$KEY_DIR/fireworks_key"
+if [ -s "$FW_KEY_FILE" ]; then
+  IFS= read -r SAVED_FW_KEY < "$FW_KEY_FILE" || true
+  if [ -n "$SAVED_FW_KEY" ]; then
+    export FIREWORKS_API_KEY="$SAVED_FW_KEY"
+    printf 'Using the saved Fireworks key from this Mac. The Fireworks credit route is available.\n\n'
+  fi
+  unset SAVED_FW_KEY
+fi
 if [ -z "${MODEL_API_KEY:-}" ]; then
   printf 'Offline mock direction is on. To use live Muse direction, paste your\n'
   printf 'Meta Model API key in the sign-in box on the page; it is kept for the\n'

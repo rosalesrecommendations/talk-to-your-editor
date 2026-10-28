@@ -88,10 +88,11 @@ class IsolatedHomeCase(unittest.TestCase):
 
 
 class UsualStoreTests(IsolatedHomeCase):
-    def test_round_trip_writes_only_the_seven_keys(self):
-        # Seven since v0.7.1: the involvement mode joined the front
-        # door choices the usual carries.
+    def test_round_trip_writes_only_the_stored_keys(self):
+        # Seven since v0.7.1 (the involvement mode joined), eight
+        # since v0.8.1: the chosen Spark route rides along too.
         settings = {
+            "spark_route": "baseten",
             "remove_retakes": False,
             "cut_silence": False,
             "buffer_s": 0.25,

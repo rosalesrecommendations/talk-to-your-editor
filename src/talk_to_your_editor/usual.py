@@ -31,12 +31,17 @@ USUAL_KEYS = (
     "breaths",
     "remove_fillers",
     "mode",
+    "spark_route",
 )
 
 _BOOL_KEYS = ("remove_retakes", "cut_silence", "remove_fillers")
 _KEEP_MODES = ("last", "first", "best")
 _BREATH_MODES = ("keep", "trim")
 _INVOLVEMENT_MODES = ("cleanest", "tailor")
+# Which route Spark-tier model work rides (v0.8.1): the Meta
+# Model API, or one of the hosted partner credit pools. Wonder
+# always stays on Meta; this choice is Spark's alone.
+_SPARK_ROUTES = ("meta", "baseten", "fireworks")
 BUFFER_MIN_S = 0.05
 BUFFER_MAX_S = 0.50
 
@@ -51,6 +56,7 @@ _FALLBACKS = {
     "breaths": "keep",
     "remove_fillers": True,
     "mode": "cleanest",
+    "spark_route": "meta",
 }
 
 USUAL_DIR_NAME = ".talk-to-your-editor"
@@ -87,6 +93,8 @@ def _clean_value(key: str, value, fallback):
         return value if value in _BREATH_MODES else fallback
     if key == "mode":
         return value if value in _INVOLVEMENT_MODES else fallback
+    if key == "spark_route":
+        return value if value in _SPARK_ROUTES else fallback
     return fallback
 
 

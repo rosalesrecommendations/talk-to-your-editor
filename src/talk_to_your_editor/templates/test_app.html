@@ -961,6 +961,28 @@
       <button id="saveElevenMac" type="button">Save on this Mac</button>
     </div>
     <p class="note" id="elevenMacRow" hidden><span id="elevenMacState"></span> <button id="removeElevenMac" type="button">Remove the saved ElevenLabs key</button></p>
+    <p class="note">Spark-tier work (reading your direction, the retake check) can ride a hosted credit pool instead of your Meta balance. Muse Wonder reviews always stay on Meta.</p>
+    <div class="row">
+      <label for="sparkRoute">Spark work runs on</label>
+      <select id="sparkRoute">
+        <option value="meta">Meta</option>
+        <option value="baseten">Baseten credits</option>
+        <option value="fireworks">Fireworks credits</option>
+      </select>
+      <span class="note" id="sparkRouteState"></span>
+    </div>
+    <div class="row">
+      <input id="basetenKey" type="password" placeholder="Paste a Baseten key (for Spark work on Baseten credits)" autocomplete="off">
+      <button id="saveBaseten" type="button">Use this key for this session</button>
+      <button id="saveBasetenMac" type="button">Save on this Mac</button>
+    </div>
+    <p class="note" id="basetenMacRow" hidden><span id="basetenMacState"></span> <button id="removeBasetenMac" type="button">Remove the saved Baseten key</button></p>
+    <div class="row">
+      <input id="fireworksKey" type="password" placeholder="Paste a Fireworks key (for Spark work on Fireworks credits)" autocomplete="off">
+      <button id="saveFireworks" type="button">Use this key for this session</button>
+      <button id="saveFireworksMac" type="button">Save on this Mac</button>
+    </div>
+    <p class="note" id="fireworksMacRow" hidden><span id="fireworksMacState"></span> <button id="removeFireworksMac" type="button">Remove the saved Fireworks key</button></p>
     <p class="note">A key used for this session only is kept in memory, never written to a file, never shown back, and gone when the server stops. Saving a key on this Mac writes it to a private file in your home folder instead, so the app finds it again after a restart and after a new kit download. The key itself is never displayed.</p>
     <p class="status-line" id="signinStatus"></p>
     <p class="status-line job-only" id="directStatus"></p>
@@ -2417,6 +2439,31 @@
           ? "ElevenLabs key saved on this Mac. It will be here after a restart, and after a new kit download."
           : "";
       }
+      [["baseten", "Baseten"], ["fireworks", "Fireworks"]].forEach(function (pair) {
+        var row = document.getElementById(pair[0] + "MacRow");
+        var state = document.getElementById(pair[0] + "MacState");
+        var saved = s[pair[0] + "_saved_on_mac"];
+        if (row && state) {
+          row.hidden = !saved;
+          state.textContent = saved
+            ? pair[1] + " key saved on this Mac. It will be here after a restart, and after a new kit download."
+            : "";
+        }
+      });
+      var routeSel = document.getElementById("sparkRoute");
+      var routeState = document.getElementById("sparkRouteState");
+      if (routeSel && s.spark_route) { routeSel.value = s.spark_route; }
+      if (routeState) {
+        if (s.spark_route && s.spark_route !== "meta" && s.spark_route_effective === "meta") {
+          routeState.textContent = "No key for that route is saved yet, so Spark work runs on Meta until one is.";
+        } else if (s.spark_route_effective === "baseten") {
+          routeState.textContent = "Spark work will ride the Baseten credits.";
+        } else if (s.spark_route_effective === "fireworks") {
+          routeState.textContent = "Spark work will ride the Fireworks credits.";
+        } else {
+          routeState.textContent = "";
+        }
+      }
     }).catch(function () {
       signinStateEl.textContent = "";
     });
@@ -2469,8 +2516,57 @@
 
   wireKeyButtons("saveSigninMac", "signinKey", "meta", "Meta");
   wireKeyButtons("saveElevenMac", "elevenKey", "elevenlabs", "ElevenLabs");
+  wireKeyButtons("saveBasetenMac", "basetenKey", "baseten", "Baseten");
+  wireKeyButtons("saveFireworksMac", "fireworksKey", "fireworks", "Fireworks");
   wireKeyRemove("removeMetaMac", "meta", "Meta");
   wireKeyRemove("removeElevenMac", "elevenlabs", "ElevenLabs");
+  wireKeyRemove("removeBasetenMac", "baseten", "Baseten");
+  wireKeyRemove("removeFireworksMac", "fireworks", "Fireworks");
+
+  function wireSessionKey(btnId, inputId, kind, label, doneText) {
+    var btn = document.getElementById(btnId);
+    if (!btn) { return; }
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(inputId);
+      var key = input.value.trim();
+      if (!key) { input.focus(); return; }
+      postJson("/api/signin", { kind: kind, api_key: key }).then(function (res) {
+        var data = res.data || {};
+        if (data.ok) {
+          input.value = "";
+          signinStatusEl.textContent = doneText;
+          refreshSignin();
+        } else {
+          signinStatusEl.textContent = "Could not save the key: " + (data.error || res.status);
+        }
+      }).catch(function (err) {
+        signinStatusEl.textContent = "Could not save the key: " + err;
+      });
+    });
+  }
+
+  wireSessionKey("saveBaseten", "basetenKey", "baseten", "Baseten",
+    "Saved for this session. Spark work on the Baseten route will use this key until the server stops.");
+  wireSessionKey("saveFireworks", "fireworksKey", "fireworks", "Fireworks",
+    "Saved for this session. Spark work on the Fireworks route will use this key until the server stops.");
+
+  var sparkRouteSel = document.getElementById("sparkRoute");
+  if (sparkRouteSel) {
+    sparkRouteSel.addEventListener("change", function () {
+      postJson("/api/spark-route", { route: sparkRouteSel.value }).then(function (res) {
+        var data = res.data || {};
+        if (data.ok) {
+          signinStatusEl.textContent = "Spark work now runs on "
+            + sparkRouteSel.options[sparkRouteSel.selectedIndex].text + ".";
+          refreshSignin();
+        } else {
+          signinStatusEl.textContent = "That route could not be set: " + (data.error || res.status);
+        }
+      }).catch(function (err) {
+        signinStatusEl.textContent = "That route could not be set: " + err;
+      });
+    });
+  }
 
   var saveElevenBtn = document.getElementById("saveEleven");
   if (saveElevenBtn) {
@@ -2494,12 +2590,22 @@
   }
 
   document.getElementById("checkSignin").addEventListener("click", function () {
-    signinStatusEl.textContent = "Checking the Meta sign-in...";
+    signinStatusEl.textContent = "Checking the sign-ins...";
     postJson("/api/signin/check", {}).then(function (res) {
       var data = res.data || {};
-      signinStatusEl.textContent = data.ok
-        ? data.message
-        : "The check did not finish: " + (data.error || res.status);
+      if (!data.ok) {
+        signinStatusEl.textContent = "The check did not finish: " + (data.error || res.status);
+        return;
+      }
+      var parts = [data.message];
+      if (data.hosted) {
+        ["baseten", "fireworks"].forEach(function (r) {
+          if (data.hosted[r] && data.hosted[r].message) {
+            parts.push(data.hosted[r].message);
+          }
+        });
+      }
+      signinStatusEl.textContent = parts.join(" ");
     }).catch(function (err) {
       signinStatusEl.textContent = "The check did not finish: " + err;
     });
@@ -4258,6 +4364,16 @@
       macLines.forEach(function (row) {
         moneyBody.appendChild(moneyLine(row.label + ": " + row.text + "."));
       });
+      var pools = mac.pools || [];
+      if (pools.length > 1) {
+        var poolHead = document.createElement("p");
+        poolHead.className = "note";
+        poolHead.textContent = "By pool:";
+        moneyBody.appendChild(poolHead);
+        pools.forEach(function (row) {
+          moneyBody.appendChild(moneyLine(row.label + ": " + row.text + "."));
+        });
+      }
       moneyBody.appendChild(
         moneyLine("Running total: " + mac.total_text + ".")
       );

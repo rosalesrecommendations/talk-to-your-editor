@@ -12,11 +12,26 @@ This version is built around one idea: keep the front door simple. Two choices, 
 
 ## Mac test
 
-### 0. New in 0.8.0: the picture arrives, side by side, highlight editing
+### 0. New in 0.8.1: Spark work can ride your Baseten or Fireworks credits
+
+The hackathon gave you two $100 credit pools that serve the same Spark model the editor uses for its reading work: Baseten and Fireworks. This version lets that work ride a pool instead of your Meta balance. Muse Wonder, the second review, exists only on Meta, so it stays there no matter what you choose.
+
+1. Open the **Meta sign-in** card. Under the ElevenLabs rows there are now two more key rows, **Baseten key** and **Fireworks key**, and above them a **Spark work runs on** choice: Meta, Baseten credits, or Fireworks credits. Paste a Baseten or Fireworks key and press its **Use for this session** button, or **Save on this Mac** to keep it for every launch, the same as your other keys.
+2. Choose **Baseten credits** (or Fireworks) in the Spark route choice. The line beside it says the route is on. If you pick a route whose key is not saved yet, the line says so plainly, and Spark work runs on Meta until a key is there.
+3. Press **Check the sign-ins**. Each hosted key you have saved gets its own plain answer ("Your Fireworks key was accepted."), and a refused key says so in plain words and notes that Spark work runs on Meta until it works.
+4. Make an edit with direction, or drop a video and make its first edit. The recap's cost lines name the pool the Spark work rode: "Reading your direction (Fireworks credits): about 5 cents." The Wonder review line still reads plain, because it ran on Meta.
+5. Open **What the editing has cost**. Under this Mac's totals there is a **By pool** list: the Meta estimate, the Baseten credits used, and the Fireworks credits used, each on its own line, so you can watch each pool drain on its own.
+6. The before-it-runs estimate under the edit buttons follows the route too: with Fireworks chosen it prices the direction read and the retake check against the Fireworks pool.
+7. If a hosted route cannot be reached during a run, the run finishes on Meta and the recap says so: "Fireworks could not be reached, so this read ran on Meta." Nothing about the edit itself changes: same prompts, same checks, same safety rules. Only the wire changed.
+8. With no hosted key saved, everything behaves exactly as 0.8.0 did. The route choice just sits on Meta.
+
+Costs on the hosted routes are estimates, derived the same documented way as the Meta rates (neither provider publishes per-token prices in our records): the retake check prices at about 2 cents a run and the direction read at about 5 cents, now drawn from the chosen pool's $100 instead of the Meta balance. The Wonder review, about 59 cents when a run needs it, is always Meta's.
+
+### 0b. New in 0.8.0 (last version): the picture arrives, side by side, highlight editing
 
 This version answers your first real test, the 13-minute video that sat on "Getting your video ready to watch" for 45 minutes.
 
-1. Drop the same long video (or any long iPhone .mov) and start its first edit. While the watchable copy is being made, the player shows a percentage that climbs ("Getting your video ready to watch... 42%. You can keep editing; the picture will catch up."). On the build machine, a far weaker computer than your MacBook Pro, a 13-minute video took 126 seconds; yours should land in that neighborhood or faster. Only that one message shows; the old "could not play" text never appears over it.
+1. Drop the same long video (or any long iPhone .mov) and start its first edit. While the watchable copy is being made, the player shows a percentage that climbs ("Getting your video ready to watch... 42%. You can keep editing; the picture will catch up."). On the build machine, a far weaker computer than your MacBook Pro, a 13-minute video's copy was ready end to end in 339 seconds; yours, with the hardware encoder, should be faster. Only that one message shows; the old "could not play" text never appears over it.
 2. While it climbs, scroll the transcript and make edits. Everything works during the wait. When the copy is ready, the picture appears on its own, no reload.
 3. Reload the page mid-build on purpose: the percentage keeps climbing, the copy is still built only once, and leaving and coming back later reuses the finished copy.
 4. Look at the layout: video on the left, transcript on the right, each scrolling on its own. Scroll the transcript; the video stays. Play the video; the words still follow along. Narrow the window and the page stacks back into the old single column.

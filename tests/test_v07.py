@@ -205,7 +205,9 @@ class NoJobSummaryTests(unittest.TestCase):
         self.assertEqual(
             set(front_door),
             {"remove_retakes", "cut_silence", "buffer_s", "keep_mode",
-             "breaths", "remove_fillers", "mode"})
+             "breaths", "remove_fillers", "mode",
+             # v0.8.1: the chosen Spark route rides the front door.
+             "spark_route"})
         self.assertEqual(summary["flags"], [])
         self.assertEqual(summary["gold"], [])
 

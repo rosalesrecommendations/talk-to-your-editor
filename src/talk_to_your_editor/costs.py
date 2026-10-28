@@ -52,6 +52,17 @@ Local work is $0 and says so: faster-whisper transcription on
 this computer, the deterministic filler pass, and the silence
 pass. The also-noticed flags ride along on the direction call
 that already ran, so their marginal cost is $0 too.
+
+Hosted Spark routes (v0.8.1): a Spark-tier call may ride the
+Baseten or Fireworks credit pools instead of the Meta balance.
+Neither provider publishes per-token prices in our records, so
+hosted calls price at the same derived Spark rates above, and
+every figure stays labeled an estimate. What the route changes
+is the POOL the estimate is charged to: each cost entry names
+its pool (Meta, Baseten credits, Fireworks credits, ElevenLabs,
+or this computer), the recap names a hosted pool on the line it
+paid for, and the money view keeps the pools apart so each
+pool's drain is visible on its own.
 """
 
 from __future__ import annotations
@@ -88,6 +99,29 @@ FEATURES = (
 FEATURE_LABELS = dict(FEATURES)
 FEATURE_ORDER = {key: index for index, (key, _label) in enumerate(FEATURES)}
 
+# The pools a cost can be charged to (v0.8.1), in the order the
+# money views list them, with the plain label the page shows.
+# "meta" is the pay-as-you-go Meta balance the app has always
+# estimated against; "baseten" and "fireworks" are the two $100
+# hackathon partner credit pools; "elevenlabs" is the Scribe
+# transcription route's own billing; "local" is work that ran
+# on this computer and cost nothing.
+POOLS = ("meta", "baseten", "fireworks", "elevenlabs", "local")
+POOL_LABELS = {
+    "meta": "Meta",
+    "baseten": "Baseten credits",
+    "fireworks": "Fireworks credits",
+    "elevenlabs": "ElevenLabs",
+    "local": "On this computer",
+}
+POOL_ORDER = {pool: index for index, pool in enumerate(POOLS)}
+# The suffix a recap line carries when a hosted pool paid for
+# the feature. Meta lines keep the wording they have always had.
+POOL_SUFFIX = {
+    "baseten": " (Baseten credits)",
+    "fireworks": " (Fireworks credits)",
+}
+
 COSTS_FILENAME = "costs.json"
 MONEY_DIR_NAME = ".talk-to-your-editor"
 MONEY_FILENAME = "money.json"
@@ -122,7 +156,9 @@ def token_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
 
     A model name carrying "wonder" prices at the Wonder rates;
     every other model the app calls (Muse Spark on Meta, Muse
-    Spark Open on Baseten) prices at the Spark rates.
+    Spark Open on Baseten or Fireworks) prices at the Spark
+    rates. The route a call rode decides the pool it is charged
+    to, never the rate.
     """
     if "wonder" in str(model or "").lower():
         per_m_prompt = WONDER_USD_PER_M_PROMPT
@@ -135,6 +171,20 @@ def token_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
     ) / 1_000_000.0
 
 
+def _usage_entry_cost(entry) -> tuple:
+    """(usd, is_wonder) for one captured usage entry, or None
+    when the entry is too malformed to price."""
+    if not isinstance(entry, dict):
+        return None
+    try:
+        prompt = int(entry.get("prompt_tokens") or 0)
+        completion = int(entry.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        return None
+    cost = token_cost(entry.get("model"), prompt, completion)
+    return cost, "wonder" in str(entry.get("model") or "").lower()
+
+
 def split_usage_cost(usage) -> tuple:
     """(spark_usd, wonder_usd) for a list of captured usage entries.
 
@@ -145,19 +195,42 @@ def split_usage_cost(usage) -> tuple:
     spark = 0.0
     wonder = 0.0
     for entry in usage or []:
-        if not isinstance(entry, dict):
+        priced = _usage_entry_cost(entry)
+        if priced is None:
             continue
-        try:
-            prompt = int(entry.get("prompt_tokens") or 0)
-            completion = int(entry.get("completion_tokens") or 0)
-        except (TypeError, ValueError):
-            continue
-        cost = token_cost(entry.get("model"), prompt, completion)
-        if "wonder" in str(entry.get("model") or "").lower():
+        cost, is_wonder = priced
+        if is_wonder:
             wonder += cost
         else:
             spark += cost
     return spark, wonder
+
+
+def split_usage_cost_by_route(usage) -> dict:
+    """{route: (spark_usd, wonder_usd)} for captured usage entries.
+
+    Usage entries recorded since v0.8.1 name the route that
+    served the call; older entries, and any without a usable
+    route, belong to "meta", the only route there was. Wonder
+    usage is always on the Meta route, whatever an entry claims:
+    Wonder exists nowhere else.
+    """
+    by_route: dict = {}
+    for entry in usage or []:
+        priced = _usage_entry_cost(entry)
+        if priced is None:
+            continue
+        cost, is_wonder = priced
+        route = entry.get("route") if isinstance(entry, dict) else None
+        if is_wonder or route not in POOLS:
+            route = "meta"
+        spark, wonder = by_route.get(route, (0.0, 0.0))
+        if is_wonder:
+            wonder += cost
+        else:
+            spark += cost
+        by_route[route] = (spark, wonder)
+    return by_route
 
 
 def transcription_cost(route: str, duration_s: float) -> float:
@@ -224,8 +297,37 @@ def cost_line(label: str, usd: float) -> str:
 # ---------------------------------------------------------------------------
 
 
+def derive_pool(feature: str, usd: float) -> str:
+    """The pool an entry belongs to when it does not name one.
+
+    Records written before pools existed were all charged the
+    way the app worked then: model features to Meta, paid
+    transcription to ElevenLabs, and the deterministic passes
+    to this computer, which is free either way.
+    """
+    if feature == "transcription":
+        return "elevenlabs" if usd > 0 else "local"
+    if feature in ("filler", "silence"):
+        return "local"
+    return "meta"
+
+
+def entry_pool(entry: dict) -> str:
+    """One cost entry's pool, named or derived."""
+    pool = entry.get("pool")
+    if pool in POOLS:
+        return pool
+    return derive_pool(entry.get("feature"), float(entry.get("usd") or 0.0))
+
+
+def row_label(feature: str, pool: str) -> str:
+    """The recap label for one feature charged to one pool: the
+    feature's own label, with a hosted pool named in parentheses."""
+    return FEATURE_LABELS[feature] + POOL_SUFFIX.get(pool, "")
+
+
 def make_entry(
-    feature: str, usd: float, detail: str = "", duration_s=None
+    feature: str, usd: float, detail: str = "", duration_s=None, pool=None
 ) -> dict:
     entry = {
         "at": _utc_now(),
@@ -233,6 +335,8 @@ def make_entry(
         "usd": float(usd or 0.0),
         "detail": detail,
     }
+    if pool in POOLS:
+        entry["pool"] = pool
     if duration_s:
         entry["duration_s"] = float(duration_s)
     return entry
@@ -258,6 +362,11 @@ def _clean_entries(raw) -> list:
             "feature": feature,
             "usd": usd,
             "detail": str(item.get("detail") or ""),
+            "pool": (
+                item.get("pool")
+                if item.get("pool") in POOLS
+                else derive_pool(feature, usd)
+            ),
         }
         try:
             duration = float(item.get("duration_s") or 0.0)
@@ -371,25 +480,47 @@ def reset_money() -> None:
 
 
 def _by_feature(entries: list) -> list:
-    """[{feature, label, usd, text}] for the features present,
-    in canonical order, with each feature's total."""
+    """[{feature, pool, label, usd, text}] for the features
+    present, in canonical order, with each feature's total per
+    pool. A feature that ran on two pools gets a line per pool,
+    so the recap names which pool paid for which part."""
     totals: dict = {}
     for entry in entries:
-        totals[entry["feature"]] = (
-            totals.get(entry["feature"], 0.0) + entry["usd"]
-        )
+        key = (entry["feature"], entry_pool(entry))
+        totals[key] = totals.get(key, 0.0) + entry["usd"]
     rows = []
-    for feature in sorted(totals, key=lambda f: FEATURE_ORDER[f]):
-        usd = totals[feature]
+    for feature, pool in sorted(
+        totals, key=lambda k: (FEATURE_ORDER[k[0]], POOL_ORDER[k[1]])
+    ):
+        usd = totals[(feature, pool)]
         rows.append(
             {
                 "feature": feature,
-                "label": FEATURE_LABELS[feature],
+                "pool": pool,
+                "label": row_label(feature, pool),
                 "usd": usd,
                 "text": format_usd(usd),
             }
         )
     return rows
+
+
+def _by_pool(entries: list) -> list:
+    """[{pool, label, usd, text}] for the pools present, in
+    canonical order, with each pool's total."""
+    totals: dict = {}
+    for entry in entries:
+        pool = entry_pool(entry)
+        totals[pool] = totals.get(pool, 0.0) + entry["usd"]
+    return [
+        {
+            "pool": pool,
+            "label": POOL_LABELS[pool],
+            "usd": totals[pool],
+            "text": format_usd(totals[pool]),
+        }
+        for pool in sorted(totals, key=lambda p: POOL_ORDER[p])
+    ]
 
 
 def job_cost_block(entries: list) -> Optional[dict]:
@@ -430,6 +561,7 @@ def money_view(session_entries, mac_entries: list) -> dict:
         "job": job_block,
         "mac": {
             "lines": rows,
+            "pools": _by_pool(mac_entries),
             "total_usd": total,
             "total_text": format_usd(total),
             "jobs": len(jobs),
@@ -496,6 +628,7 @@ def estimate_run(
     has_direction: bool,
     route: str = "local",
     history_entries: Optional[list] = None,
+    spark_route: str = "meta",
 ) -> dict:
     """What one run will probably cost, before it runs.
 
@@ -505,7 +638,15 @@ def estimate_run(
     creator has set. Recent-run history wins where the Mac has
     it; the documented typicals carry the rest. The returned
     lines are only the features this run would use.
+
+    ``spark_route`` is the route Spark-tier work will ride: the
+    hosted rates are the same derived Spark rates, so the route
+    changes only which pool each Spark line is charged to, and
+    the hosted pool is named on the line. Wonder is estimated
+    on Meta whatever the Spark route: it exists nowhere else.
     """
+    if spark_route not in ("meta", "baseten", "fireworks"):
+        spark_route = "meta"
     settings = settings or {}
     history = _history(history_entries or [])
     duration_s = max(0.0, float(duration_s or 0.0))
@@ -540,6 +681,15 @@ def estimate_run(
     if settings.get("cut_silence"):
         picked["silence"] = 0.0
 
+    def pool_of(feature: str) -> str:
+        if feature == "transcription":
+            return "elevenlabs" if route == "scribe" else "local"
+        if feature in ("retake_judge", "direction", "flags"):
+            return spark_route
+        if feature == "wonder":
+            return "meta"
+        return "local"
+
     rows = []
     for feature in sorted(picked, key=lambda f: FEATURE_ORDER[f]):
         usd = picked[feature]
@@ -548,10 +698,12 @@ def estimate_run(
             note = "on this computer"
         if feature == "flags":
             note = "rides along with the direction read"
+        pool = pool_of(feature)
         rows.append(
             {
                 "feature": feature,
-                "label": FEATURE_LABELS[feature],
+                "pool": pool,
+                "label": row_label(feature, pool),
                 "usd": usd,
                 "text": format_usd(usd),
                 "note": note,

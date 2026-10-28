@@ -1543,6 +1543,12 @@ class SigninTests(unittest.TestCase):
                 "meta_saved_on_mac": False,
                 "elevenlabs_signin_set": False,
                 "elevenlabs_saved_on_mac": False,
+                "baseten_signin_set": False,
+                "baseten_saved_on_mac": False,
+                "fireworks_signin_set": False,
+                "fireworks_saved_on_mac": False,
+                "spark_route": "meta",
+                "spark_route_effective": "meta",
             },
         )
         os.environ["MODEL_API_KEY"] = "sk-server-side-key"
@@ -1555,6 +1561,12 @@ class SigninTests(unittest.TestCase):
                 "meta_saved_on_mac": False,
                 "elevenlabs_signin_set": False,
                 "elevenlabs_saved_on_mac": False,
+                "baseten_signin_set": False,
+                "baseten_saved_on_mac": False,
+                "fireworks_signin_set": False,
+                "fireworks_saved_on_mac": False,
+                "spark_route": "meta",
+                "spark_route_effective": "meta",
             },
         )
 
@@ -1638,6 +1650,12 @@ class SigninTests(unittest.TestCase):
                 "meta_saved_on_mac": False,
                 "elevenlabs_signin_set": False,
                 "elevenlabs_saved_on_mac": False,
+                "baseten_signin_set": False,
+                "baseten_saved_on_mac": False,
+                "fireworks_signin_set": False,
+                "fireworks_saved_on_mac": False,
+                "spark_route": "meta",
+                "spark_route_effective": "meta",
             },
         )
 
@@ -1675,7 +1693,10 @@ class SigninTests(unittest.TestCase):
         class FakeMetaProvider:
             keys = []
 
-            def __init__(self, api_key=None, allow_wonder=True):
+            def __init__(self, api_key=None, allow_wonder=True,
+                         **route_options):
+                # v0.8.1: the provider constructor also takes the
+                # chosen Spark route and the hosted keys by name.
                 FakeMetaProvider.keys.append(api_key)
 
             def direct(self, feedback, timeline, profile=None):

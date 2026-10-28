@@ -15,6 +15,16 @@ Routing is deterministic and mirrors the verifier's risk tiers:
 Standard tier only. Contributor-tier model ids are rejected by the schema.
 The API key comes from the ``MODEL_API_KEY`` environment variable and is
 never written to code, files, or logs.
+
+Hosted Spark routes (v0.8.1): Spark-tier calls may instead ride one
+of the hackathon partner credit pools, Baseten or Fireworks, which
+serve Muse Spark Open over OpenAI-compatible chat completions.
+Only the transport changes (endpoint, bearer key, wire model id);
+prompts, calibration, parsing, and the operations' provenance are
+untouched, and Wonder always stays on the Meta route, the only
+place it exists. A hosted call that errors or times out falls back
+to the Meta route once, and the fallback is recorded as a route
+event so the recap can say which route actually ran.
 """
 
 from __future__ import annotations
@@ -40,6 +50,38 @@ API_URL = "https://api.meta.ai/v1/chat/completions"
 MODELS_URL = "https://api.meta.ai/v1/models"
 SPARK_MODEL = "muse-spark-1.3"
 WONDER_MODEL = "muse-wonder-1.0"
+
+# The routes a Spark-tier call can take (v0.8.1). "meta" is the
+# Meta Model API the app has always used. The two hosted routes
+# are the hackathon partner credit pools: each carries $100 of
+# credits for Muse Spark Open, is OpenAI-compatible, and takes a
+# bearer key. Wonder has no hosted route: it only exists on Meta.
+BASETEN_URL = "https://inference.baseten.co/v1/chat/completions"
+BASETEN_MODELS_URL = "https://inference.baseten.co/v1/models"
+BASETEN_SPARK_MODEL = "meta-models/muse-spark-open-1026"
+FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+FIREWORKS_MODELS_URL = "https://api.fireworks.ai/inference/v1/models"
+FIREWORKS_SPARK_MODEL = "accounts/fireworks/models/muse-spark-open"
+
+SPARK_ROUTES = {
+    "meta": {"url": API_URL, "models_url": MODELS_URL, "model": SPARK_MODEL},
+    "baseten": {
+        "url": BASETEN_URL,
+        "models_url": BASETEN_MODELS_URL,
+        "model": BASETEN_SPARK_MODEL,
+    },
+    "fireworks": {
+        "url": FIREWORKS_URL,
+        "models_url": FIREWORKS_MODELS_URL,
+        "model": FIREWORKS_SPARK_MODEL,
+    },
+}
+HOSTED_SPARK_ROUTES = ("baseten", "fireworks")
+ROUTE_LABELS = {
+    "meta": "Meta",
+    "baseten": "Baseten",
+    "fireworks": "Fireworks",
+}
 
 SCHEMA_SPEC = """Return JSON only: {"operations": [ ... ]}. Allowed operation types:
 - {"type":"cut_words","comment_id":str,"word_start":int,"word_end":int,"reason":str,"confidence":0..1,"model":str,"risk_tier":1..3}
@@ -296,6 +338,10 @@ class MockProvider:
         """The mock calls no model, so there is never usage to drain."""
         return []
 
+    def drain_route_events(self) -> list:
+        """The mock never leaves its own machine, so no route events."""
+        return []
+
     def direct(
         self,
         feedback: dict,
@@ -477,8 +523,50 @@ def _edit_guidance(feedback: dict) -> list[dict]:
     return guidance
 
 
+def check_hosted_signin(
+    route: str, api_key: Optional[str], timeout_s: float = 60.0
+) -> bool:
+    """One harmless list call to prove a hosted route's key works.
+
+    Mirrors ``MetaProvider.check_signin``: True when the service
+    answers the models list, False when it refuses the key
+    (401/403). Anything else raises ProviderError with the route's
+    own codes (``baseten_api_http_500``, ``fireworks_api_unreachable:...``),
+    so callers report it the same way they report a failed run.
+    No key material is logged.
+    """
+    spec = SPARK_ROUTES.get(route)
+    if spec is None or route == "meta":
+        raise ProviderError(f"unknown_hosted_route:{route}")
+    if not api_key:
+        raise ProviderError(f"{route} key is not set")
+    request = urllib.request.Request(
+        spec["models_url"],
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            response.read()
+        return True
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False
+        raise ProviderError(f"{route}_api_http_{exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise ProviderError(f"{route}_api_unreachable:{exc.reason}") from exc
+
+
 class MetaProvider:
-    """Live provider over the Meta Model API (OpenAI-compatible)."""
+    """Live provider over the Meta Model API (OpenAI-compatible).
+
+    Spark-tier calls may ride a hosted route (Baseten or
+    Fireworks) when the creator chose one and saved its key;
+    Wonder calls always use the Meta route. ``spark_route`` in
+    the state the app reads is the EFFECTIVE route: a chosen
+    hosted route with no key available resolves to "meta" at
+    construction, so a run never aims at a route it cannot use.
+    """
 
     name = "meta"
 
@@ -487,17 +575,45 @@ class MetaProvider:
         api_key: Optional[str] = None,
         allow_wonder: bool = True,
         timeout_s: float = 60.0,
+        spark_route: str = "meta",
+        baseten_key: Optional[str] = None,
+        fireworks_key: Optional[str] = None,
     ):
         self.api_key = api_key or os.environ.get("MODEL_API_KEY")
         self.allow_wonder = allow_wonder
         self.timeout_s = timeout_s
         self.usage_log: list[dict] = []
+        self._hosted_keys = {
+            "baseten": baseten_key or os.environ.get("BASETEN_API_KEY") or None,
+            "fireworks": fireworks_key
+            or os.environ.get("FIREWORKS_API_KEY")
+            or None,
+        }
+        requested = spark_route if spark_route in SPARK_ROUTES else "meta"
+        if requested != "meta" and not self._hosted_keys.get(requested):
+            requested = "meta"
+        self.spark_route = requested
+        self.route_events: list[dict] = []
 
     def drain_usage(self) -> list[dict]:
         """Return the usage recorded since the last drain, and clear it."""
         drained = self.usage_log
         self.usage_log = []
         return drained
+
+    def drain_route_events(self) -> list[dict]:
+        """Return the route fallbacks recorded since the last drain.
+
+        One entry per Spark call that asked for a hosted route and
+        ran on Meta instead: {"requested", "used", "error"}. The
+        recap reads these to say which route actually ran.
+        """
+        drained = self.route_events
+        self.route_events = []
+        return drained
+
+    def _hosted_key(self, route: str) -> Optional[str]:
+        return self._hosted_keys.get(route)
 
     def check_signin(self) -> bool:
         """One harmless list call to prove the sign-in works.
@@ -530,16 +646,19 @@ class MetaProvider:
                 f"meta_api_unreachable:{exc.reason}"
             ) from exc
 
-    def _record_usage(self, model: str, data: dict) -> None:
+    def _record_usage(self, model: str, data: dict, route: str = "meta") -> None:
         """Append one usage entry for a successful chat response.
 
         A response without a usage object is tolerated: it records
         zero tokens rather than failing the call over bookkeeping.
+        The entry names the wire model and the route that served
+        the call, so the cost accounting can charge the pool the
+        call actually drew on.
         """
         usage = data.get("usage") if isinstance(data, dict) else None
         if not isinstance(usage, dict):
             usage = {}
-        entry = {"model": model}
+        entry = {"model": model, "route": route}
         for key in ("prompt_tokens", "completion_tokens"):
             try:
                 entry[key] = int(usage.get(key) or 0)
@@ -551,8 +670,50 @@ class MetaProvider:
         log.append(entry)
 
     def _chat(self, model: str, messages: list[dict]) -> str:
+        """One chat call, on the transport the model tier calls for.
+
+        Wonder always goes to Meta. A Spark call goes to the
+        chosen hosted route when there is one; if that call errors
+        or times out, it is retried once on Meta (when a Meta key
+        exists) and the fallback is recorded as a route event, so
+        a hosted pool being down never strands a run that Meta
+        could have served.
+        """
+        if model == SPARK_MODEL and self.spark_route != "meta":
+            route = self.spark_route
+            spec = SPARK_ROUTES[route]
+            try:
+                return self._chat_once(
+                    spec["url"],
+                    self._hosted_key(route),
+                    spec["model"],
+                    messages,
+                    route,
+                )
+            except ProviderError as exc:
+                if not self.api_key:
+                    raise
+                self.route_events.append(
+                    {"requested": route, "used": "meta", "error": str(exc)}
+                )
         if not self.api_key:
             raise ProviderError("MODEL_API_KEY is not set")
+        return self._chat_once(API_URL, self.api_key, model, messages, "meta")
+
+    def _chat_once(
+        self,
+        url: str,
+        api_key: Optional[str],
+        model: str,
+        messages: list[dict],
+        route: str,
+    ) -> str:
+        """One chat call over one transport, with the standing
+        response_format retry. Errors carry the route's own code
+        prefix (``meta_api_http_401``, ``fireworks_api_unreachable:...``),
+        the shape the plain-words mapping has always read."""
+        if not api_key:
+            raise ProviderError(f"{route} key is not set")
         body = {
             "model": model,
             "messages": messages,
@@ -563,10 +724,10 @@ class MetaProvider:
             if not attempt:
                 payload.pop("response_format", None)
             request = urllib.request.Request(
-                API_URL,
+                url,
                 data=json.dumps(payload).encode("utf-8"),
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
                 method="POST",
@@ -576,15 +737,17 @@ class MetaProvider:
                     request, timeout=self.timeout_s
                 ) as response:
                     data = json.loads(response.read().decode("utf-8"))
-                self._record_usage(model, data)
+                self._record_usage(model, data, route)
                 return data["choices"][0]["message"]["content"]
             except urllib.error.HTTPError as exc:
                 if attempt and exc.code == 400:
                     continue  # response_format unsupported: retry without it
-                raise ProviderError(f"meta_api_http_{exc.code}") from exc
+                raise ProviderError(f"{route}_api_http_{exc.code}") from exc
             except urllib.error.URLError as exc:
-                raise ProviderError(f"meta_api_unreachable:{exc.reason}") from exc
-        raise ProviderError("meta_api_unreachable")
+                raise ProviderError(
+                    f"{route}_api_unreachable:{exc.reason}"
+                ) from exc
+        raise ProviderError(f"{route}_api_unreachable")
 
     def _propose(
         self, model: str, comment: dict, evidence: dict, extra: Optional[str] = None

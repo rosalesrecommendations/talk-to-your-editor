@@ -166,6 +166,9 @@ class V04Tests(unittest.TestCase):
                 # v0.7.1: the involvement mode rides along too;
                 # the Cleanest cut is the default.
                 "mode": "cleanest",
+                # v0.8.1: the Spark route rides along too; Meta
+                # is the default route.
+                "spark_route": "meta",
             },
         )
         self.assertEqual(summary["saved_rules"], [])
