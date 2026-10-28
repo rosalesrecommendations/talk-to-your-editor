@@ -42,7 +42,9 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -282,20 +284,204 @@ def _playback_attempts() -> list:
             [
                 "-c:v", "libx264", "-preset", "veryfast",
                 "-crf", "24", "-maxrate", "5M", "-bufsize", "10M",
+                "-threads", "0",
             ],
         ))
     return attempts
 
 
-def _convert_playback_copy(source: Path, dest: Path) -> bool:
+_DURATION_CACHE: dict = {}
+
+
+def _probe_duration_s(path: Path) -> Optional[float]:
+    """The file's duration in seconds, or None when unreadable.
+
+    Probed with ffprobe and cached per file version, the same
+    discipline as the codec probe. Conversion progress is measured
+    against this number; a file whose duration cannot be read
+    still converts, just without a percent to report.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = f"{path}|{stat.st_mtime_ns}|{stat.st_size}"
+    if key in _DURATION_CACHE:
+        return _DURATION_CACHE[key]
+    duration: Optional[float] = None
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        try:
+            out = subprocess.run(
+                [
+                    ffprobe, "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "csv=p=0", str(path),
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            lines = out.stdout.strip().splitlines()
+            if lines:
+                value = float(lines[0].strip())
+                if value > 0:
+                    duration = value
+        except (OSError, subprocess.SubprocessError, ValueError):
+            duration = None
+    _DURATION_CACHE[key] = duration
+    return duration
+
+
+# A conversion's bounds (v0.8.0). The stall window is the real
+# guard: an attempt whose encoded position has not advanced for
+# this long is stuck, whatever its process thinks, and is killed
+# so the ladder falls over to the next encoder. The caps scale
+# with the video's own length, floored and ceilinged, so a short
+# clip gets tight bounds and a long video gets room to finish,
+# but no conversion can ever again sit in "building" for the
+# better part of an hour the way two 30-minute attempt timeouts
+# once allowed (Justin's 45-minute wait, October 27, 2026).
+_PLAYBACK_STALL_S = 30.0
+_PLAYBACK_ATTEMPT_FLOOR_S = 300.0
+_PLAYBACK_ATTEMPT_CEIL_S = 1200.0
+_PLAYBACK_TOTAL_FLOOR_S = 600.0
+_PLAYBACK_TOTAL_CEIL_S = 1800.0
+
+
+def _playback_bounds(duration_s: Optional[float]) -> tuple:
+    """(per-attempt cap, total cap) in seconds for one copy."""
+    if duration_s:
+        attempt = min(
+            _PLAYBACK_ATTEMPT_CEIL_S,
+            max(_PLAYBACK_ATTEMPT_FLOOR_S, duration_s * 0.75),
+        )
+        total = min(
+            _PLAYBACK_TOTAL_CEIL_S,
+            max(_PLAYBACK_TOTAL_FLOOR_S, duration_s * 1.25),
+        )
+    else:
+        attempt = _PLAYBACK_ATTEMPT_FLOOR_S
+        total = _PLAYBACK_TOTAL_FLOOR_S
+    return attempt, total
+
+
+def _run_ffmpeg_attempt(command, duration_s, attempt_cap_s, report):
+    """Run one conversion attempt, reporting progress as it goes.
+
+    ffmpeg writes progress blocks to stdout (``-progress
+    pipe:1``); a reader thread queues them and this loop watches
+    the clock. Progress is the encoder's own position in the
+    video, never a guess spun from elapsed time. An attempt whose
+    encoded position has not advanced for ``_PLAYBACK_STALL_S``
+    seconds is killed as stuck (a crawling hardware session is
+    the known shape of that), and an attempt also dies at the
+    attempt cap; either way the ladder moves on. Returns
+    ``(ok, stderr_tail)``; ok only when ffmpeg exits 0.
+    """
+    import queue as queue_module
+
+    log_fd, log_name = tempfile.mkstemp(
+        prefix="tye-convert-", suffix=".log"
+    )
+    log_path = Path(log_name)
+    proc = None
+    try:
+        with os.fdopen(log_fd, "wb") as log_file:
+            proc = subprocess.Popen(
+                command + ["-progress", "pipe:1"],
+                stdout=subprocess.PIPE,
+                stderr=log_file,
+                text=True,
+            )
+            lines: "queue_module.Queue" = queue_module.Queue()
+
+            def drain() -> None:
+                try:
+                    for line in proc.stdout:  # type: ignore[union-attr]
+                        lines.put(line)
+                except (OSError, ValueError):
+                    pass
+                lines.put(None)
+
+            reader = threading.Thread(target=drain, daemon=True)
+            reader.start()
+            started = time.monotonic()
+            last_advance = started
+            best_position = -1.0
+            last_reported = -1
+            while True:
+                try:
+                    line = lines.get(timeout=0.2)
+                except queue_module.Empty:
+                    line = ""
+                if line:
+                    text = line.strip()
+                    if text.startswith(
+                        ("out_time_us=", "out_time_ms=")
+                    ):
+                        try:
+                            position = (
+                                int(text.split("=", 1)[1]) / 1_000_000.0
+                            )
+                        except ValueError:
+                            position = None
+                        if position is not None and position > best_position:
+                            best_position = position
+                            last_advance = time.monotonic()
+                            if report is not None and duration_s:
+                                pct = int(
+                                    100.0 * position / duration_s
+                                )
+                                pct = max(0, min(99, pct))
+                                if pct != last_reported:
+                                    last_reported = pct
+                                    report(pct)
+                if proc.poll() is not None:
+                    break
+                now = time.monotonic()
+                if now - last_advance > _PLAYBACK_STALL_S:
+                    proc.kill()
+                    break
+                if now - started > attempt_cap_s:
+                    proc.kill()
+                    break
+            try:
+                proc.wait(timeout=30)
+            except subprocess.SubprocessError:
+                proc.kill()
+            ok = proc.returncode == 0
+        try:
+            tail = log_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).strip()[-1000:]
+        except OSError:
+            tail = ""
+        return ok, tail
+    except OSError as exc:
+        return False, str(exc)
+    finally:
+        log_path.unlink(missing_ok=True)
+
+
+# One conversion at a time, across the whole app: the video the
+# page is waiting for never queues behind background conversions
+# of files nobody is watching, and the hardware encoder is never
+# asked for two sessions at once.
+_PLAYBACK_CONVERT_LOCK = threading.Lock()
+
+
+def _convert_playback_copy(source: Path, dest: Path, progress=None) -> bool:
     """Build a watchable H.264 copy of ``source`` at ``dest``.
 
     The ladder above, at reduced process priority so a long
-    conversion never starves transcription running alongside.
-    The copy is written to a scratch name and moved into place
-    only when it is complete, so a stopped conversion never
-    leaves a half-written file to serve. Returns False (with the
-    detail in the server log) when no copy could be built.
+    conversion never starves transcription running alongside,
+    one conversion at a time across the app, each attempt bounded
+    and watched for stalls (see ``_run_ffmpeg_attempt``), with
+    the whole build bounded too. ``progress`` (when given) is
+    called with the converter's own percent as it advances. The
+    copy is written to a scratch name and moved into place only
+    when it is complete, so a stopped conversion never leaves a
+    half-written file to serve. Returns False (with the detail
+    in the server log) when no copy could be built.
     """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -316,45 +502,44 @@ def _convert_playback_copy(source: Path, dest: Path) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.parent / (dest.name + ".part")
     nice = ["nice", "-n", "10"] if shutil.which("nice") else []
-    for input_args, video_args in attempts:
-        command = nice + [
-            ffmpeg, "-y", "-v", "error",
-            *input_args, "-i", str(source),
-            # The comma inside min() is escaped: bare, ffmpeg
-            # would read it as a filter-chain separator.
-            "-vf", "scale=-2:min(720\\,ih)",
-            *video_args,
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            # The scratch name has no video extension, so the
-            # MP4 format is named outright.
-            "-f", "mp4", str(tmp),
-        ]
-        try:
-            proc = subprocess.run(
-                command, capture_output=True, text=True, timeout=1800,
+    duration_s = _probe_duration_s(source)
+    attempt_cap, total_cap = _playback_bounds(duration_s)
+    started = time.monotonic()
+    with _PLAYBACK_CONVERT_LOCK:
+        for input_args, video_args in attempts:
+            remaining = total_cap - (time.monotonic() - started)
+            if remaining <= 0:
+                break
+            command = nice + [
+                ffmpeg, "-y", "-v", "error",
+                *input_args, "-i", str(source),
+                # The comma inside min() is escaped: bare, ffmpeg
+                # would read it as a filter-chain separator.
+                "-vf", "scale=-2:min(720\\,ih)",
+                *video_args,
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                # The scratch name has no video extension, so the
+                # MP4 format is named outright.
+                "-f", "mp4", str(tmp),
+            ]
+            ok, tail = _run_ffmpeg_attempt(
+                command,
+                duration_s,
+                min(attempt_cap, remaining),
+                progress,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
-            print(
-                f"[video] conversion of {source.name} failed: {exc}",
-                file=sys.stderr,
-            )
+            if ok and tmp.is_file() and tmp.stat().st_size > 0:
+                tmp.replace(dest)
+                return True
+            if tail:
+                print(
+                    f"[video] conversion of {source.name} failed:\n"
+                    f"{tail}",
+                    file=sys.stderr,
+                )
             tmp.unlink(missing_ok=True)
-            continue
-        if (
-            proc.returncode == 0
-            and tmp.is_file()
-            and tmp.stat().st_size > 0
-        ):
-            tmp.replace(dest)
-            return True
-        tail = (proc.stderr or "").strip()[-1000:]
-        print(
-            f"[video] conversion of {source.name} failed:\n{tail}",
-            file=sys.stderr,
-        )
-        tmp.unlink(missing_ok=True)
     return False
 
 
@@ -372,6 +557,10 @@ def _convert_playback_copy(source: Path, dest: Path) -> bool:
 _PLAYBACK_BUILD_LOCK = threading.Lock()
 _PLAYBACK_BUILDING: set = set()
 _PLAYBACK_FAILED: set = set()
+# While a copy builds, the converter's own percent, by copy path:
+# the number the page shows beside "Getting your video ready",
+# so the wait is a measurement, not a promise.
+_PLAYBACK_PROGRESS: dict = {}
 
 
 def _copy_ready(copy_path: Path) -> bool:
@@ -427,20 +616,48 @@ def _ensure_playback_copy_for(source: Path, copy_path: Path) -> None:
         _PLAYBACK_BUILDING.add(key)
 
     def build() -> None:
+        def report(pct: int) -> None:
+            with _PLAYBACK_BUILD_LOCK:
+                _PLAYBACK_PROGRESS[key] = pct
+
         try:
-            ok = _convert_playback_copy(source, copy_path)
+            ok = _convert_playback_copy(
+                source, copy_path, progress=report
+            )
         except Exception:
             ok = False
         with _PLAYBACK_BUILD_LOCK:
             _PLAYBACK_BUILDING.discard(key)
+            _PLAYBACK_PROGRESS.pop(key, None)
             if not ok:
                 _PLAYBACK_FAILED.add(key)
 
     threading.Thread(target=build, daemon=True).start()
 
 
+def _playback_progress_for(source: Path, copy_path: Path) -> Optional[int]:
+    """How far this copy's build has gotten (0 to 99), or None.
+
+    None whenever no honest percent exists: the source needs no
+    copy, the copy is ready, the build has not started, or the
+    source's length could not be read. The percent is the
+    converter's own reported position in the video, never an
+    estimate spun from elapsed time.
+    """
+    if not _needs_copy(source) or _copy_ready(copy_path):
+        return None
+    with _PLAYBACK_BUILD_LOCK:
+        return _PLAYBACK_PROGRESS.get(str(copy_path))
+
+
 def _playback_state(config: "WebAppConfig", name: str) -> str:
     return _playback_state_for(
+        config.job_dir / name, _playback_copy_path(config, name)
+    )
+
+
+def _playback_progress(config: "WebAppConfig", name: str) -> Optional[int]:
+    return _playback_progress_for(
         config.job_dir / name, _playback_copy_path(config, name)
     )
 
@@ -1492,6 +1709,7 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "word_corrections": [],
         "videos": [],
         "playback": {},
+        "playback_progress": {},
         "video_shapes": {},
         "feedback_exists": False,
         "comments": [],
@@ -1546,6 +1764,10 @@ def _incomplete_job_summary(config: WebAppConfig, missing: list) -> dict:
             "videos": _job_videos(config.job_dir),
             "playback": {
                 name: _playback_state(config, name)
+                for name in _job_videos(config.job_dir)
+            },
+            "playback_progress": {
+                name: _playback_progress(config, name)
                 for name in _job_videos(config.job_dir)
             },
             "front_door": _front_door_settings(config),
@@ -1633,6 +1855,9 @@ def _job_summary(config: WebAppConfig) -> dict:
         "videos": videos,
         "playback": {
             name: _playback_state(config, name) for name in videos
+        },
+        "playback_progress": {
+            name: _playback_progress(config, name) for name in videos
         },
         "video_shapes": video_shapes,
         "feedback_exists": feedback_exists,
@@ -4754,6 +4979,212 @@ def _toggle_word(config: WebAppConfig, word_index: int) -> dict:
     }
 
 
+def _apply_word_range(
+    config: WebAppConfig, word_start: int, word_end: int, action: str
+) -> dict:
+    """Cut or bring back a whole highlighted phrase of words.
+
+    The Descript-shaped sibling of the word click (v0.8.0): the
+    creator highlights a run of words and erases it, or picks a
+    struck-through run and brings it back, in one step. The words
+    travel the same machinery as every other transcript edit: one
+    ``cut_words`` / ``restore_words`` operation per contiguous
+    run, validated and checked by the safety verifier against the
+    plan as it evolves, applied by the applier, and landed in the
+    session's ``revised_cuts.json`` under ONE checkpoint, so a
+    phrase edit is one undo step, never one step per word.
+
+    Three kinds of words are never moved by this path, and come
+    back in ``stayed`` with a plain reason each:
+
+    - Words inside an open gold span. The editor was not sure
+      about those, so the call belongs to the span's own gold
+      card, not to a highlight; the page opens that card when the
+      answer names the span.
+    - Words inside a protected span (the creator profile's, or a
+      hold in the plan). They are partitioned out before any
+      operation is built, exactly as if the creator had clicked
+      around them: a highlight that reaches into a protected part
+      still moves the words on either side of it.
+    - Words inside a special insert, which no transcript edit
+      can move.
+
+    A run the verifier holds anyway is reported the same way,
+    with the same plain sentence a held word gets. As with a word
+    click, a lone ``wonder_review_required`` hold is forgiven
+    (the creator is looking at the exact words; the highlight is
+    the review); every other rule holds exactly as written.
+    """
+    if action not in ("cut", "restore"):
+        raise ValueError("That action is not one this page can do.")
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    words = transcript.get("words", [])
+    if not (0 <= word_start < word_end <= len(words)):
+        raise ValueError("Those words are not in the transcript.")
+    cutting = action == "cut"
+    target_status = "kept" if cutting else "cut"
+    base_cuts = _effective_cuts(config)
+    timeline = Timeline(transcript, base_cuts)
+    profile = _load_optional_file(config.job_dir / "profile.json")
+
+    stayed: list = []
+    gold_ranges: list = []
+    for view in _open_gold_spans(config):
+        start = max(word_start, view["word_start"])
+        end = min(word_end, view["word_end"])
+        if start < end:
+            gold_ranges.append((start, end))
+            stayed.append(
+                {
+                    "word_start": start,
+                    "word_end": end,
+                    "why": "gold",
+                    "gold_id": view.get("gold_id"),
+                    "message": (
+                        "That spot is in gold, waiting for your "
+                        "call on its own card."
+                    ),
+                }
+            )
+    protected_ranges: list = []
+    for span in timeline.protected_spans(profile):
+        start = max(word_start, int(span["word_start"]))
+        end = min(word_end, int(span["word_end"]))
+        if start < end:
+            protected_ranges.append((start, end))
+            stayed.append(
+                {
+                    "word_start": start,
+                    "word_end": end,
+                    "why": "protected",
+                    "gold_id": None,
+                    "message": plain_reason_sentence(
+                        f"protected_span:{span.get('label', '')} "
+                        f"({span.get('source', '')})"
+                    ),
+                }
+            )
+
+    def in_gold(index: int) -> bool:
+        return any(s <= index < e for s, e in gold_ranges)
+
+    def in_protected(index: int) -> bool:
+        return any(s <= index < e for s, e in protected_ranges)
+
+    runs: list = []
+    run: list = []
+    special_run: list = []
+
+    def flush_run() -> None:
+        nonlocal run
+        if run:
+            runs.append((run[0], run[-1] + 1))
+            run = []
+
+    def flush_special() -> None:
+        nonlocal special_run
+        if special_run:
+            stayed.append(
+                {
+                    "word_start": special_run[0],
+                    "word_end": special_run[-1] + 1,
+                    "why": "special",
+                    "gold_id": None,
+                    "message": (
+                        "Those words are inside a special insert, "
+                        "so they cannot be changed here."
+                    ),
+                }
+            )
+            special_run = []
+
+    for index in range(word_start, word_end):
+        if in_gold(index) or in_protected(index):
+            flush_run()
+            flush_special()
+            continue
+        status = timeline.word_status(index)
+        if status == "special":
+            flush_run()
+            special_run.append(index)
+            continue
+        flush_special()
+        if status == target_status:
+            run.append(index)
+        else:
+            flush_run()
+    flush_run()
+    flush_special()
+
+    moved = 0
+    if runs:
+        current_cuts = base_cuts
+        current_timeline = timeline
+        applied: list = []
+        for run_start, run_end in runs:
+            operation = {
+                "type": "cut_words" if cutting else "restore_words",
+                "comment_id": "transcript-phrase",
+                "word_start": run_start,
+                "word_end": run_end,
+                "reason": (
+                    "You highlighted these words in the transcript "
+                    "to cut them."
+                    if cutting
+                    else "You highlighted these words in the "
+                    "transcript to bring them back."
+                ),
+                "confidence": 1.0,
+                "model": "mock",
+                "risk_tier": 1,
+                "wonder_reviewed": False,
+            }
+            ops = validate_operations([operation])
+            verdict = verify_operations(
+                ops, current_timeline, profile
+            )[0]
+            if (
+                verdict.status == "flag"
+                and verdict.reasons == ["wonder_review_required"]
+            ):
+                verdict.status = "apply"
+            if verdict.status != "apply":
+                stayed.append(
+                    {
+                        "word_start": run_start,
+                        "word_end": run_end,
+                        "why": "protected",
+                        "gold_id": None,
+                        "message": _plain_toggle_message(verdict),
+                    }
+                )
+                continue
+            current_cuts, _audit = apply_verdicts(
+                current_cuts, current_timeline, [verdict]
+            )
+            current_timeline = Timeline(transcript, current_cuts)
+            applied.append((run_start, run_end))
+            moved += run_end - run_start
+        if applied:
+            session = config.session_dir
+            session.mkdir(parents=True, exist_ok=True)
+            checkpoints.begin(config)
+            _write_json(session / "revised_cuts.json", current_cuts)
+            checkpoints.commit(
+                config,
+                "Transcript phrase cut"
+                if cutting
+                else "Transcript phrase brought back",
+            )
+    stayed.sort(key=lambda entry: entry["word_start"])
+    return {
+        "ok": True,
+        "changed": moved > 0,
+        "moved": moved,
+        "stayed": stayed,
+    }
+
+
 def _edit_action(config: WebAppConfig, edit_id: str, action: str) -> dict:
     """Bring a removed span back, or swap it with the take that stayed.
 
@@ -5021,6 +5452,7 @@ _JOB_REQUIRED_POSTS = frozenset({
     "/api/rule-dismiss",
     "/api/rule-remove",
     "/api/word-toggle",
+    "/api/word-range",
     "/api/edit-action",
     "/api/gold-verdict",
     "/api/word-correct",
@@ -5306,6 +5738,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_rule_remove()
         elif path == "/api/word-toggle":
             self._post_word_toggle()
+        elif path == "/api/word-range":
+            self._post_word_range()
         elif path == "/api/edit-action":
             self._post_edit_action()
         elif path == "/api/gold-verdict":
@@ -5838,6 +6272,9 @@ class _Handler(BaseHTTPRequestHandler):
         if record is not None and record.get("video_rel"):
             staged = Path(record["dir"]) / record["video_rel"]
             payload["playback"] = _playback_state_for(
+                staged, _staged_copy_path(staged)
+            )
+            payload["playback_progress"] = _playback_progress_for(
                 staged, _staged_copy_path(staged)
             )
         self._send_json(200, payload)
@@ -6571,6 +7008,60 @@ class _Handler(BaseHTTPRequestHandler):
                         "The safety check would not move that word, "
                         "so it was left as it is."
                     ),
+                },
+            )
+            return
+        self._send_json(200, result)
+
+    def _post_word_range(self) -> None:
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        start = body.get("word_start")
+        end = body.get("word_end")
+        action = body.get("action")
+        if (
+            not isinstance(start, int) or isinstance(start, bool)
+            or not isinstance(end, int) or isinstance(end, bool)
+            or action not in ("cut", "restore")
+        ):
+            self._error(
+                400,
+                "word_start, word_end, and an action of cut or "
+                "restore are required",
+            )
+            return
+        try:
+            result = _apply_word_range(self.config, start, end, action)
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        except (SchemaError, ApplyError) as exc:
+            # The verifier and the applier mirror each other, so
+            # this should not happen; if it ever does, the words
+            # stay put and the page still gets one plain sentence,
+            # never a code.
+            _log_raw_error("word-range", exc)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "changed": False,
+                    "moved": 0,
+                    "stayed": [
+                        {
+                            "word_start": start,
+                            "word_end": end,
+                            "why": "protected",
+                            "gold_id": None,
+                            "message": (
+                                "The safety check would not move "
+                                "those words, so they were left "
+                                "as they are."
+                            ),
+                        }
+                    ],
                 },
             )
             return

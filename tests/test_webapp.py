@@ -470,14 +470,15 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(status, 200)
         page = body.decode("utf-8")
         # The Transcript section is on the player page, with the two
-        # word styles and the toggle endpoint wired in.
+        # word styles and the range endpoint wired in (since 0.8.0
+        # a word click rides the same phrase path as a highlight).
         self.assertIn('id="transcriptCard"', page)
         self.assertIn("<h2>Transcript</h2>", page)
         self.assertIn('id="transcriptWords"', page)
         self.assertIn(".tw-cut", page)
         self.assertIn("line-through", page)
         self.assertIn("renderTranscript", page)
-        self.assertIn("/api/word-toggle", page)
+        self.assertIn("/api/word-range", page)
         # The job summary carries every word with its state, kept and
         # cut styled differently by the page. Word 0 opens the edit
         # and word 8 is the cut first take.
@@ -1425,8 +1426,18 @@ class FormatHonestyTests(unittest.TestCase):
         _, body = self._get(self.base, "/")
         page = body.decode("utf-8")
         self.assertIn("Loading the video…", page)
-        self.assertIn('vid.addEventListener("loadstart", showLoading)', page)
-        self.assertIn('vid.addEventListener("canplay", hideLoading)', page)
+        # Since 0.8.0 the loading state is set through the one
+        # player status control, and never over a pending build.
+        self.assertIn(
+            'if (playerStatus !== "pending") '
+            '{ setPlayerStatus("loading"); }',
+            page,
+        )
+        self.assertIn(
+            'if (playerStatus !== "pending") '
+            '{ setPlayerStatus("none"); }',
+            page,
+        )
 
     def test_missing_format_button_is_disabled_with_a_plain_line(self):
         _, body = self._get(self.base2, "/api/job")
@@ -2538,11 +2549,26 @@ class BrowserSafeVideoTests(unittest.TestCase):
         page = body.decode("utf-8")
         self.assertIn('id="vidError"', page)
         self.assertIn("could not be played here", page)
-        self.assertIn('vid.addEventListener("error", showVideoError)', page)
-        self.assertIn('vid.addEventListener("canplay", clearVideoError)', page)
-        # Loading still shows and clears exactly as before.
-        self.assertIn('vid.addEventListener("loadstart", showLoading)', page)
-        self.assertIn('vid.addEventListener("canplay", hideLoading)', page)
+        # Since 0.8.0 the three player overlays answer to one
+        # status control, so a could-not-play message can never
+        # stack on the preparing one: while a watchable copy is
+        # being made, the error event is ignored on purpose.
+        self.assertIn("function setPlayerStatus(mode, text)", page)
+        self.assertIn('vid.addEventListener("error", function () {', page)
+        self.assertIn(
+            'if (playerStatus === "pending") { return; }', page
+        )
+        # Loading still shows and clears, through the same control.
+        self.assertIn(
+            'if (playerStatus !== "pending") '
+            '{ setPlayerStatus("loading"); }',
+            page,
+        )
+        self.assertIn(
+            'if (playerStatus !== "pending") '
+            '{ setPlayerStatus("none"); }',
+            page,
+        )
 
 
 class HistoryUiTests(unittest.TestCase):

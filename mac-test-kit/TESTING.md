@@ -12,6 +12,17 @@ This version is built around one idea: keep the front door simple. Two choices, 
 
 ## Mac test
 
+### 0. New in 0.8.0: the picture arrives, side by side, highlight editing
+
+This version answers your first real test, the 13-minute video that sat on "Getting your video ready to watch" for 45 minutes.
+
+1. Drop the same long video (or any long iPhone .mov) and start its first edit. While the watchable copy is being made, the player shows a percentage that climbs ("Getting your video ready to watch... 42%. You can keep editing; the picture will catch up."). On the build machine, a far weaker computer than your MacBook Pro, a 13-minute video took 126 seconds; yours should land in that neighborhood or faster. Only that one message shows; the old "could not play" text never appears over it.
+2. While it climbs, scroll the transcript and make edits. Everything works during the wait. When the copy is ready, the picture appears on its own, no reload.
+3. Reload the page mid-build on purpose: the percentage keeps climbing, the copy is still built only once, and leaving and coming back later reuses the finished copy.
+4. Look at the layout: video on the left, transcript on the right, each scrolling on its own. Scroll the transcript; the video stays. Play the video; the words still follow along. Narrow the window and the page stacks back into the old single column.
+5. Highlight editing: drag across a few words in the transcript and the phrase lights up as one piece. Press Backspace (or the Cut button in the strip) and the whole phrase is struck through at once and the preview skips it. Click the struck phrase to bring it all back at once. Check History: the phrase cut is a single step, and one Undo reverses it.
+6. Drag across a gold spot: its card opens for your call instead of the words being cut. Drag across the closing words your profile protects: the rest of the phrase moves, those words stay, and a line says what stayed and why.
+
 ### 1. Open the test kit
 
 1. Unzip the project folder if it arrived as a zip.

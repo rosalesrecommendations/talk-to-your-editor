@@ -848,21 +848,20 @@ class PlaybackLadderTests(unittest.TestCase):
                 shutil.rmtree(tmp, ignore_errors=True)
 
     def test_libx264_ladder_arguments(self):
+        # v0.8.0: conversion runs through the progress-watching
+        # attempt runner; the ladder's arguments are asserted at
+        # that seam instead of at subprocess.run.
         captured = {}
 
-        class Done:
-            returncode = 0
-            stderr = ""
-
-        def fake_run(command, **kwargs):
+        def fake_attempt(command, duration_s, cap, report):
             captured["command"] = command
             Path(command[-1]).write_bytes(b"x")
-            return Done()
+            return True, ""
 
         with mock.patch.object(
             webapp, "_ffmpeg_encoders",
             return_value=frozenset({"libx264"}),
-        ), mock.patch.object(webapp.subprocess, "run", fake_run):
+        ), mock.patch.object(webapp, "_run_ffmpeg_attempt", fake_attempt):
             tmp = Path(tempfile.mkdtemp(prefix="tye-v061-ladder-"))
             try:
                 ok = webapp._convert_playback_copy(

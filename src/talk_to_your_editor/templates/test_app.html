@@ -327,6 +327,56 @@
   .tx-counts { font-size: 15px; font-weight: 600; }
   #transcriptPanel { overflow-y: auto; max-height: 52vh; margin-top: 8px; }
   @media (max-width: 700px) { #transcriptPanel { max-height: 40vh; } }
+  /* Review split (v0.8.0): on a wide screen (a Mac window) the
+     review reads side by side, Descript-shaped: video, timeline,
+     and the Remove choices on the left; the transcript on the
+     right, scrolling in its own panel, so the words can be
+     followed while the video plays. The left column sticks in
+     place and scrolls inside itself when it is taller than the
+     window, so the video never scrolls away. */
+  @media (min-width: 1024px) {
+    body:not(.no-job) main { max-width: 1280px; }
+    .review-split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+      margin: 0 0 20px;
+    }
+    .review-left {
+      position: sticky;
+      top: 16px;
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      min-width: 0;
+      padding-bottom: 4px;
+    }
+    .review-right { min-width: 0; }
+    .review-right .card { margin-bottom: 0; }
+    .review-right #transcriptPanel { max-height: calc(100vh - 250px); }
+  }
+  /* Below that width the split unwraps (display: contents) and
+     the page is the same single stacked column as always; the
+     order values put the sections the split moved back into
+     exactly today's sequence. */
+  @media (max-width: 1023.98px) {
+    main { display: flex; flex-direction: column; }
+    .review-split, .review-left, .review-right { display: contents; }
+    #pinCard { order: 31; }
+    #list { order: 32; }
+    #overallCard { order: 33; }
+    #styleCard { order: 34; }
+    #transcriptCard { order: 35; }
+    #directionCard { order: 36; }
+    #revisedCard { order: 37; }
+    #finishCard { order: 38; }
+    #moneyCard { order: 39; }
+    #historyCard { order: 40; }
+  }
+  /* Words can be drag-picked (v0.8.0): a vertical scroll still
+     scrolls the panel on touch, while a drag across words picks
+     the phrase. */
+  #transcriptPanel .tw { touch-action: pan-y; }
   #transcriptPanel .transcript { margin: 0; line-height: 1.6; }
   .tx-line { display: flex; align-items: flex-start; gap: 8px; padding: 3px 4px; border-radius: 10px; }
   .tx-line-now { background: rgba(10, 132, 255, 0.10); }
@@ -708,6 +758,8 @@
     <p class="note">There is no video file here (mp4, mov, or m4v), so there is nothing to play. You can still pin comments by typing a time in seconds.</p>
   </div>
 
+  <div class="review-split" id="reviewSplit">
+  <div class="review-left">
   <div class="vid-wrap job-only" id="vidWrap">
     <video id="vid" controls playsinline preload="metadata"></video>
     <div class="vid-loading" id="vidLoading" hidden>Loading the video…</div>
@@ -721,7 +773,7 @@
       <div class="tl-bubble" id="tlBubble" hidden></div>
     </div>
   </div>
-  <div class="row job-only">
+  <div class="row job-only" id="fmtRow">
     <button id="btnV" class="on" type="button">Vertical (9:16)</button>
     <button id="btnL" type="button">Landscape (16:9)</button>
     <button id="back5" type="button">Back 5s</button>
@@ -731,7 +783,7 @@
   <p class="note job-only" id="fmtNote" hidden></p>
   <p class="note job-only" id="shortcutLine"><span>Shortcuts: Space play or pause · K pause · J back 5 seconds · L forward 5 seconds · ←/→ step 1 second · Shift+←/→ step 5 seconds · M pin a note here.</span><label class="switch"><input type="checkbox" id="shortcutToggle" checked> Keyboard shortcuts</label></p>
 
-  <div class="card job-only">
+  <div class="card job-only" id="makeEditCard">
     <h2>Make the edit</h2>
     <p class="note">Choices, on unless you turn them off. Set them while you watch, then make the edit. The choices are: remove retakes, cut silence, and take out filler words.</p>
     <h3 class="remove-heading">Remove</h3>
@@ -799,7 +851,44 @@
     </details>
   </div>
 
-  <div class="card job-only">
+  </div>
+  <div class="review-right">
+  <div class="card job-only" id="transcriptCard">
+    <h2>Transcript</h2>
+    <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Drag across words to pick a whole phrase, or click a word to pick it; the strip under the words cuts the pick or brings it back, and Backspace cuts it too. Clicking a struck-through phrase picks the whole phrase, so one click brings it back. Every change passes the same safety check as a direction change.</p>
+    <div class="tx-header">
+      <span class="tx-counts" id="txCounts"></span>
+      <label class="switch"><input type="checkbox" id="txFollow" checked> Follow the video</label>
+    </div>
+    <div id="transcriptPanel">
+      <p class="transcript" id="transcriptWords"></p>
+    </div>
+    <div id="txActionStrip" hidden>
+      <span id="txSelLabel"></span>
+      <button id="txCutBtn" type="button">Cut these words</button>
+      <button id="txRestoreBtn" type="button">Bring these words back</button>
+      <button id="txFixBtn" type="button">Fix the words</button>
+      <button id="txClearSel" type="button">Clear</button>
+      <span class="note">Drag picks a phrase · Backspace cuts it</span>
+    </div>
+    <p class="status-line" id="transcriptStatus"></p>
+    <div class="row">
+      <button id="fixWordsBtn" type="button">Fix words</button>
+    </div>
+    <div id="fixPanel" hidden>
+      <p class="note">Click the first word of the part to fix, then the last word, and retype the words exactly as they should read. One word can become two or three, or a few fragments can become one. Fixing words changes the words in the transcript only. The sound and the timing never change, and a video you build from the edit still shows the original words in its captions.</p>
+      <input id="fixText" type="text" placeholder="The corrected words">
+      <div class="row">
+        <button id="fixSave" class="primary" type="button">Save correction</button>
+        <button id="fixRemove" type="button" hidden>Remove correction</button>
+        <button id="fixDone" type="button">Done</button>
+      </div>
+    </div>
+  </div>
+  </div>
+  </div>
+
+  <div class="card job-only" id="pinCard">
     <h2>Pin a comment</h2>
     <div class="row">
       <button id="pin" class="primary" type="button">Comment at current time</button>
@@ -825,7 +914,7 @@
 
   <section id="list" class="job-only"></section>
 
-  <div class="card job-only">
+  <div class="card job-only" id="overallCard">
     <h2>Overall feedback</h2>
     <p class="note">Notes about the whole video, not tied to a moment, like "too many retakes in this one." Overall notes go along with every direction run, for both formats.</p>
     <textarea id="overallDraft" rows="2" placeholder="What applies to the whole video?"></textarea>
@@ -838,44 +927,12 @@
     <section id="overallList"></section>
   </div>
 
-  <div class="card job-only">
+  <div class="card job-only" id="styleCard">
     <h2>Your style</h2>
     <p class="note">Rules you save here ride into every run as standing direction. Nothing is saved without your yes.</p>
     <div id="ruleSuggestions"></div>
     <div id="savedRulesList"></div>
     <p class="empty" id="rulesEmpty">No saved rules yet. When a kind of change keeps working, you will be offered it here as a rule.</p>
-  </div>
-
-  <div class="card job-only" id="transcriptCard">
-    <h2>Transcript</h2>
-    <p class="note">The words of the edit, in order. Words that were cut are struck through and dimmed. Click a word to jump the video to it and pick it, then cut the picked words or bring them back with the buttons under the words. Shift and click picks every word from the first picked word to the one clicked. Every change passes the same safety check as a direction change.</p>
-    <div class="tx-header">
-      <span class="tx-counts" id="txCounts"></span>
-      <label class="switch"><input type="checkbox" id="txFollow" checked> Follow the video</label>
-    </div>
-    <div id="transcriptPanel">
-      <p class="transcript" id="transcriptWords"></p>
-    </div>
-    <div id="txActionStrip" hidden>
-      <span id="txSelLabel"></span>
-      <button id="txCutBtn" type="button">Cut these words</button>
-      <button id="txRestoreBtn" type="button">Bring these words back</button>
-      <button id="txFixBtn" type="button">Fix the words</button>
-      <button id="txClearSel" type="button">Clear</button>
-    </div>
-    <p class="status-line" id="transcriptStatus"></p>
-    <div class="row">
-      <button id="fixWordsBtn" type="button">Fix words</button>
-    </div>
-    <div id="fixPanel" hidden>
-      <p class="note">Click the first word of the part to fix, then the last word, and retype the words exactly as they should read. One word can become two or three, or a few fragments can become one. Fixing words changes the words in the transcript only. The sound and the timing never change, and a video you build from the edit still shows the original words in its captions.</p>
-      <input id="fixText" type="text" placeholder="The corrected words">
-      <div class="row">
-        <button id="fixSave" class="primary" type="button">Save correction</button>
-        <button id="fixRemove" type="button" hidden>Remove correction</button>
-        <button id="fixDone" type="button">Done</button>
-      </div>
-    </div>
   </div>
 
   <div class="card" id="directionCard">
@@ -910,7 +967,7 @@
     <div id="results" class="job-only"></div>
   </div>
 
-  <div class="card job-only">
+  <div class="card job-only" id="revisedCard">
     <h2>Revised edit</h2>
     <div class="row">
       <button id="runRender" type="button">Build the fixed video</button>
@@ -1108,20 +1165,56 @@
   var curFmt = "vertical";
   var videos = [];
   var videoShapes = {};
+  // -- player status (v0.8.0) ----------------------------------
+  // Exactly one player status shows at a time: loading, pending
+  // (a watchable copy is being made, carrying the converter's own
+  // percent), error, or none. Every writer goes through
+  // setPlayerStatus; no overlay is ever toggled on its own. The
+  // three overlays used to be independent, so a stale "could not
+  // play" could sit on screen at the same time as "getting your
+  // video ready", one showing through the other (Justin's
+  // screenshot, October 27, 2026).
   var vidLoading = document.getElementById("vidLoading");
-  function showLoading() { vidLoading.hidden = false; }
-  function hideLoading() { vidLoading.hidden = true; }
-  vid.addEventListener("loadstart", showLoading);
-  vid.addEventListener("canplay", hideLoading);
-  // A file the browser cannot decode must never sit on the loading
-  // note forever: the error state replaces it with one plain
-  // sentence, and any new load or successful play clears it.
   var vidError = document.getElementById("vidError");
-  function showVideoError() { hideLoading(); vidError.hidden = false; }
-  function clearVideoError() { vidError.hidden = true; }
-  vid.addEventListener("error", showVideoError);
-  vid.addEventListener("loadstart", clearVideoError);
-  vid.addEventListener("canplay", clearVideoError);
+  var vidPending = document.getElementById("vidPending");
+  var playerStatus = "none";
+  function setPlayerStatus(mode, text) {
+    playerStatus = mode;
+    if (vidLoading) { vidLoading.hidden = mode !== "loading"; }
+    if (vidError) {
+      vidError.hidden = mode !== "error";
+      if (mode === "error" && text) { vidError.textContent = text; }
+    }
+    if (vidPending) {
+      vidPending.hidden = mode !== "pending";
+      if (mode === "pending" && text) { vidPending.textContent = text; }
+    }
+  }
+  function showLoading() { setPlayerStatus("loading"); }
+  function pendingText(state, pct) {
+    if (state === "failed") {
+      return "This video could not be made watchable here, so it cannot be shown yet. The edit still works from the words.";
+    }
+    var head = "Getting your video ready to watch…";
+    if (typeof pct === "number") { head += " " + pct + "%."; }
+    return head + " You can keep editing; the picture will catch up.";
+  }
+  vid.addEventListener("loadstart", function () {
+    if (playerStatus !== "pending") { setPlayerStatus("loading"); }
+  });
+  vid.addEventListener("canplay", function () {
+    if (playerStatus !== "pending") { setPlayerStatus("none"); }
+  });
+  vid.addEventListener("error", function () {
+    // While a copy is being made, the player has nothing playable
+    // by design; an error then is expected noise, never a second
+    // message stacked on the pending one.
+    if (playerStatus === "pending") { return; }
+    setPlayerStatus(
+      "error",
+      "This video could not be played here; the file may be in a format this browser cannot show."
+    );
+  });
 
   function fmtTime(t) {
     t = Math.max(0, t || 0);
@@ -1268,10 +1361,16 @@
     document.getElementById("btnL").classList.toggle("on", f === "landscape");
     var name = videoFor(f);
     if (!name) { return; }
+    // A format whose watchable copy is not ready is never pointed
+    // at the player (that is what used to produce the instant
+    // "could not play" overlay): it gets the pending state, and
+    // the poll swaps its copy in when it lands.
+    var s = jobPlayback[name] || "ready";
+    if (s !== "ready") { showPendingFor(name); return; }
+    if (name === currentVideoName && vid.getAttribute("src")) { return; }
     var t = vid.currentTime || 0;
     var wasPlaying = !vid.paused;
-    showLoading();
-    vid.src = "/video/" + name;
+    loadVideo(name);
     vid.addEventListener("loadedmetadata", function h() {
       vid.removeEventListener("loadedmetadata", h);
       try { vid.currentTime = Math.min(t, vid.duration || t); } catch (e) {}
@@ -1565,11 +1664,10 @@
   }
 
   // -- picked words -----------------------------------------------------
-  // Clicking a word (outside fix mode) seeks to it and picks it.
-  // The strip under the panel cuts or brings back the picked run:
-  // one /api/word-toggle post per word, grouped by the contiguous
-  // runs of words that are in the state being changed, which is
-  // exactly what a single word click posts today.
+  // Clicking a word (outside fix mode) seeks to it and picks it;
+  // dragging across words picks the whole phrase (below). The
+  // strip under the panel cuts or brings back the pick with one
+  // /api/word-range post for the whole run.
   function selectedEntries() {
     if (selStart === null || selEnd === null) { return []; }
     return transcriptEntries.filter(function (w) {
@@ -1608,51 +1706,95 @@
     updateTxActionStrip();
   }
 
-  function runSelectionToggle(targetStatus) {
-    var picked = selectedEntries().filter(function (w) { return w.status !== targetStatus; });
-    if (!picked.length) { return; }
-    // Group into contiguous runs (neighboring entries in the list).
-    var runs = [];
-    var run = [];
-    var lastPos = -2;
-    picked.forEach(function (w) {
-      var pos = transcriptEntries.indexOf(w);
-      if (pos !== lastPos + 1 && run.length) { runs.push(run); run = []; }
-      run.push(w);
-      lastPos = pos;
+  // One post for the whole pick (v0.8.0): the range endpoint runs
+  // each run through the same verifier path a word click uses,
+  // partitions out the words a highlight may never move (gold
+  // spots, special inserts, verifier holds), and lands the phrase
+  // as ONE checkpoint. What stayed comes back with its reason,
+  // and a gold stay opens that spot's own card, where the call
+  // belongs.
+  function rangeResultMessage(data, action) {
+    var parts = [];
+    if (data.moved) {
+      parts.push(action === "cut"
+        ? "Cut " + data.moved + (data.moved === 1 ? " word." : " words.")
+        : "Brought back " + data.moved + (data.moved === 1 ? " word." : " words."));
+    }
+    (data.stayed || []).forEach(function (entry) {
+      var count = entry.word_end - entry.word_start;
+      parts.push(
+        count + (count === 1 ? " word" : " words") + " stayed: " +
+        (entry.message || "the safety check held them.")
+      );
     });
-    if (run.length) { runs.push(run); }
+    if (!parts.length) { parts.push("Nothing changed."); }
+    return parts.join(" ");
+  }
+
+  function openGoldForStayed(entry) {
+    var span = (jobGold || []).filter(function (g) {
+      return g.gold_id === entry.gold_id;
+    })[0];
+    if (!span) { return; }
+    var anchor = null;
+    transcriptEl.querySelectorAll(".tw").forEach(function (el) {
+      if (anchor) { return; }
+      var i = parseInt(el.dataset.index, 10);
+      var e2 = parseInt(el.dataset.end, 10) || (i + 1);
+      if (i < entry.word_end && entry.word_start < e2) { anchor = el; }
+    });
+    openGoldPopup(span, anchor || txActionStrip);
+  }
+
+  function runSelectionToggle(targetStatus) {
+    if (selStart === null || selEnd === null) { return; }
+    var action = targetStatus === "cut" ? "cut" : "restore";
+    var start = selStart;
+    var end = selEnd;
     if (txCutBtn) { txCutBtn.disabled = true; }
     if (txRestoreBtn) { txRestoreBtn.disabled = true; }
     transcriptStatus.textContent = "";
-    var chain = Promise.resolve();
-    var anyChanged = false;
-    var lastMessage = "";
-    runs.forEach(function (r) {
-      r.forEach(function (w) {
-        chain = chain.then(function () {
-          return postJson("/api/word-toggle", { word_index: w.index }).then(function (res) {
-            var data = res.data || {};
-            if (!data.ok) { lastMessage = data.error || "That word could not be changed."; return; }
-            if (data.changed) { anyChanged = true; }
-            if (data.message) { lastMessage = data.message; }
-          });
-        });
+    postJson("/api/word-range", {
+      word_start: start, word_end: end, action: action
+    }).then(function (res) {
+      var data = res.data || {};
+      if (!data.ok) {
+        transcriptStatus.textContent = data.error || "Those words could not be changed.";
+        updateTxActionStrip();
+        return;
+      }
+      var goldStayed = null;
+      (data.stayed || []).forEach(function (entry) {
+        if (entry.why === "gold" && !goldStayed) { goldStayed = entry; }
       });
-    });
-    chain.then(function () {
       clearSelection();
-      if (anyChanged) { refreshHistory(); }
-      reloadTranscript();
+      if (data.changed) { refreshHistory(); }
       reloadJobState();
-      transcriptStatus.textContent = anyChanged
-        ? (targetStatus === "cut" ? "Words cut." : "Words brought back.")
-        : (lastMessage || "Nothing changed.");
+      transcriptStatus.textContent = rangeResultMessage(data, action);
+      if (goldStayed) {
+        reloadTranscript().then(function () { openGoldForStayed(goldStayed); });
+      } else {
+        reloadTranscript();
+      }
     }).catch(function () {
       updateTxActionStrip();
       transcriptStatus.textContent = "Those words could not be changed.";
     });
   }
+
+  // Backspace / Delete cuts the pick, the way Descript erases a
+  // highlighted phrase. Guarded like every other key: never while
+  // typing in a field, never in fix mode, never with a modifier.
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Backspace" && e.key !== "Delete") { return; }
+    if (fixMode || e.metaKey || e.ctrlKey || e.altKey) { return; }
+    if (typingInField(e.target)) { return; }
+    if (selStart === null || selEnd === null) { return; }
+    var anyKept = selectedEntries().some(function (w) { return w.status === "kept"; });
+    if (!anyKept) { return; }
+    e.preventDefault();
+    runSelectionToggle("cut");
+  });
 
   // -- playback sync ------------------------------------------------------
   function syncTranscriptPlayback(force) {
@@ -1821,12 +1963,63 @@
     });
   });
 
+  // -- drag picking (v0.8.0) --------------------------------------
+  // Pressing on a word and moving across words picks the whole
+  // phrase, Descript-style. A press that never leaves its word
+  // stays a click (seek + pick), handled by the click handler
+  // below; dragJustEnded tells that handler to leave the dragged
+  // pick, and the playhead, alone.
+  var dragPick = null;
+  var dragJustEnded = false;
+
+  transcriptEl.addEventListener("pointerdown", function (e) {
+    if (fixMode) { return; }
+    if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag") || e.target.closest(".tgold") || e.target.closest(".tx-chip"))) { return; }
+    var span = e.target && e.target.closest ? e.target.closest(".tw") : null;
+    if (!span) { return; }
+    var index = parseInt(span.dataset.index, 10);
+    if (isNaN(index)) { return; }
+    var end = parseInt(span.dataset.end, 10) || (index + 1);
+    dragPick = { start: index, end: end, moved: false };
+    if (e.pointerType === "mouse") { e.preventDefault(); }
+  });
+
+  document.addEventListener("pointermove", function (e) {
+    if (!dragPick) { return; }
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    var span = el && el.closest ? el.closest(".tw") : null;
+    if (!span || !transcriptEl.contains(span)) { return; }
+    var index = parseInt(span.dataset.index, 10);
+    if (isNaN(index)) { return; }
+    var end = parseInt(span.dataset.end, 10) || (index + 1);
+    var lo = Math.min(dragPick.start, index);
+    var hi = Math.max(dragPick.end, end);
+    if (lo !== selStart || hi !== selEnd) {
+      dragPick.moved = true;
+      selStart = lo;
+      selEnd = hi;
+      refreshFixSelection();
+      updateTxActionStrip();
+    }
+  });
+
+  document.addEventListener("pointerup", function () {
+    if (!dragPick) { return; }
+    if (dragPick.moved) {
+      dragJustEnded = true;
+      setTimeout(function () { dragJustEnded = false; }, 0);
+    }
+    dragPick = null;
+  });
+
   // Clicking a word outside fix mode seeks the video to the word
   // and picks it. Shift and click extends the pick from the first
-  // picked word to the word clicked. Cutting and bringing back run
-  // from the strip under the panel, through the same /api/word-toggle
-  // post a single word click used to make. In fix mode, clicks keep
-  // picking the run for the correction editor.
+  // picked word to the word clicked. Clicking a struck-through
+  // word picks its whole struck phrase, so bringing the phrase
+  // back is one click on the strip. Cutting and bringing back run
+  // from the strip under the panel, through one /api/word-range
+  // post for the whole pick. In fix mode, clicks keep picking the
+  // run for the correction editor.
   transcriptEl.addEventListener("click", function (e) {
     var chip = e.target && e.target.closest ? e.target.closest(".tx-chip") : null;
     if (chip) {
@@ -1841,6 +2034,7 @@
     if (e.target && e.target.closest && (e.target.closest(".tdot") || e.target.closest(".tflag") || e.target.closest(".tgold"))) { return; }
     var span = e.target && e.target.closest ? e.target.closest(".tw") : null;
     if (!span) { return; }
+    if (dragJustEnded) { return; }
     var index = parseInt(span.dataset.index, 10);
     if (isNaN(index)) { return; }
     var spanEnd = parseInt(span.dataset.end, 10) || (index + 1);
@@ -1861,6 +2055,27 @@
     } else {
       selStart = index;
       selEnd = spanEnd;
+      // A click on a struck-through word picks its whole struck
+      // phrase: the unbroken run of cut entries around it.
+      // Dragging still picks exactly the dragged words, so a
+      // single word inside a run can be brought back on its own.
+      if (entry && entry.status === "cut") {
+        var pos = transcriptEntries.indexOf(entry);
+        var loPos = pos;
+        var hiPos = pos;
+        while (loPos > 0) {
+          var before = transcriptEntries[loPos - 1];
+          if (before.status !== "cut" || (before.word_end || (before.index + 1)) !== selStart) { break; }
+          loPos -= 1;
+          selStart = before.index;
+        }
+        while (hiPos >= 0 && hiPos < transcriptEntries.length - 1) {
+          var after = transcriptEntries[hiPos + 1];
+          if (after.status !== "cut" || after.index !== selEnd) { break; }
+          hiPos += 1;
+          selEnd = after.word_end || (after.index + 1);
+        }
+      }
     }
     refreshFixSelection();
     updateTxActionStrip();
@@ -3785,8 +4000,9 @@
         if (data.playback && data.playback !== "ready") {
           // The watchable copy is still being made; the raw file
           // is never the placeholder. Poll the intake status and
-          // swap the preview in when the copy lands.
-          dropSay("Getting your video ready to watch… A long video can take a few minutes.");
+          // swap the preview in when the copy lands, showing the
+          // converter's own percent while it climbs.
+          dropSay("Getting your video ready to watch…");
           var previewPoll = setInterval(function () {
             fetch("/api/intake/status?intake=" + encodeURIComponent(dropIntakeId))
               .then(function (r) { return r.json(); })
@@ -3799,6 +4015,8 @@
                 } else if (st.playback === "failed") {
                   clearInterval(previewPoll);
                   dropSay("This video could not be made watchable here, so the preview cannot be shown. You can still make the first edit: the edit works from the words.");
+                } else if (typeof st.playback_progress === "number") {
+                  dropSay("Getting your video ready to watch… " + st.playback_progress + "%. You can keep going; the preview will catch up.");
                 }
               }).catch(function () {});
           }, 3000);
@@ -3904,57 +4122,82 @@
 
   // The player never points at a video whose watchable copy is
   // not ready: the raw file is never served in its place. While
-  // the copy is being made the pending note stands in, the job is
+  // the copy is being made the pending note stands in (with the
+  // converter's own percent, refreshed by the poll), the job is
   // polled, and the copy swaps in when it lands, with no reload.
+  // The poll watches the video the creator is actually waiting
+  // for, which a format switch can change.
   var primaryVideoName = null;
+  var currentVideoName = null;
   var playbackPoll = null;
+  var jobPlayback = {};
+  var jobProgress = {};
+
+  function stopPlaybackPoll() {
+    if (playbackPoll) {
+      clearInterval(playbackPoll);
+      playbackPoll = null;
+    }
+  }
+
+  function loadVideo(name) {
+    stopPlaybackPoll();
+    currentVideoName = name;
+    document.getElementById("novid").hidden = true;
+    vid.hidden = false;
+    tlbarEl.hidden = false;
+    setPlayerStatus("loading");
+    vid.src = "/video/" + name;
+    noteMissingFormats();
+  }
+
+  function showPendingFor(name) {
+    stopPlaybackPoll();
+    currentVideoName = name;
+    document.getElementById("novid").hidden = true;
+    vid.hidden = true;
+    tlbarEl.hidden = true;
+    var s = jobPlayback[name] || "building";
+    setPlayerStatus("pending", pendingText(s, jobProgress[name]));
+    if (s === "failed") { return; }
+    playbackPoll = setInterval(function () {
+      fetch("/api/job").then(function (r) { return r.json(); })
+        .then(function (fresh) {
+          jobPlayback = fresh.playback || jobPlayback;
+          jobProgress = fresh.playback_progress || {};
+          videos = fresh.videos || videos;
+          videoShapes = fresh.video_shapes || videoShapes;
+          var now = jobPlayback[name] || "ready";
+          if (now === "ready") {
+            loadVideo(name);
+          } else if (now === "failed") {
+            stopPlaybackPoll();
+            setPlayerStatus("pending", pendingText("failed"));
+          } else {
+            setPlayerStatus(
+              "pending", pendingText(now, jobProgress[name])
+            );
+          }
+        }).catch(function () {});
+    }, 2000);
+  }
 
   function startPlayer(job) {
-    var pending = document.getElementById("vidPending");
+    jobPlayback = job.playback || {};
+    jobProgress = job.playback_progress || {};
     var names = job.videos || [];
-    var name = videoFor("vertical") || names[0] || null;
+    var name = videoFor(curFmt) || videoFor("vertical") || names[0] || null;
     primaryVideoName = name;
-    var state = name && job.playback ? job.playback[name] : "ready";
-    if (name && state && state !== "ready") {
-      if (pending) {
-        pending.hidden = false;
-        pending.textContent = state === "failed"
-          ? "This video could not be made watchable here, so it cannot be shown yet. The edit still works from the words."
-          : "Getting your video ready to watch… A long video can take a few minutes.";
-      }
-      document.getElementById("novid").hidden = true;
-      vid.hidden = true;
-      tlbarEl.hidden = true;
-      if (state !== "failed" && !playbackPoll) {
-        playbackPoll = setInterval(function () {
-          fetch("/api/job").then(function (r) { return r.json(); })
-            .then(function (fresh) {
-              var s = fresh.playback
-                ? fresh.playback[primaryVideoName]
-                : "ready";
-              if (s === "ready" || s === "failed") {
-                clearInterval(playbackPoll);
-                playbackPoll = null;
-                videos = fresh.videos || videos;
-                startPlayer(fresh);
-              }
-            }).catch(function () {});
-        }, 4000);
-      }
-      return;
-    }
-    if (pending) { pending.hidden = true; }
-    if (name) {
-      vid.hidden = false;
-      tlbarEl.hidden = false;
-      showLoading();
-      vid.src = "/video/" + name;
-      noteMissingFormats();
-    } else {
+    if (!name) {
       document.getElementById("novid").hidden = false;
       vid.hidden = true;
       tlbarEl.hidden = true;
+      setPlayerStatus("none");
+      return;
     }
+    var s = jobPlayback[name] || "ready";
+    if (s !== "ready") { showPendingFor(name); return; }
+    loadVideo(name);
   }
 
   // ---- What it costs (v0.7.2) --------------------------------
