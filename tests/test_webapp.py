@@ -376,7 +376,8 @@ class WebAppTests(unittest.TestCase):
         status, _, body = self.request("/")
         self.assertEqual(status, 200)
         page = body.decode("utf-8")
-        # The bar sits directly under the player.
+        # The bar sits in the timeline band under the columns row
+        # (v0.11.1, item 4), so it still follows the player on the page.
         self.assertIn('id="vid"', page)
         self.assertIn('id="tlbar"', page)
         self.assertIn('id="tlTrack"', page)

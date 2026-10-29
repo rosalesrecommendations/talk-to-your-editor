@@ -1513,6 +1513,8 @@ def _front_door_settings(config: WebAppConfig) -> dict:
             )
         if saved.get("keep_mode") in retakes.KEEP_MODES:
             settings["keep_mode"] = saved["keep_mode"]
+        if isinstance(saved.get("retake_strict"), bool):
+            settings["retake_strict"] = saved["retake_strict"]
         if saved.get("mode") in INVOLVEMENT_MODES:
             settings["mode"] = saved["mode"]
         if saved.get("spark_route") in HOSTED_SPARK_ROUTES + ("meta",):
@@ -2181,6 +2183,8 @@ def _edit_spans(config: WebAppConfig) -> list:
                 "keep_word_start": meta.get("keep_word_start"),
                 "keep_word_end": meta.get("keep_word_end"),
                 "shadow": meta.get("shadow"),
+                "unsure": bool(meta.get("unsure")),
+                "unsure_note": meta.get("unsure_note"),
             }
         spans.append(
             {
@@ -2492,6 +2496,139 @@ def _transcript_entries(config: WebAppConfig) -> tuple[list, list]:
     return (entries, corrections)
 
 
+# ---------------------------------------------------------------------------
+# Timeline band data (v0.11.1, item 4): the waveform peaks and the
+# caption cues the review page's bottom band draws. Both are
+# rendering data only, computed from files the app already reads
+# for this job; nothing here changes a cut, a word, or a caption.
+# ---------------------------------------------------------------------------
+
+WAVEFORM_PEAK_COUNT = 240
+
+
+def waveform_peaks_for_samples(samples, segments, count=WAVEFORM_PEAK_COUNT):
+    """Peak level per slice of the edited clock, from sound samples.
+
+    ``samples`` are the source recording's samples as floats (the
+    shape ``transcribe.waveform_samples`` returns: mono, 16 kHz).
+    Each ordinary kept segment contributes its own span of samples
+    to the output clock, in order, the same mapping the timeline
+    pieces use; special segments (inserts with donor sound) are
+    left at zero, because their sound does not sit at their place
+    in the recording. Returns ``count`` numbers from 0 to 1, scaled
+    so the loudest slice is 1; a silent or empty input returns an
+    empty list, so the page can say there is no wave instead of
+    drawing a flat line that was never measured.
+    """
+    if not samples or not segments or count <= 0:
+        return []
+    spans = []
+    cursor = 0.0
+    for segment in segments:
+        duration = float(segment.get("duration") or 0.0)
+        if duration <= 0:
+            continue
+        rng = segment.get("range") or {}
+        spans.append(
+            (
+                cursor,
+                cursor + duration,
+                None
+                if segment.get("special")
+                else (
+                    float(rng.get("start") or 0.0),
+                    float(rng.get("end") or 0.0),
+                ),
+            )
+        )
+        cursor += duration
+    total_out = cursor
+    if total_out <= 0:
+        return []
+    rate = float(getattr(samples, "sample_rate", 0) or 16000)
+    peaks = [0.0] * count
+    for bucket in range(count):
+        out_lo = bucket / count * total_out
+        out_hi = (bucket + 1) / count * total_out
+        for seg_lo, seg_hi, span in spans:
+            if span is None:
+                continue
+            lo = max(out_lo, seg_lo)
+            hi = min(out_hi, seg_hi)
+            if hi <= lo:
+                continue
+            src_lo = span[0] + (lo - seg_lo)
+            src_hi = span[0] + (hi - seg_lo)
+            i_lo = max(0, int(src_lo * rate))
+            i_hi = min(len(samples), int(src_hi * rate))
+            if i_hi > i_lo:
+                level = max(abs(float(v)) for v in samples[i_lo:i_hi])
+                if level > peaks[bucket]:
+                    peaks[bucket] = level
+    loudest = max(peaks) if peaks else 0.0
+    if loudest <= 0:
+        return []
+    return [round(min(1.0, p / loudest), 4) for p in peaks]
+
+
+def _waveform_peaks(config: WebAppConfig, timeline: Timeline) -> list:
+    """The job's waveform peaks for the timeline band.
+
+    The sound is read from the files this app already keeps for a
+    job, in this order: the intake work folder's own recording of
+    the source sound (``intake-work/audio.wav``, the same WAV the
+    silence measurement reads), then the cleaned audio the config
+    was wired with (a job folder's ``cleaned.wav``). Any read
+    problem returns an empty list: the band then says there is no
+    wave for this job, and nothing else on the page changes.
+    """
+    candidates = []
+    if config.job_dir is not None:
+        candidates.append(
+            config.job_dir / FIRST_EDIT_WORK_NAME / "audio.wav"
+        )
+    if config.cleaned_wav:
+        candidates.append(Path(config.cleaned_wav))
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+            samples = speech.waveform_samples(path)
+            peaks = waveform_peaks_for_samples(samples, timeline.segments)
+            if peaks:
+                return peaks
+        except Exception:
+            continue
+    return []
+
+
+def _caption_cues(config: WebAppConfig, transcript: dict, cuts: dict) -> list:
+    """Caption cues for the band, when captions are on for this job.
+
+    Captions are on when the job's clean caption file exists in
+    the session, the same fact the page's captions rows already
+    use. The cues are the caption file's own cues, grouped by the
+    captions module from the kept words on the edited clock, with
+    the filler words left out of the text exactly the way
+    ``build_captions`` writes the file. Before any edit has built
+    the caption file there are no cues to show, and the band's
+    captions row stays hidden.
+    """
+    captions_path = config.session_dir / clean_captions.CAPTIONS_FILENAME
+    if not captions_path.is_file():
+        return []
+    rows = clean_captions.kept_word_rows(transcript, cuts)
+    cues = clean_captions.group_cues(rows)
+    return [
+        {
+            "start": round(float(cue["start"]), 4),
+            "end": round(float(cue["end"]), 4),
+            "text": cue["text"],
+        }
+        for cue in cues
+    ]
+
+
 AFTER_REVIEW_VISITED_FILENAME = "after_review_visited.json"
 CAPTIONS_PREF_FILENAME = "captions_pref.json"
 
@@ -2586,6 +2723,8 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "words_cut": 0,
         "transcript_words": [],
         "timeline_pieces": [],
+        "waveform_peaks": [],
+        "caption_cues": [],
         "word_corrections": [],
         "videos": [],
         "playback": {},
@@ -2908,6 +3047,28 @@ def _job_summary(config: WebAppConfig) -> dict:
     timeline = Timeline(transcript, cuts)
     kept = timeline.kept_word_indices()
     transcript_entries, corrections = _transcript_entries(config)
+    edit_spans = _edit_spans(config)
+    # Unsure cuts (v0.11.1, fix item 5): a cut word inside a span
+    # the retake pass marked unsure is named on its entry, so the
+    # review can show those words as unsure cuts, apart from sure
+    # cuts and from kept words.
+    unsure_spans = [
+        (span["word_start"], span["word_end"])
+        for span in edit_spans
+        if isinstance(span.get("retake"), dict)
+        and span["retake"].get("unsure")
+    ]
+    if unsure_spans:
+        for entry in transcript_entries:
+            start = entry.get("index")
+            end = entry.get("word_end")
+            if not isinstance(start, int) or not isinstance(end, int):
+                continue
+            if entry.get("status") == "cut" and any(
+                start < span_end and span_start < end
+                for span_start, span_end in unsure_spans
+            ):
+                entry["unsure_cut"] = True
     videos = _job_videos(config.job_dir)
     video_shapes = {}
     for name in videos:
@@ -2991,6 +3152,8 @@ def _job_summary(config: WebAppConfig) -> dict:
         "words_cut": len(timeline.words) - len(kept),
         "transcript_words": transcript_entries,
         "timeline_pieces": timeline_pieces,
+        "waveform_peaks": _waveform_peaks(config, timeline),
+        "caption_cues": _caption_cues(config, transcript, cuts),
         "word_corrections": corrections,
         "videos": videos,
         "playback": playback_states,
@@ -3000,7 +3163,7 @@ def _job_summary(config: WebAppConfig) -> dict:
         "feedback_exists": feedback_exists,
         "comments": comments,
         "overall_feedback": overall_feedback,
-        "edit_spans": _edit_spans(config),
+        "edit_spans": edit_spans,
         "front_door": _front_door_settings(config),
         "flags": _session_flags(config),
         "gold": _open_gold_spans(config),
@@ -5585,16 +5748,29 @@ def _run_retake_pass(
     spoken_direction: str = "",
     keep_mode: Optional[str] = None,
     style: Optional[str] = None,
+    strict: Optional[bool] = None,
 ) -> dict:
     """Measure the edit for retakes and act on what the bands allow.
 
     Band A pairs are cut through the verifier like any other change.
-    Band B pairs are judged in one provider call when the provider
-    can judge; a keep-both or not-a-pair verdict is recorded and no
-    operation is made, and any pair the model did not answer, plus
-    every Band B pair under a provider that cannot judge, becomes a
-    scored flag. Policy-flag pairs are flags by construction. Pairs
-    the creator already graded as keep-both are never proposed again.
+    Strict is the default (v0.11.1, fix item 5): a suspected retake
+    is cut, keeping the take the keeper rule names, and a cut the
+    pass was not sure about is marked unsure in the pair record and
+    in the cut's own record, with the plain note the review shows.
+    Under strict, Band B pairs are cut locally, so the pass makes
+    no judgment call for them. Only an explicit choice runs the
+    loose path: the profile's retakes knob set to not strict, or a
+    per-video choice (a saved front door choice or a direction for
+    this video) that says to only cut the sure ones. On the loose
+    path Band B pairs are judged in one provider call when the
+    provider can judge; a keep-both or not-a-pair verdict is
+    recorded and no operation is made, and any pair the model did
+    not answer, plus every Band B pair under a provider that cannot
+    judge, becomes a scored flag. Policy-flag pairs (a negation in
+    either copy, a short emphasis double) are flags by construction
+    on both paths, because which copy stays can change the meaning.
+    Pairs the creator already graded as keep-both are never
+    proposed again.
 
     The keeper mode decides which complete delivery a cluster
     keeps: the last take (the default), the first clean take, or
@@ -5636,8 +5812,13 @@ def _run_retake_pass(
     settings = retakes.settings_from_profile(profile)
     if keep_mode in retakes.KEEP_MODES:
         settings["keep"] = keep_mode
+    if isinstance(strict, bool):
+        settings["strict"] = strict
     mode = settings["keep"]
     summary["keep_mode"] = mode
+    summary["strict"] = bool(settings.get("strict", True))
+    summary["unsure"] = 0
+    summary["unsure_note"] = retakes.unsure_note(settings)
     all_pairs = retakes.find_pairs(timeline, profile, settings)
     pairs = [
         pair
@@ -5684,7 +5865,17 @@ def _run_retake_pass(
     borderline = retakes.borderline_pairs(pairs)
     judged_ops: list = []
     verdicts: dict = {}
-    if borderline:
+    if borderline and summary["strict"]:
+        # Strict: the borderline pairs are cut here, marked unsure,
+        # and no judgment call is made for them. The outcomes use
+        # the judged-cut name so the applied and held bookkeeping
+        # below treats them the same as any other cut.
+        judged_ops = retakes.strict_cut_operations(
+            timeline, profile, settings=settings, pairs=pairs
+        )
+        for pair in borderline:
+            outcomes[pair["pair_id"]] = "judged_cut"
+    elif borderline:
         provider = retake_provider
         judged = None
         if provider is not None:
@@ -5778,6 +5969,16 @@ def _run_retake_pass(
                     "keep_word_end": pair["keep"]["word_end"],
                     "keep_mode": mode,
                     "shadow": pair.get("shadow"),
+                    "unsure": bool(
+                        pair.get("unsure")
+                        and entry.get("type") == "cut_words"
+                    ),
+                    "unsure_note": (
+                        retakes.unsure_note(settings)
+                        if pair.get("unsure")
+                        and entry.get("type") == "cut_words"
+                        else None
+                    ),
                 }
                 if outcomes.get(pair["pair_id"]) == "proposed":
                     outcomes[pair["pair_id"]] = (
@@ -5800,6 +6001,13 @@ def _run_retake_pass(
             shutil.rmtree(tmp, ignore_errors=True)
     summary["applied"] = sum(
         1 for op in page_operations if op.get("status") == "applied"
+    )
+    summary["unsure"] = sum(
+        1
+        for op in page_operations
+        if op.get("status") == "applied"
+        and isinstance(op.get("retake"), dict)
+        and op["retake"].get("unsure")
     )
     summary["flagged"] = sum(
         1 for op in page_operations if op.get("status") == "flagged"
@@ -5911,6 +6119,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
             spoken_direction=direction_text,
             keep_mode=settings["keep_mode"],
             style=settings["style"],
+            strict=settings.get("retake_strict"),
         )
     extras = []
     if settings["remove_retakes"]:
@@ -6151,6 +6360,8 @@ def _validated_drop_settings(body) -> Optional[dict]:
     for key in ("remove_retakes", "cut_silence", "remove_fillers"):
         if isinstance(raw.get(key), bool):
             validated[key] = raw[key]
+    if isinstance(raw.get("retake_strict"), bool):
+        validated["retake_strict"] = raw["retake_strict"]
     buffer = raw.get("buffer_s")
     if isinstance(buffer, (int, float)) and not isinstance(buffer, bool):
         validated["buffer_s"] = min(
@@ -6524,6 +6735,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 spoken_direction=direction_text,
                 keep_mode=settings["keep_mode"],
                 style=settings.get("style"),
+                strict=settings.get("retake_strict"),
             )
             retake_audit = retake_summary.pop("audit", None)
             if retake_audit is not None:
@@ -6614,6 +6826,14 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 f"{retake_summary.get('flagged', 0)} set aside for "
                 "your call."
             )
+            if retake_summary.get("unsure"):
+                recap.append(
+                    f"{retake_summary['unsure']} of those cuts were "
+                    "unsure ones, marked in the transcript. "
+                    + retake_summary.get(
+                        "unsure_note", retakes.unsure_note(settings)
+                    )
+                )
             for event in retake_summary.get("route_events") or []:
                 recap.append(
                     f"{ROUTE_LABELS.get(event.get('requested'), 'The hosted route')} "

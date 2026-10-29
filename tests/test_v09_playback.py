@@ -281,7 +281,7 @@ class TemplatePlaybackTests(unittest.TestCase):
     def test_space_plays_inside_the_player_areas(self):
         self.assertIn("function spacePlaysVideo(el)", self.page)
         self.assertIn(
-            '"#vidWrap, #tlbar, #fmtRow, #transcriptCard"',
+            '"#vidWrap, #tlbar, #fmtRow, #timelineBand, #transcriptCard"',
             self.page,
         )
         self.assertIn("!spacePlaysVideo(e.target)", self.page)

@@ -169,9 +169,10 @@ class DropCardNestingTests(unittest.TestCase):
         self.assertEqual(self.tree.parents["dropCard"], "main")
 
     def test_drop_card_holds_only_its_own_pieces(self):
-        self.assertEqual(
-            self.tree.drop_children, ["dropSlimBar", "dropFull"]
-        )
+        # v0.11.1, item 1: the slim bar that used to sit at the
+        # top of this card is gone; the card holds only its full
+        # contents now.
+        self.assertEqual(self.tree.drop_children, ["dropFull"])
         self.assertEqual(self.tree.parents["dropFull"], "dropCard")
 
     def test_panes_stay_inside_the_split(self):

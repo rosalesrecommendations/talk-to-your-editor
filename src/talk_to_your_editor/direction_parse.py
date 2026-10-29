@@ -54,6 +54,32 @@ _RULES = [
         {"remove_retakes": False},
         "Retakes stay in: no take will be removed as a retake.",
     ),
+    # Retake strictness (v0.11.1, fix item 5): strict is the default,
+    # so words that turn it off are tried before words that turn it
+    # on, the same order the retakes on/off rules use. These rules
+    # also run before the plain "remove retakes" rule, because "only
+    # cut the retakes you are sure about" contains that wording and
+    # means the opposite of turning strict on. A direction for one
+    # video is an explicit choice, so it wins over the default for
+    # that video.
+    (
+        re.compile(
+            r"\bonly\s+cut\s+(?:the\s+)?(?:retakes?\s+)?you\s+are\s+sure\s+about\b"
+            r"|\bdo\s+not\s+be\s+strict\b|\bdon'?t\s+be\s+strict\b"
+            r"|\bleave\s+(?:the\s+)?borderline\s+retakes?\b"
+            r"|\bnot\s+strict\b",
+            re.I,
+        ),
+        {"retake_strict": False},
+        "Only the retakes the app is sure about will be taken out. "
+        "The rest stay in for your call.",
+    ),
+    (
+        re.compile(r"\bbe\s+strict\b|\bstrict\s+retakes?\b", re.I),
+        {"retake_strict": True},
+        "Suspected retakes will be taken out, and the ones the app "
+        "is not sure about will be marked.",
+    ),
     (
         re.compile(
             r"\b(?:remove|cut|take out)\s+(?:the\s+)?retakes?\b", re.I

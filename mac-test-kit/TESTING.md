@@ -12,6 +12,17 @@ This version is built around one idea: keep the front door simple. Two choices, 
 
 ## Mac test
 
+### 0. New in 0.11.1: the bars are gone, the timeline is a band, and retakes are strict
+
+This version answers your evening test of 0.11.0 on October 28.
+
+1. Load a job and look at the top of the review screen: the three bars are gone. The workspace starts right under the header. The plus button in the header brings in another job, **Teach the app** sits in the header row, and the test-video switch now lives in **Settings** with the same words.
+2. Make the video big: drag its column wider (on your full screen it can grow far past the old limit), and drag the handle under the workspace to make the row taller. Shrink the window down and everything still fits; the transcript and comments give ground but stay in view. Quit and reopen: your sizes are remembered. **Reset layout** in Settings puts widths, workspace height, and the timeline height back.
+3. Pin a comment: the box now reads like a chat input. Type in the clean box, tap the microphone icon to dictate, and tap the round blue send button (up arrow) to save. "Comment at current time" is the small quiet button with the clock mark. Hover any icon and its plain name shows.
+4. Look at the bottom of the screen: the timeline is a full-width band now. The transport buttons and the clock live there, over a ruler, the edit's segments, a captions row when captions are on, and the sound wave. Drag the band's top edge to make it taller or shorter. Play the video and watch the band's playhead and the transcript's current word move together; click anywhere on the band to jump.
+5. Run a take-heavy video (the day 42 plunge is the real test): retakes now come out by default, keeping the best or last take. Cuts the app was not sure about show in orange, and clicking one says why: "I was not sure about this one. I took it out so the last take stays. Double check here if you want it back." One tap on Bring back restores it. On the day 42 stretch, check the takes where one try says a different day number than the keeper: those are exactly what the orange flag is for.
+
+
 ### 0. New in 0.11.0: the review screen fits, and transcripts are saved
 
 This version answers your screen recording of 0.10.1 from October 28.

@@ -677,6 +677,7 @@
   .tw { cursor: pointer; border-radius: 7px; padding: 2px 3px; transition: background 120ms var(--ease-out), opacity 120ms var(--ease-out); }
   .tw:hover { background: var(--panel-3); }
   .tw-cut { text-decoration: line-through; opacity: 0.38; }
+  .tw-unsure { background: rgba(255, 159, 10, 0.30); box-shadow: inset 0 -2px 0 rgba(255, 159, 10, 0.9); opacity: 0.75; }
   .tw-corrected { background: rgba(10, 132, 255, 0.16); box-shadow: inset 0 -2px 0 var(--accent); }
   .tw-selected { outline: 2px solid var(--accent); outline-offset: 1px; background: var(--panel-2); }
   #fixText {
@@ -735,26 +736,23 @@
   .settings-panel { border-color: rgba(10, 132, 255, 0.35); }
   .settings-panel > .card { margin: 14px 0 0; }
   .settings-summary { cursor: pointer; font-weight: 700; font-size: 17px; padding: 8px 0; }
-  /* Drop card slim bar (item 18): once a job is loaded the card
-     collapses to one bar; the full card returns on demand. */
-  #dropSlimBar { display: none; }
-  body.job-loaded #dropSlimBar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  body.job-loaded #dropCard { padding: 12px 18px; }
-  body.job-loaded #dropCard .drop-full { display: none; }
-  body.job-loaded #dropCard.expanded .drop-full { display: block; margin-top: 12px; }
-  .drop-slim-text { font-weight: 600; font-size: 15px; }
-  /* Teach card slim bar (v0.11, item 1): once a job is loaded the
-     teaching choices collapse to one slim bar, the same way the
-     drop card does, so the review screen belongs to the video and
-     the transcript. One click on the Teach the app button brings
-     the full teaching choices back. With no job loaded the card
-     keeps its full front door shape and the slim bar stays hidden. */
-  #teachSlimBar { display: none; }
-  body.job-loaded #teachSlimBar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  body.job-loaded #teachCard { padding: 10px 18px; margin-bottom: 10px; flex: none; }
-  body.job-loaded #teachCard .teach-full { display: none; }
-  body.job-loaded #teachCard.expanded .teach-full { display: block; margin-top: 12px; }
-  .teach-slim-text { font-weight: 600; font-size: 15px; }
+  /* Bring-in card (v0.11.1, item 1): there is no bar for this
+     card while a job is loaded. The card itself stays out of
+     sight until the plus button in the header row opens it (a
+     drop anywhere on the page opens it too), and then its full
+     contents show. With no job loaded the card keeps its full
+     front door shape. */
+  body.job-loaded #dropCard { display: none; }
+  body.job-loaded #dropCard.expanded { display: block; padding: 12px 18px; }
+  body.job-loaded #dropCard.expanded .drop-full { display: block; }
+  /* Teach card (v0.11.1, item 1): the same shape. While a job is
+     loaded the card stays out of sight until the Teach the app
+     button in the header row opens it, so the review screen
+     belongs to the video and the transcript. With no job loaded
+     the card keeps its full front door shape. */
+  body.job-loaded #teachCard { display: none; }
+  body.job-loaded #teachCard.expanded { display: block; padding: 10px 18px; margin-bottom: 10px; flex: none; }
+  body.job-loaded #teachCard.expanded .teach-full { display: block; }
   .drop-line { font-size: 15px; margin: 0 0 8px; }
   details.more-info { margin-top: 10px; }
   details.more-info summary { cursor: pointer; color: var(--muted); font-size: 14px; }
@@ -819,7 +817,7 @@
     body.job-loaded .subtitle { margin-bottom: 10px; }
     body.job-loaded .review-split {
       flex: 1 1 auto; min-height: 0; display: grid;
-      grid-template-columns: minmax(280px, clamp(280px, var(--pane-a, 34%), 420px)) 12px minmax(320px, 1fr) 12px minmax(260px, clamp(260px, var(--pane-c, 26%), 360px));
+      grid-template-columns: minmax(280px, clamp(280px, var(--pane-a, 34%), calc(100vw - 620px))) 12px minmax(320px, 1fr) 12px minmax(260px, clamp(260px, var(--pane-c, 26%), 360px));
       gap: 0; align-items: stretch; margin: 0;
     }
     body.job-loaded .review-left {
@@ -840,7 +838,7 @@
   /* ==== v2 workspace (round 2 specs): one screen, three panels ==== */
   :root { --meta-blue: #0064d1; }
   .topbar-job { color: var(--muted); font-size: 15px; font-weight: 600; text-align: center; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .topbar-actions { display: flex; gap: 8px; align-items: center; flex: none; }
+  .topbar-actions { display: flex; gap: 8px; align-items: center; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; }
   .topbar-btn { min-height: 40px; padding: 8px 14px; font-size: 14px; }
   #commentsCount { font-weight: 700; }
   .popup-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 70; }
@@ -877,6 +875,47 @@
   .tl-block { position: absolute; top: 0; height: 30px; min-height: 0; padding: 0; background: #262b33; border: 0; border-radius: 8px; cursor: pointer; }
   .tl-block-ph { background: rgba(120, 120, 128, 0.25); cursor: default; }
   .tl-caption { font-size: 13px; color: var(--muted); margin: 6px 0 0; line-height: 1.45; }
+  /* Timeline band (v0.11.1, item 4): the timeline is a full width
+     band across the bottom of the review screen, under the columns
+     row, laid out like the model the creator sent: a transport row
+     with the clock, a time ruler with second marks, the segments
+     strip, a captions row when captions are on, and the audio
+     waveform under it all, with one playhead line running through
+     every row. The band height is set by one variable, clamped so
+     the band keeps a sane minimum and never takes the whole
+     window; the columns row above it gives up the space first
+     (flex: 1 1 auto with min-height: 0), so the band shrinks to
+     its minimum before anything is pushed out of view. */
+  .timeline-band {
+    flex: none; width: 100%; max-width: 100%; min-width: 0;
+    height: clamp(120px, var(--band-height, 176px), 360px);
+    display: flex; flex-direction: column;
+    background: var(--panel); border: 0.5px solid var(--line);
+    border-radius: var(--radius-sm); padding: 0 10px 6px; margin-top: 10px;
+  }
+  .tl-band-handle {
+    flex: none; height: 10px; margin: 0 -10px; cursor: ns-resize;
+    touch-action: none; border-radius: 999px;
+    background: transparent;
+  }
+  .tl-band-handle:hover, .tl-band-handle:focus-visible { background: var(--accent); }
+  .timeline-band .transport { flex: none; margin: 0 0 2px; }
+  .tl-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .tl-stack { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .tl-ruler { flex: none; }
+  .tl-second-tick { position: absolute; bottom: 0; width: 1px; height: 3px; background: rgba(255, 255, 255, 0.12); }
+  .tl-track { flex: none; position: relative; }
+  .tl-captions-row { position: relative; flex: none; height: 22px; margin-top: 4px; overflow: hidden; }
+  .tl-caption-seg {
+    position: absolute; top: 0; height: 22px; padding: 2px 6px;
+    font-size: 12px; line-height: 18px; color: var(--text);
+    background: rgba(255, 255, 255, 0.08); border-radius: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .tl-wave-row { position: relative; flex: 1 1 auto; min-height: 28px; margin-top: 4px; cursor: pointer; }
+  #tlWaveCanvas { display: block; width: 100%; height: 100%; }
+  .tl-wave-note { position: absolute; inset: 0; display: flex; align-items: center; font-size: 12px; color: var(--faint); margin: 0; }
   #tlDots { position: absolute; inset: 0; pointer-events: none; }
   .tl-dot { top: 16px; width: 10px; height: 10px; margin: -5px 0 0 -5px; padding: 0; border: 2px solid #fff; background: #0064d1; pointer-events: auto; display: flex; align-items: center; justify-content: center; }
   .tl-dot-count { font-size: 7px; font-weight: 700; color: #fff; line-height: 1; }
@@ -961,6 +1000,38 @@
   .comments-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 2px 10px; }
   .comments-head h2 { margin: 0; font-size: 17px; }
   #hideCommentsBtn { min-height: 36px; padding: 6px 12px; font-size: 13px; }
+  /* Comments composer (v0.11.1, item 3): the pin a comment card
+     used the page wide button rule for its three buttons
+     (min-height 48px, padding 12px 20px, font size 16px), so the
+     two blue pills and the Dictate pill stood huge in the narrow
+     comments column. The composer is now a chat style input row,
+     the way chat boxes work: the text box, a microphone icon
+     button, and a round blue send button with an up arrow at the
+     right end. The pin control above it is a small, quiet text
+     button at the header button size (.topbar-btn, min-height
+     40px, padding 8px 14px, font size 14px). Only the buttons in
+     this card carry these classes, so no other button in the app
+     changes. In bigger text the pin button grows taller like the
+     other word buttons; the two icon buttons stay round, the way
+     the transport icon buttons already do. */
+  .comment-action { min-height: 40px; padding: 8px 14px; font-size: 14px; }
+  .comment-action svg { width: 14px; height: 14px; vertical-align: -2px; margin-right: 6px; }
+  .composer-row { display: flex; align-items: flex-end; gap: 8px; margin-top: 4px; }
+  .composer-row #draft { flex: 1 1 auto; min-width: 0; margin-top: 0; }
+  .composer-btn {
+    flex: none; width: 40px; height: 40px; min-height: 40px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .composer-btn svg { width: 20px; height: 20px; display: block; }
+  /* While dictation is recording or being written down, the
+     shared dictation code puts words on the button itself (the
+     recording time, or Writing your words). The icon button then
+     grows into a pill so those words fit, and shrinks back to the
+     icon when the starting content is restored. */
+  .composer-btn.recording, .composer-btn.processing {
+    width: auto; height: auto; min-height: 40px;
+    padding: 8px 14px; font-size: 14px;
+  }
   .example-comment { display: block; margin-top: 8px; }
   /* Front door (v2, 6b): the staged preview stays small. */
   #dropVideo { max-height: 200px; width: 100%; object-fit: contain; }
@@ -975,8 +1046,9 @@
   body.bigger-text .tl-ruler { height: 20px; }
   body.bigger-text .tl-track, body.bigger-text .tl-block { height: 36px; }
   body.bigger-text .tl-dot { top: 20px; }
+  body.bigger-text .tl-caption-seg { font-size: 14px; }
   body.bigger-text button { min-height: 52px; }
-  body.bigger-text .tp-btn, body.bigger-text .tx-time, body.bigger-text .tx-comment-marker, body.bigger-text .tl-dot, body.bigger-text .tdot, body.bigger-text .tflag, body.bigger-text .theld { min-height: 0; }
+  body.bigger-text .tp-btn, body.bigger-text .tx-time, body.bigger-text .tx-comment-marker, body.bigger-text .tl-dot, body.bigger-text .tdot, body.bigger-text .tflag, body.bigger-text .theld, body.bigger-text .composer-btn { min-height: 0; }
   /* The workspace frame (v2): the page fits the window at laptop
      sizes; panels scroll inside themselves; bottom edges stay on
      screen. */
@@ -989,20 +1061,25 @@
     body.job-loaded .app-head { flex: none; height: 48px; align-items: center; }
     body.job-loaded .app-head h1 { font-size: 18px; margin: 0; }
     body.job-loaded .subtitle { display: none; }
-    /* Panel width limits (v0.11, items 2 and 4): the widths a
-       person drags or an older visit saved are read through a
-       clamp, so the video panel stays between 280px and 420px
-       and the comments panel between 260px and 360px, whatever
-       value is stored. With those caps and the transcript taking
-       at least 320px, the three columns always fit the window:
-       at a 1440px window the widest they can be is 420 + 10 +
-       320 + 10 + 360 plus the page padding, well inside it, and
-       the page itself never scrolls sideways. */
+    /* Panel width limits (v0.11, items 2 and 4, widened in
+       v0.11.1, item 2): the widths a person drags or an older
+       visit saved are read through a clamp. The comments panel
+       stays between 260px and 360px. The video panel starts at
+       280px, and its widest is set by the window, not by a fixed
+       small number: the window width minus 620px, which is the
+       transcript at its smallest (320px), the comments panel at
+       its smallest (260px), the two dividers (20px), and the
+       page padding (20px). The comments clamp also reads the
+       video column, so when the video takes its widest the
+       comments panel is read at its smallest instead of being
+       pushed off the edge. With those rules the three columns
+       always add up to no more than the window, and the page
+       itself never scrolls sideways. */
     body.job-loaded .review-split {
       flex: 1 1 auto; min-height: 0; min-width: 0; width: 100%; max-width: 100%;
       display: grid; overflow: hidden;
-      --col-a: clamp(280px, var(--pane-a, 350px), 420px);
-      --col-c: clamp(260px, var(--pane-c, 310px), 360px);
+      --col-a: clamp(280px, var(--pane-a, 350px), calc(100vw - 620px));
+      --col-c: clamp(260px, var(--pane-c, 310px), min(360px, calc(100vw - var(--col-a) - 360px)));
       grid-template-columns: var(--col-a) 10px minmax(320px, 1fr) 10px var(--col-c);
       gap: 0; align-items: stretch; margin: 0;
     }
@@ -1015,7 +1092,7 @@
       width: 100%; height: auto; max-width: 100%;
       object-fit: contain; display: block; margin: 0 auto 12px;
     }
-    body.job-loaded.expanded-video #vid { max-width: 720px; }
+    body.job-loaded.expanded-video #vid { max-width: 100%; max-height: calc(100dvh - 160px); }
     body.job-loaded .review-left {
       position: static; max-height: none; overflow-y: auto; min-height: 0; min-width: 0;
       background: var(--panel); border: 0.5px solid var(--line); border-radius: var(--radius-sm);
@@ -1041,6 +1118,56 @@
       grid-template-columns: var(--col-a) 10px minmax(0, 1fr) 0 0;
     }
     body.comments-closed #toolsPane, body.comments-closed #toolsDivider { display: none; }
+  }
+  /* Two-direction resizing (v0.11.1, item 2): a flat drag bar
+     under the workspace row makes the row taller or shorter.
+     The bar only shows in the wide layout, the same way the
+     sideways dividers do; the narrower layouts keep sizing the
+     panels from the window, and the very small layout keeps
+     its page scroll. The split gains a second, short grid row
+     for the bar, and every panel stays in the first row, so the
+     columns, their widths, and their inside scrolling do not
+     change. Until a person drags the bar, the row fills the
+     space the page gives it, exactly as before. Once dragged,
+     the split carries the row-sized mark and the stored height
+     is read through a clamp: at least 320px, and no more than
+     the window height minus 120px for the header and padding,
+     so a height saved on a big screen can never push the row
+     out of a smaller window. While the row is sized this way,
+     the video picture also reads that height: a tall video is
+     capped by the row it sits in, so making the row taller
+     makes the picture taller too, and the panel still scrolls
+     inside itself for anything below the picture. */
+  .row-divider { display: none; }
+  @media (min-width: 1100px) {
+    body.job-loaded .review-split {
+      grid-template-rows: minmax(0, 1fr) 10px;
+    }
+    body.job-loaded .review-left,
+    body.job-loaded .review-right,
+    body.job-loaded .review-tools,
+    body.job-loaded .pane-divider { grid-row: 1; }
+    body.job-loaded #rowDivider {
+      display: block; grid-row: 2; grid-column: 1 / -1;
+      height: 6px; align-self: center; border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14); cursor: row-resize; touch-action: none;
+    }
+    body.job-loaded #rowDivider:hover, body.job-loaded #rowDivider:focus-visible { background: var(--accent); }
+    body.job-loaded .review-split.row-sized {
+      flex: 0 0 auto;
+      height: clamp(320px, var(--pane-height), calc(100dvh - 120px));
+    }
+    body.job-loaded .review-split.row-sized #vid {
+      max-height: max(120px, calc(var(--pane-height) - 260px));
+    }
+    body.job-loaded.expanded-video .review-split,
+    body.job-loaded.expanded-transcript .review-split,
+    body.job-loaded.expanded-comments .review-split {
+      grid-template-rows: minmax(0, 1fr) 0;
+    }
+    body.job-loaded.expanded-video #rowDivider,
+    body.job-loaded.expanded-transcript #rowDivider,
+    body.job-loaded.expanded-comments #rowDivider { display: none; }
   }
   @media (min-width: 1100px) and (max-width: 1400px) {
     body.job-loaded .review-split { --pane-a: 320px; --pane-c: 280px; }
@@ -1149,15 +1276,12 @@
     body.job-loaded .app-head { flex: none; min-height: 0; align-items: center; }
     body.job-loaded .app-head h1 { font-size: 18px; margin: 0; }
     body.job-loaded .subtitle { display: none; }
-    body.job-loaded #testVideoCard,
     body.job-loaded #dropCard,
     body.job-loaded #teachCard,
     body.job-loaded #novid { flex: none; }
-    /* The small cards above the split sit slim while a job is
-       loaded (the test-video line is one line; the no-video
-       card is one short message), so the split keeps the
-       height they do not need. */
-    body.job-loaded #testVideoCard { padding: 10px 16px; margin-bottom: 10px; }
+    /* The no-video card above the split is one short message
+       while a job is loaded, so the split keeps the height it
+       does not need. */
     body.job-loaded #novid { padding: 12px 16px; margin-bottom: 10px; }
     body.job-loaded .review-split {
       flex: 1 1 auto; min-height: 0; min-width: 0;
@@ -1300,6 +1424,8 @@
     </div>
     <div class="topbar-job" id="topJobName">{{JOB_NAME}}</div>
     <div class="topbar-actions">
+      <button id="bringInBtn" class="topbar-btn job-only" type="button" aria-expanded="false" aria-controls="dropFull" aria-label="Bring in another job" title="Bring in another job">+</button>
+      <button id="teachToggle" class="topbar-btn job-only" type="button" aria-expanded="false" aria-controls="teachFull">Teach the app</button>
       <button id="showVideoBtn" class="topbar-btn job-only" type="button" hidden>Show video</button>
       <button id="showTranscriptBtn" class="topbar-btn job-only" type="button" hidden>Show transcript</button>
       <button id="howItWorksToggle" class="topbar-btn" type="button" aria-expanded="false" aria-controls="howItWorksPanel">How this works</button>
@@ -1339,7 +1465,11 @@
       <h3>Text size</h3>
       <label class="switch"><input type="checkbox" id="biggerTextToggle"> Bigger text</label>
       <p class="note">Bigger text makes the transcript words bigger, the counts and times a step bigger, and the buttons taller. The panel widths stay the same.</p>
-      <p class="note"><button id="resetLayoutBtn" type="button">Reset layout</button> Put the panel widths and the comments panel back the way they started.</p>
+      <p class="note"><button id="resetLayoutBtn" type="button">Reset layout</button> Put the panel widths, the workspace height, and the comments panel back the way they started. The timeline band height goes back too.</p>
+    </div>
+    <div id="testVideoBlock" class="job-only">
+      <h3>Test video</h3>
+      <label class="switch"><input type="checkbox" id="jobTestVideo"> This is a test video. The app will not learn from it.</label>
     </div>
     <div id="savedTranscriptsBlock">
       <h3>Saved transcripts</h3>
@@ -1421,15 +1551,7 @@
 
   <p class="note job-only" id="testVideoBanner" hidden>Test video: the app will not learn from this one.</p>
 
-  <div class="card job-only" id="testVideoCard">
-    <label class="switch"><input type="checkbox" id="jobTestVideo"> This is a test video. The app will not learn from it.</label>
-  </div>
-
   <div class="card" id="dropCard">
-    <div id="dropSlimBar">
-      <span class="drop-slim-text">Job loaded. The review below belongs to this job.</span>
-      <button id="dropSlimToggle" type="button">Bring in another job</button>
-    </div>
     <div class="drop-full" id="dropFull">
     <h2>Bring in a job</h2>
     <div class="drop-area" id="dropArea">
@@ -1588,10 +1710,6 @@
   </div>
 
   <div class="card" id="teachCard">
-    <div id="teachSlimBar">
-      <span class="teach-slim-text">Teaching is tucked away while you review.</span>
-      <button id="teachToggle" type="button" aria-expanded="false" aria-controls="teachFull">Teach the app</button>
-    </div>
     <div class="teach-full" id="teachFull">
     <h2>Teach the app</h2>
     <p class="note">The fast way to teach the app how you edit. This is optional. The app also learns over time from your edits and your grades.</p>
@@ -1639,33 +1757,6 @@
     <div class="vid-error" id="vidError" hidden>This video could not be played here. The file could not be shown as a picture.</div>
     <div class="vid-error" id="vidPending" hidden>Getting your video ready to watch…</div>
   </div>
-  <div class="transport job-only" id="fmtRow">
-    <span class="clock transport-clock"><b id="clock">0:00 / 0:00</b></span>
-    <div class="transport-center">
-      <span class="tp-slot" id="prevChangeSlot" hidden><button class="tp-btn" id="prevChangeBtn" type="button" title="Previous change"><span class="tp-icon">&#8592;</span><span class="tp-label">Prev change</span></button></span>
-      <button class="tp-btn" id="goStartBtn" type="button" title="Go to start"><span class="tp-icon">&#9198;</span><span class="tp-label">Start</span></button>
-      <button class="tp-btn" id="back5" type="button" title="Back 5 seconds (J)"><span class="tp-icon">&#8630;</span><span class="tp-label">Back 5</span></button>
-      <button class="tp-btn tp-play" id="playPauseBtn" type="button" title="Play or pause (Space)"><span class="tp-icon" id="playPauseIcon">&#9654;</span><span class="tp-label" id="playPauseLabel">Play</span></button>
-      <button class="tp-btn" id="fwd5" type="button" title="Forward 5 seconds (L)"><span class="tp-icon">&#8631;</span><span class="tp-label">Fwd 5</span></button>
-      <button class="tp-btn" id="goEndBtn" type="button" title="Go to end"><span class="tp-icon">&#9197;</span><span class="tp-label">End</span></button>
-      <span class="tp-slot" id="nextChangeSlot" hidden><button class="tp-btn" id="nextChangeBtn" type="button" title="Next change"><span class="tp-icon">&#8594;</span><span class="tp-label">Next change</span></button></span>
-    </div>
-  </div>
-  <div class="tl-wrap job-only" id="tlbar">
-    <button id="tlCommentBtn" class="tl-comment-btn" type="button" hidden>&#128172; Leave a comment here</button>
-    <div class="tl-stack" id="tlStack">
-      <div class="tl-ruler" id="tlRuler"></div>
-      <div class="tl-track" id="tlTrack">
-        <div id="tlBlocks"></div>
-      </div>
-      <div id="tlDots"></div>
-      <div class="tl-hover-line" id="tlHoverLine" hidden></div>
-      <div class="tl-playhead" id="tlPlayhead" style="left: 0%"></div>
-      <div class="tl-bubble" id="tlBubble" hidden></div>
-    </div>
-    <p class="tl-caption" id="tlCaption"></p>
-  </div>
-
   <div class="card job-only" id="makeEditCard">
     <h2>Make the edit</h2>
     <p class="note">Watch, set the choices, then make the edit. The Remove choices live in exactly one place: Edit settings, right here.</p>
@@ -1876,17 +1967,17 @@
   <div class="card job-only" id="pinCard">
     <h2>Pin a comment</h2>
     <div class="row">
-      <button id="pin" class="primary" type="button">Comment at current time</button>
+      <button id="pin" class="comment-action" type="button" title="Comment at current time" aria-label="Comment at current time"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7.5V12l3 2"></path></svg>Comment at current time</button>
       <label class="note">or at <input id="manualTs" type="number" step="0.1" min="0" placeholder="sec"> seconds</label>
     </div>
-    <textarea id="draft" rows="3" placeholder="What did you notice here? Type it, or dictate it with the button below."></textarea>
-    <div class="row">
-      <button id="draftDictate" type="button">Dictate</button>
-      <span class="note" id="draftDictateStatus"></span>
+    <div class="composer-row">
+      <textarea id="draft" rows="3" placeholder="What did you notice here? Type it, or tap the microphone to dictate it."></textarea>
+      <button id="draftDictate" class="composer-btn" type="button" title="Dictate" aria-label="Dictate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor" stroke="none"></rect><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"></path><path d="M12 18v3"></path></svg></button>
+      <button id="save" class="primary composer-btn" type="button" title="Save comment" aria-label="Save comment"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 19V5"></path><path d="M5.5 11.5L12 5l6.5 6.5"></path></svg></button>
     </div>
+    <span class="note" id="draftDictateStatus"></span>
     <p class="pin-note" id="pinNote"></p>
     <div class="row">
-      <button id="save" class="primary" type="button">Save comment</button>
       <select id="scope" aria-label="This comment applies to">
         <option value="both" selected>Both formats</option>
         <option value="vertical">Vertical only</option>
@@ -1967,6 +2058,46 @@
     <p class="status-line" id="historyStatus"></p>
   </div>
   </aside>
+  <!-- Two-direction resizing (v0.11.1, item 2): drag this bar
+       up or down to make the workspace row taller or shorter.
+       It shows only in the wide layout, like the sideways
+       dividers. -->
+  <div class="row-divider" id="rowDivider" role="separator" aria-orientation="horizontal" aria-label="Resize the workspace taller or shorter" tabindex="0"></div>
+  </div>
+
+  <div class="timeline-band job-only" id="timelineBand">
+    <div class="tl-band-handle" id="tlBandHandle" role="separator" aria-orientation="horizontal" aria-label="Drag to make the timeline taller or shorter" tabindex="0"></div>
+  <div class="transport job-only" id="fmtRow">
+    <span class="clock transport-clock"><b id="clock">0:00 / 0:00</b></span>
+    <div class="transport-center">
+      <span class="tp-slot" id="prevChangeSlot" hidden><button class="tp-btn" id="prevChangeBtn" type="button" title="Previous change"><span class="tp-icon">&#8592;</span><span class="tp-label">Prev change</span></button></span>
+      <button class="tp-btn" id="goStartBtn" type="button" title="Go to start"><span class="tp-icon">&#9198;</span><span class="tp-label">Start</span></button>
+      <button class="tp-btn" id="back5" type="button" title="Back 5 seconds (J)"><span class="tp-icon">&#8630;</span><span class="tp-label">Back 5</span></button>
+      <button class="tp-btn tp-play" id="playPauseBtn" type="button" title="Play or pause (Space)"><span class="tp-icon" id="playPauseIcon">&#9654;</span><span class="tp-label" id="playPauseLabel">Play</span></button>
+      <button class="tp-btn" id="fwd5" type="button" title="Forward 5 seconds (L)"><span class="tp-icon">&#8631;</span><span class="tp-label">Fwd 5</span></button>
+      <button class="tp-btn" id="goEndBtn" type="button" title="Go to end"><span class="tp-icon">&#9197;</span><span class="tp-label">End</span></button>
+      <span class="tp-slot" id="nextChangeSlot" hidden><button class="tp-btn" id="nextChangeBtn" type="button" title="Next change"><span class="tp-icon">&#8594;</span><span class="tp-label">Next change</span></button></span>
+    </div>
+  </div>
+  <div class="tl-wrap" id="tlbar">
+    <button id="tlCommentBtn" class="tl-comment-btn" type="button" hidden>&#128172; Leave a comment here</button>
+    <div class="tl-stack" id="tlStack">
+      <div class="tl-ruler" id="tlRuler"></div>
+      <div class="tl-track" id="tlTrack">
+        <div id="tlBlocks"></div>
+      </div>
+      <div id="tlDots"></div>
+      <div class="tl-captions-row" id="tlCaptionsRow" hidden></div>
+      <div class="tl-wave-row" id="tlWaveRow">
+        <canvas id="tlWaveCanvas" aria-label="The sound of the video, drawn as a wave. Quiet parts sit low and loud parts sit high."></canvas>
+        <p class="tl-wave-note" id="tlWaveNote" hidden>No sound wave for this job yet.</p>
+      </div>
+      <div class="tl-hover-line" id="tlHoverLine" hidden></div>
+      <div class="tl-playhead" id="tlPlayhead" style="left: 0%"></div>
+      <div class="tl-bubble" id="tlBubble" hidden></div>
+    </div>
+    <p class="tl-caption" id="tlCaption"></p>
+  </div>
   </div>
 
 </main>
@@ -1981,6 +2112,7 @@
       <p class="comment-text" id="editPopupKeptText"></p>
     </div>
     <p class="action" id="editPopupShadow" hidden></p>
+    <p class="action" id="editPopupUnsure" hidden></p>
     <div class="row" id="editPopupActions">
       <button id="editBringBack" type="button">Bring these words back</button>
       <button id="editSwapTakes" type="button" hidden>Swap takes</button>
@@ -2157,6 +2289,7 @@
       try {
         window.localStorage.removeItem("tye-pane-a");
         window.localStorage.removeItem("tye-pane-c");
+        window.localStorage.removeItem("tye-pane-height");
         window.localStorage.removeItem("tye-comments-open");
         window.localStorage.removeItem("tye-layout");
       } catch (err) {}
@@ -2164,8 +2297,10 @@
       if (split) {
         split.style.removeProperty("--pane-a");
         split.style.removeProperty("--pane-c");
+        split.style.removeProperty("--pane-height");
+        split.classList.remove("row-sized");
       }
-      layoutState = { swapped: false, video: false, transcript: false, expanded: null };
+      layoutState = { swapped: false, video: false, transcript: false, expanded: null, bandHeight: null };
       applyLayout();
       applyCommentsOpen(true);
     });
@@ -2175,7 +2310,7 @@
   // and on, one panel wider. A few plain buttons in the panel
   // headers and the top bar; the arrangement is remembered on
   // this computer in the same localStorage family as the sizes.
-  var layoutState = { swapped: false, video: false, transcript: false, expanded: null };
+  var layoutState = { swapped: false, video: false, transcript: false, expanded: null, bandHeight: null };
   try {
     var layoutSaved = window.localStorage.getItem("tye-layout");
     if (layoutSaved) {
@@ -2187,10 +2322,23 @@
         layoutState.expanded =
           ["video", "transcript", "comments"].indexOf(parsedLayout.expanded) >= 0
             ? parsedLayout.expanded : null;
+        layoutState.bandHeight =
+          typeof parsedLayout.bandHeight === "number" &&
+          isFinite(parsedLayout.bandHeight)
+            ? Math.min(360, Math.max(120, Math.round(parsedLayout.bandHeight)))
+            : null;
       }
     }
   } catch (err) {}
   function applyLayout() {
+    var bandEl = document.getElementById("timelineBand");
+    if (bandEl) {
+      if (typeof layoutState.bandHeight === "number") {
+        bandEl.style.setProperty("--band-height", layoutState.bandHeight + "px");
+      } else {
+        bandEl.style.removeProperty("--band-height");
+      }
+    }
     document.body.classList.toggle("panels-swapped", layoutState.swapped);
     document.body.classList.toggle("video-hidden", layoutState.video);
     document.body.classList.toggle("transcript-hidden", layoutState.transcript);
@@ -2291,18 +2439,67 @@
   }
   applyLayout();
 
-  var dropCardEl = document.getElementById("dropCard");
-  var dropSlimToggle = document.getElementById("dropSlimToggle");
-  if (dropSlimToggle && dropCardEl) {
-    dropSlimToggle.addEventListener("click", function () {
-      var expanded = dropCardEl.classList.toggle("expanded");
-      dropSlimToggle.textContent = expanded ? "Hide the bring-in card" : "Bring in another job";
+  // -- timeline band height (v0.11.1, item 4): drag the band's top
+  // edge up or down. The height is remembered in the same layout
+  // store as the panel arrangement, under its own key (bandHeight),
+  // and Reset layout puts it back with the rest. The drag stops at
+  // the same limits the band CSS uses: at least 120px, at most
+  // 360px, so the band can shrink to its minimum and the columns
+  // above it always keep a share of the window.
+  var tlBandHandle = document.getElementById("tlBandHandle");
+  var timelineBandEl = document.getElementById("timelineBand");
+  function setBandHeight(px) {
+    px = Math.min(360, Math.max(120, Math.round(px)));
+    layoutState.bandHeight = px;
+    applyLayout();
+  }
+  if (tlBandHandle && timelineBandEl) {
+    tlBandHandle.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      if (tlBandHandle.setPointerCapture) {
+        try { tlBandHandle.setPointerCapture(e.pointerId); } catch (err) {}
+      }
+      var startY = e.clientY;
+      var startH = timelineBandEl.getBoundingClientRect().height;
+      var move = function (ev) { setBandHeight(startH + (startY - ev.clientY)); };
+      var up = function () {
+        tlBandHandle.removeEventListener("pointermove", move);
+        tlBandHandle.removeEventListener("pointerup", up);
+        tlBandHandle.removeEventListener("pointercancel", up);
+      };
+      tlBandHandle.addEventListener("pointermove", move);
+      tlBandHandle.addEventListener("pointerup", up);
+      tlBandHandle.addEventListener("pointercancel", up);
+    });
+    tlBandHandle.addEventListener("keydown", function (e) {
+      var cur = typeof layoutState.bandHeight === "number"
+        ? layoutState.bandHeight
+        : timelineBandEl.getBoundingClientRect().height;
+      if (e.key === "ArrowUp") { e.preventDefault(); setBandHeight(cur + 10); }
+      if (e.key === "ArrowDown") { e.preventDefault(); setBandHeight(cur - 10); }
     });
   }
 
-  // Teach card slim bar (v0.11, item 1): while a job is loaded
-  // the teaching choices sit behind this one button; one click
-  // opens them, one more click tucks them away again.
+  // Bring-in card (v0.11.1, item 1): the plus button in the
+  // header row opens the bring-in card while a job is loaded;
+  // one click opens it, one more click puts it away again. The
+  // button itself stays a plus sign, and its plain name follows
+  // what the next click will do.
+  var dropCardEl = document.getElementById("dropCard");
+  var bringInBtn = document.getElementById("bringInBtn");
+  if (bringInBtn && dropCardEl) {
+    bringInBtn.addEventListener("click", function () {
+      var expanded = dropCardEl.classList.toggle("expanded");
+      bringInBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+      var btnName = expanded ? "Hide the bring-in card" : "Bring in another job";
+      bringInBtn.setAttribute("aria-label", btnName);
+      bringInBtn.title = btnName;
+    });
+  }
+
+  // Teach the app button (v0.11.1, item 1): the button lives in
+  // the header row while a job is loaded; one click opens the
+  // teaching choices, one more click tucks them away again.
   var teachCardEl = document.getElementById("teachCard");
   var teachToggle = document.getElementById("teachToggle");
   if (teachToggle && teachCardEl) {
@@ -2345,7 +2542,12 @@
   var keepPlayingEl = document.getElementById("keepPlaying");
   var pinNoteEl = document.getElementById("pinNote");
   var tlbarEl = document.getElementById("tlbar");
-  var tlTrack = document.getElementById("tlTrack");
+  var tlCaptionsRow = document.getElementById("tlCaptionsRow");
+  var tlWaveCanvas = document.getElementById("tlWaveCanvas");
+  var tlWaveNote = document.getElementById("tlWaveNote");
+  var tlWaveRow = document.getElementById("tlWaveRow");
+  var waveformPeaks = [];
+  var captionCues = [];  var tlTrack = document.getElementById("tlTrack");
   var tlDots = document.getElementById("tlDots");
   var tlPlayhead = document.getElementById("tlPlayhead");
   var transcriptEl = document.getElementById("transcriptWords");
@@ -2663,6 +2865,12 @@
     for (var i = 0; i < steps.length; i++) {
       if (d / steps[i] <= 7) { step = steps[i]; break; }
     }
+    for (var s = 0; s <= d + 0.001; s += 1) {
+      var secondTick = document.createElement("span");
+      secondTick.className = "tl-second-tick";
+      secondTick.style.left = (s / d * 100) + "%";
+      ruler.appendChild(secondTick);
+    }
     for (var t = 0; t <= d + 0.001; t += step) {
       var label = document.createElement("span");
       label.className = "tl-ruler-label";
@@ -2750,9 +2958,77 @@
         ? " The dots are your comments." : "");
   }
 
+  // -- captions row (v0.11.1, item 4): one block per caption cue,
+  // shown only when captions are on for this job. The server sends
+  // the cues (job.caption_cues) built by the same code that writes
+  // the caption file, on the edited clock, with the ums and uhs
+  // choice already applied; the page draws what it is sent and
+  // invents nothing. With captions off, or no cues sent, the row
+  // stays hidden and takes no height.
+  function renderCaptionRow() {
+    if (!tlCaptionsRow) { return; }
+    tlCaptionsRow.innerHTML = "";
+    var d = editedDuration();
+    if (!state.captionsAvailable || !captionCues.length || d <= 0) {
+      tlCaptionsRow.hidden = true;
+      return;
+    }
+    tlCaptionsRow.hidden = false;
+    captionCues.forEach(function (cue) {
+      if (typeof cue.start !== "number" || typeof cue.end !== "number") { return; }
+      var seg = document.createElement("span");
+      seg.className = "tl-caption-seg";
+      seg.style.left = (cue.start / d * 100) + "%";
+      seg.style.width =
+        "calc(" + Math.max(0.2, (cue.end - cue.start) / d * 100) + "% - 3px)";
+      seg.textContent = cue.text || "";
+      seg.title = cue.text || "";
+      seg.addEventListener("pointerdown", function (e) { e.stopPropagation(); });
+      seg.addEventListener("click", function (e) {
+        e.stopPropagation();
+        seekToEdited(cue.start);
+      });
+      tlCaptionsRow.appendChild(seg);
+    });
+    if (!tlCaptionsRow.children.length) { tlCaptionsRow.hidden = true; }
+  }
+
+  // -- waveform row (v0.11.1, item 4): the peaks the server measured
+  // from the job's own sound (job.waveform_peaks, one number from 0
+  // to 1 per slice of the edited clock), drawn on a canvas under
+  // the segments. Quiet stretches sit low and loud parts sit high,
+  // so pauses and the breath show by eye. No peaks, no drawing: the
+  // row says so in plain words instead of faking a wave.
+  function renderWaveform() {
+    if (!tlWaveCanvas) { return; }
+    var note = !waveformPeaks.length;
+    if (tlWaveNote) { tlWaveNote.hidden = !note; }
+    tlWaveCanvas.hidden = note;
+    if (note) { return; }
+    var w = tlWaveCanvas.clientWidth || 0;
+    var h = tlWaveCanvas.clientHeight || 0;
+    if (!w || !h) { return; }
+    var dpr = window.devicePixelRatio || 1;
+    tlWaveCanvas.width = Math.round(w * dpr);
+    tlWaveCanvas.height = Math.round(h * dpr);
+    var ctx = tlWaveCanvas.getContext("2d");
+    if (!ctx) { return; }
+    ctx.clearRect(0, 0, tlWaveCanvas.width, tlWaveCanvas.height);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.75)";
+    var n = waveformPeaks.length;
+    var mid = tlWaveCanvas.height / 2;
+    for (var x = 0; x < tlWaveCanvas.width; x++) {
+      var peak = waveformPeaks[Math.floor(x / tlWaveCanvas.width * n)] || 0;
+      var half = Math.max(dpr, peak * mid);
+      ctx.fillRect(x, mid - half, 1, half * 2);
+    }
+  }
+
   function renderTimeline() {
     renderRuler();
     renderBlocks();
+    renderCaptionRow();
+    renderWaveform();
     renderTlCaption();
     updateChangeButtons();
   }
@@ -2875,6 +3151,31 @@
   function tlHoverEnd() {
     if (tlHoverLine) { tlHoverLine.hidden = true; }
     if (tlBubble && !tlDragging) { tlBubble.hidden = true; }
+  }
+  if (tlWaveRow) {
+    tlWaveRow.addEventListener("pointerdown", function (e) {
+      tlDragging = true;
+      tlTrack.classList.add("scrubbing");
+      if (tlBubble) { tlBubble.hidden = false; }
+      if (tlCommentBtn) { tlCommentBtn.hidden = true; }
+      try { tlWaveRow.setPointerCapture(e.pointerId); } catch (err) {}
+      tlSeekEvent(e);
+    });
+    tlWaveRow.addEventListener("pointermove", function (e) {
+      if (tlDragging) { tlSeekEvent(e); } else { tlHoverEvent(e); }
+    });
+    tlWaveRow.addEventListener("pointerup", function () {
+      tlDragging = false;
+      tlTrack.classList.remove("scrubbing");
+      if (tlBubble) { tlBubble.hidden = true; }
+      showTimelineCommentButton(vid.currentTime || 0);
+    });
+    tlWaveRow.addEventListener("pointercancel", function () {
+      tlDragging = false;
+      tlTrack.classList.remove("scrubbing");
+      if (tlBubble) { tlBubble.hidden = true; }
+    });
+    tlWaveRow.addEventListener("pointerleave", tlHoverEnd);
   }
   tlTrack.addEventListener("pointerdown", function (e) {
     tlDragging = true;
@@ -3446,15 +3747,17 @@
       for (var k2 = w.index; k2 < e2; k2++) {
         if (commentedWords[k2]) { isCommented = true; }
       }
-      span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "") + (inGold(w) ? " tw-held" : "") + (isCommented ? " tw-commented" : "");
+      span.className = "tw tw-" + w.status + (w.corrected ? " tw-corrected" : "") + (inGold(w) ? " tw-held" : "") + (w.unsure_cut ? " tw-unsure" : "") + (isCommented ? " tw-commented" : "");
       span.dataset.index = w.index;
       span.dataset.end = w.word_end || (w.index + 1);
       span.textContent = w.word;
       span.title = w.corrected
         ? "Corrected from: " + (w.original || "") + ". Click to pick it, then Fix the words to change the correction."
-        : (w.status === "cut"
-          ? "Cut. Click to jump here and pick this word."
-          : "Click to jump here and pick this word.");
+        : (w.unsure_cut
+          ? "Cut, and the app was not sure about this one. Click to jump here and pick this word."
+          : (w.status === "cut"
+            ? "Cut. Click to jump here and pick this word."
+            : "Click to jump here and pick this word."));
       paraWords.appendChild(span);
       paraWords.appendChild(document.createTextNode(" "));
       // Dead air dots (v0.11.0, item 9): right after this word, in
@@ -4332,7 +4635,7 @@
   function spacePlaysVideo(el) {
     if (!el || !el.closest) { return false; }
     return !!el.closest(
-      "#vidWrap, #tlbar, #fmtRow, #transcriptCard"
+      "#vidWrap, #tlbar, #fmtRow, #timelineBand, #transcriptCard"
     );
   }
 
@@ -4807,7 +5110,11 @@
     var area = document.getElementById(areaId);
     var status = document.getElementById(statusId);
     if (!btn || !area) { return; }
-    var label = btn.textContent;
+    // The starting content is kept as markup, not just text, so a
+    // button that shows an icon (the comments microphone) gets its
+    // icon back when the words land. For the plain word buttons
+    // the markup is only their word, so nothing changes for them.
+    var label = btn.innerHTML;
     var recorder = null;
     var chunks = [];
     var stream = null;
@@ -4847,7 +5154,7 @@
     function hideProcessing() {
       btn.disabled = false;
       btn.classList.remove("processing");
-      btn.textContent = label;
+      btn.innerHTML = label;
       area.classList.remove("processing");
       area.readOnly = false;
     }
@@ -5084,6 +5391,7 @@
   var editPopupKept = document.getElementById("editPopupKept");
   var editPopupKeptText = document.getElementById("editPopupKeptText");
   var editPopupShadow = document.getElementById("editPopupShadow");
+  var editPopupUnsure = document.getElementById("editPopupUnsure");
   var editBringBack = document.getElementById("editBringBack");
   var editSwapTakes = document.getElementById("editSwapTakes");
   var editActionStatus = document.getElementById("editActionStatus");
@@ -5231,6 +5539,7 @@
     if (editSwapTakes && on) { editSwapTakes.hidden = true; }
     if (editPopupKept && on) { editPopupKept.hidden = true; }
     if (editPopupShadow && on) { editPopupShadow.hidden = true; }
+    if (editPopupUnsure && on) { editPopupUnsure.hidden = true; }
     if (editPopupComment && on) { editPopupComment.hidden = true; }
     if (editActionStatus && on) { editActionStatus.textContent = ""; }
   }
@@ -5461,6 +5770,15 @@
       } else {
         editPopupShadow.hidden = true;
         editPopupShadow.textContent = "";
+      }
+    }
+    if (editPopupUnsure) {
+      if (span.retake && span.retake.unsure) {
+        editPopupUnsure.hidden = false;
+        editPopupUnsure.textContent = span.retake.unsure_note || "I was not sure about this one. I took it out so the last take stays. Double check here if you want it back.";
+      } else {
+        editPopupUnsure.hidden = true;
+        editPopupUnsure.textContent = "";
       }
     }
     if (editSwapTakes) { editSwapTakes.hidden = !(span.retake && span.retake.keep_text); }
@@ -6092,6 +6410,12 @@
               retakeLine.textContent = "Retakes: " + (parts.length ? parts.join("; ") : "checked, nothing changed") + ".";
             }
             fdResults.appendChild(retakeLine);
+            if (rt.unsure) {
+              var unsureLine = document.createElement("p");
+              unsureLine.className = "counts";
+              unsureLine.textContent = rt.unsure + (rt.unsure === 1 ? " of those cuts was" : " of those cuts were") + " unsure, marked in the transcript. " + (rt.unsure_note || "I was not sure about this one. I took it out so the last take stays. Double check here if you want it back.");
+              fdResults.appendChild(unsureLine);
+            }
             if (rt.shadow && rt.shadow.scored) {
               var shadowLine = document.createElement("p");
               shadowLine.className = "counts";
@@ -6325,6 +6649,9 @@
     state.sourceDuration = job.source_duration_s || 0;
     state.wordsCut = job.words_cut || 0;
     timelinePieces = job.timeline_pieces || [];
+    waveformPeaks = job.waveform_peaks || [];
+    captionCues = job.caption_cues || [];
+    state.captionsAvailable = !!job.captions_available;
     renderList();
     renderOverall();
     renderDots();
@@ -7071,9 +7398,11 @@
   wireCaptionsSwitch("finishCaptionsHideFillers");
 
   // The test-video switches: one in the drop block (usable before
-  // a job exists) and one on the job page. Both set the same mark
-  // through the same route, and both are set from the answer, so
-  // they never disagree.
+  // a job exists) and one in the Settings panel (v0.11.1, item 1:
+  // it moved there from its own bar above the workspace, keeping
+  // the same id, the same words, and the same behavior). Both set
+  // the same mark through the same route, and both are set from
+  // the answer, so they never disagree.
   function setTestVideoSwitches(on) {
     ["dropTestVideo", "jobTestVideo"].forEach(function (id) {
       var el = document.getElementById(id);
@@ -7631,16 +7960,22 @@
           var frac = fromRight
             ? (rect.right - ev.clientX) / rect.width
             : (ev.clientX - rect.left) / rect.width;
-          frac = Math.min(0.55, Math.max(0.2, frac));
+          frac = Math.min(0.95, Math.max(0.05, frac));
           px = Math.round(frac * rect.width);
         }
-        // The drag stops at the same limits the columns use
-        // (v0.11, item 2): the video panel stays between 280px
-        // and 420px, the comments panel between 260px and 360px,
-        // so no drag can push a panel off the window.
+        // The drag stops at the same limits the columns use.
+        // The comments panel stays between 260px and 360px
+        // (v0.11, item 2). The video panel starts at 280px and
+        // its widest comes from the window (v0.11.1, item 2):
+        // the split width minus the transcript at its smallest
+        // (320px), the comments panel at its smallest (260px),
+        // and the two dividers (20px), so no drag can push a
+        // panel off the window, and on a full screen the video
+        // can grow big enough to see detail.
+        var maxVideoPx = Math.max(280, rect.width - 320 - 260 - 20);
         px = fromRight
           ? Math.min(360, Math.max(260, px))
-          : Math.min(420, Math.max(280, px));
+          : Math.min(maxVideoPx, Math.max(280, px));
         var pct = px + "px";
         split.style.setProperty(varName, pct);
         try { window.localStorage.setItem(key, pct); } catch (err) {}
@@ -7657,6 +7992,67 @@
   }
   wirePaneDivider("paneDivider", "--pane-a", "tye-pane-a", false);
   wirePaneDivider("toolsDivider", "--pane-c", "tye-pane-c", true);
+
+  // -- row divider (v0.11.1, item 2): drag the flat bar under
+  // the workspace up or down to make the row taller or
+  // shorter. The height is remembered on this computer in the
+  // same storage the pane widths use, under its own key, and
+  // Reset layout clears it with the widths. The widest the row
+  // can get comes from the window: the window height minus
+  // 120px for the header and padding, matching the clamp the
+  // row reads its stored height through, so the row can never
+  // be dragged or remembered out of the view.
+  function clampRowHeight(px) {
+    var maxPx = Math.max(320, window.innerHeight - 120);
+    return Math.min(maxPx, Math.max(320, Math.round(px)));
+  }
+  function setRowHeight(px) {
+    var split = document.getElementById("reviewSplit");
+    if (!split) { return; }
+    var heightValue = clampRowHeight(px) + "px";
+    split.style.setProperty("--pane-height", heightValue);
+    split.classList.add("row-sized");
+    try { window.localStorage.setItem("tye-pane-height", heightValue); } catch (err) {}
+  }
+  function wireRowDivider() {
+    var divider = document.getElementById("rowDivider");
+    var split = document.getElementById("reviewSplit");
+    if (!divider || !split) { return; }
+    try {
+      var saved = window.localStorage.getItem("tye-pane-height");
+      if (saved) {
+        split.style.setProperty("--pane-height", saved);
+        split.classList.add("row-sized");
+      }
+    } catch (e) {}
+    divider.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      if (divider.setPointerCapture) {
+        try { divider.setPointerCapture(e.pointerId); } catch (err) {}
+      }
+      var move = function (ev) {
+        var rect = split.getBoundingClientRect();
+        if (!rect.height && !rect.top) { return; }
+        setRowHeight(ev.clientY - rect.top);
+      };
+      var up = function () {
+        divider.removeEventListener("pointermove", move);
+        divider.removeEventListener("pointerup", up);
+        divider.removeEventListener("pointercancel", up);
+      };
+      divider.addEventListener("pointermove", move);
+      divider.addEventListener("pointerup", up);
+      divider.addEventListener("pointercancel", up);
+    });
+    divider.addEventListener("keydown", function (e) {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") { return; }
+      e.preventDefault();
+      var rect = split.getBoundingClientRect();
+      var step = e.key === "ArrowDown" ? 24 : -24;
+      setRowHeight(rect.height + step);
+    });
+  }
+  wireRowDivider();
 
   // -- stage timeline marks (v0.9.0): quarters of the dropped video.
   var stageTimeline = document.getElementById("stageTimeline");
@@ -7678,6 +8074,9 @@
       }
     });
   }
+
+  // A window resize repaints the waveform at its new width.
+  window.addEventListener("resize", function () { renderWaveform(); });
 
   fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
     videos = job.videos || [];

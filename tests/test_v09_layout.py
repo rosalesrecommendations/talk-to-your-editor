@@ -225,13 +225,20 @@ class StagedFlowTests(unittest.TestCase):
 
 
 class ReviewScreenTests(unittest.TestCase):
-    """Items 18 and 19: slim intake bar; Remove in exactly one place."""
+    """Items 18 and 19: intake card out of the way in review;
+    Remove in exactly one place. (v0.11.1, item 1: the slim bar
+    the intake card used to collapse to is gone; the whole card
+    stays out of sight in review until the plus button in the
+    header row opens it.)"""
 
-    def test_intake_card_collapses_to_a_slim_bar_once_a_job_is_loaded(self):
-        self.assertIn('id="dropSlimBar"', TEMPLATE)
-        self.assertIn('id="dropSlimToggle"', TEMPLATE)
+    def test_intake_card_stays_out_of_sight_once_a_job_is_loaded(self):
+        self.assertNotIn('id="dropSlimBar"', TEMPLATE)
+        self.assertNotIn('id="dropSlimToggle"', TEMPLATE)
+        self.assertIn('id="bringInBtn"', TEMPLATE)
         self.assertIn('document.body.classList.add("job-loaded")', TEMPLATE)
-        self.assertIn("body.job-loaded #dropCard .drop-full", TEMPLATE)
+        self.assertIn(
+            "body.job-loaded #dropCard { display: none; }", TEMPLATE)
+        self.assertIn("body.job-loaded #dropCard.expanded .drop-full", TEMPLATE)
         self.assertIn("display: none", TEMPLATE)
 
     def test_review_remove_settings_are_a_compact_details_affordance(self):
@@ -314,14 +321,17 @@ class V2FrameTests(unittest.TestCase):
         left = between('class="review-left"', 'id="paneDivider"')
         order = [
             left.index('id="vid"'),
-            left.index('id="fmtRow"'),
-            left.index('id="tlbar"'),
             left.index('id="makeEditCard"'),
         ]
         self.assertEqual(order, sorted(order))
         # The money card and the keyboard list left the column.
         self.assertNotIn('id="moneyCard"', left)
         self.assertNotIn('id="shortcutLine"', left)
+        # v0.11.1, item 4: the transport row and the timeline strip
+        # left the column too. They live in the full width timeline
+        # band under the columns row now (test_v111_timeline_band).
+        self.assertNotIn('id="fmtRow"', left)
+        self.assertNotIn('id="tlbar"', left)
 
 
 class V2PopupTests(unittest.TestCase):
@@ -400,9 +410,10 @@ class V2TimelineTests(unittest.TestCase):
     no cut notches, held is not drawn."""
 
     def test_strip_is_blocks_and_dots_only(self):
-        panel = between('id="tlbar"', 'id="fmtRow"') \
-            if TEMPLATE.index('id="tlbar"') < TEMPLATE.index('id="fmtRow"') \
-            else between('id="tlbar"', 'id="makeEditCard"')
+        # v0.11.1, item 4: the strip sits in the timeline band,
+        # after the transport row, so its slice runs from the
+        # strip to the end of the band.
+        panel = between('id="tlbar"', '</main>')
         self.assertIn('id="tlRuler"', panel)
         self.assertIn('id="tlBlocks"', panel)
         self.assertIn('id="tlDots"', panel)
@@ -550,11 +561,15 @@ class V2ArrangementTests(unittest.TestCase):
         self.assertIn('removeItem("tye-layout")', TEMPLATE)
 
     def test_swap_keeps_the_timeline_with_the_video_panel(self):
-        # The timeline lives inside the video panel (.review-left),
-        # so it follows the video wherever the arrangement puts it.
+        # v0.11.1, item 4: the timeline no longer lives inside the
+        # video panel. It is the full width band under the columns
+        # row, so swapping sides moves the video and transcript
+        # only, and the band stays where it is, under both.
         left = between('class="review-left"', 'id="paneDivider"')
-        self.assertIn('id="tlbar"', left)
+        self.assertNotIn('id="tlbar"', left)
         self.assertIn('id="vid"', left)
+        band = between('id="timelineBand"', '</main>')
+        self.assertIn('id="tlbar"', band)
         self.assertIn("body.job-loaded.panels-swapped .review-left "
                       "{ grid-column: 3; }", TEMPLATE)
         self.assertIn("body.job-loaded.panels-swapped .review-right "

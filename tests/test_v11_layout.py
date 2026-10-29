@@ -4,10 +4,13 @@ Items 1, 2, and 4 from Justin's Oct 28, 2026 screen recording
 of the 0.10.1 app (feedback-2026-10-28/FIX-ITEMS.md):
 
 1. The Teach the app card filled the top of the review screen
-   for the whole review. Once a job is loaded it now collapses
-   to a slim bar behind one clearly named button, the same way
-   the drop card already did. With no job loaded the front door
-   keeps the full card.
+   for the whole review. Once a job is loaded it collapsed to a
+   slim bar behind one clearly named button, the same way the
+   drop card already did. With no job loaded the front door
+   keeps the full card. (v0.11.1, item 1: the slim bar itself is
+   gone now. The Teach the app button lives in the header row
+   and the card stays out of sight until that button opens it;
+   test_v111_header.py pins the new shape.)
 2. The arrangeable panels had no fit limits, so the workspace
    could be stretched past the window and the comments column
    could fall off the right edge, while the video sat small
@@ -64,7 +67,10 @@ def clamp_numbers(var_name: str):
 
 
 # ---------------------------------------------------------------------------
-# 1: the Teach the app card collapses during review
+# 1: the Teach the app card stays out of the review until opened
+# (v0.11.1, item 1: the slim bar is gone; the button moved to the
+# header row, and the whole card stays out of sight in review
+# until that button opens it)
 # ---------------------------------------------------------------------------
 
 
@@ -72,18 +78,17 @@ class TeachCardCollapseTests(unittest.TestCase):
     def teach_card(self) -> str:
         return between('id="teachCard"', 'id="novid"')
 
-    def test_slim_bar_with_one_clearly_named_button(self):
-        card = self.teach_card()
-        self.assertIn('id="teachSlimBar"', card)
-        self.assertIn('id="teachToggle"', card)
-        self.assertIn(">Teach the app<", card)
-        self.assertIn('aria-expanded="false"', card)
-        self.assertIn('aria-controls="teachFull"', card)
-        self.assertIn("Teaching is tucked away while you review.", card)
-        # The slim bar comes before the full teaching choices.
-        self.assertLess(
-            card.index('id="teachSlimBar"'), card.index('id="teachFull"')
-        )
+    def test_header_button_with_one_clear_name(self):
+        head = between('<header class="app-head">', "</header>")
+        self.assertIn('id="teachToggle"', head)
+        self.assertIn(">Teach the app<", head)
+        self.assertIn('aria-expanded="false"', head)
+        self.assertIn('aria-controls="teachFull"', head)
+        # No slim bar sits in the card, or anywhere else.
+        self.assertNotIn('id="teachSlimBar"', self.teach_card())
+        self.assertNotIn('id="teachSlimBar"', TEMPLATE)
+        self.assertNotIn(
+            "Teaching is tucked away while you review.", TEMPLATE)
 
     def test_full_choices_live_inside_the_collapsible_part(self):
         full = between('id="teachFull"', 'id="novid"')
@@ -94,13 +99,10 @@ class TeachCardCollapseTests(unittest.TestCase):
             self.assertIn(marker, full)
 
     def test_card_collapses_only_once_a_job_is_loaded(self):
-        # The slim bar shows only in review; the full choices hide
-        # only in review; the front door (no job) is untouched.
-        self.assertIn("#teachSlimBar { display: none; }", TEMPLATE)
+        # The whole card hides only in review, and shows there
+        # only once opened; the front door (no job) is untouched.
         self.assertIn(
-            "body.job-loaded #teachSlimBar { display: flex;", TEMPLATE)
-        self.assertIn(
-            "body.job-loaded #teachCard .teach-full { display: none; }",
+            "body.job-loaded #teachCard { display: none; }",
             TEMPLATE,
         )
         self.assertIn(
@@ -130,8 +132,23 @@ class TeachCardCollapseTests(unittest.TestCase):
 
 class PanelWidthLimitTests(unittest.TestCase):
     def test_stored_widths_are_read_through_clamps(self):
-        self.assertEqual(clamp_numbers("--col-a"), (280, 350, 420))
-        self.assertEqual(clamp_numbers("--col-c"), (260, 310, 360))
+        # v0.11.1, item 2: the video column's widest is no
+        # longer the fixed 420px. It is the window width minus
+        # 620px (the other panels at their smallest, the
+        # dividers, and the page padding), and the comments
+        # clamp reads the video column so the two can never add
+        # up past the window. See test_v111_resize for the full
+        # pinning of the new behavior.
+        self.assertIn(
+            "--col-a: clamp(280px, var(--pane-a, 350px), "
+            "calc(100vw - 620px));",
+            TEMPLATE,
+        )
+        self.assertIn(
+            "--col-c: clamp(260px, var(--pane-c, 310px), "
+            "min(360px, calc(100vw - var(--col-a) - 360px)));",
+            TEMPLATE,
+        )
 
     def test_no_column_reads_a_stored_width_without_a_clamp(self):
         # Every grid use of the stored --pane-a / --pane-c values
@@ -142,8 +159,17 @@ class PanelWidthLimitTests(unittest.TestCase):
                 self.assertIn("clamp(", line, line)
 
     def test_the_drag_stops_at_the_same_limits(self):
-        self.assertIn("Math.min(420, Math.max(280, px))", TEMPLATE)
+        # v0.11.1, item 2: the video drag's widest is worked out
+        # from the split width at drag time (the transcript and
+        # comments at their smallest, plus the dividers), not
+        # the old fixed 420px cap.
+        self.assertIn(
+            "var maxVideoPx = Math.max(280, rect.width - 320 - 260 - 20);",
+            TEMPLATE,
+        )
+        self.assertIn("Math.min(maxVideoPx, Math.max(280, px))", TEMPLATE)
         self.assertIn("Math.min(360, Math.max(260, px))", TEMPLATE)
+        self.assertNotIn("Math.min(420, Math.max(280, px))", TEMPLATE)
         self.assertNotIn("Math.min(560", TEMPLATE)
         self.assertNotIn("Math.min(480", TEMPLATE)
 
@@ -194,12 +220,18 @@ class VideoShapeTests(unittest.TestCase):
         self.assertIn(
             "body.job-loaded .vid-wrap { flex: none;", TEMPLATE)
 
-    def test_widened_video_panel_still_caps_the_picture(self):
+    def test_widened_video_panel_is_capped_by_the_window(self):
+        # v0.11.1, item 2: the old fixed 720px cap on the
+        # widened picture is gone. The picture can take the
+        # panel's full width, and its height is capped by the
+        # window height, so it can grow big without leaving
+        # the view.
         self.assertIn(
             "body.job-loaded.expanded-video #vid "
-            "{ max-width: 720px; }",
+            "{ max-width: 100%; max-height: calc(100dvh - 160px); }",
             TEMPLATE,
         )
+        self.assertNotIn("max-width: 720px", TEMPLATE)
 
     def test_player_takes_the_files_real_shape_on_load(self):
         body = between("function loadVideo(name)", "function showPendingFor")
@@ -215,17 +247,36 @@ class VideoShapeTests(unittest.TestCase):
 
 class WholeWorkspaceFitTests(unittest.TestCase):
     def test_three_columns_fit_a_1440_window_at_their_widest(self):
-        a_min, _a_default, a_max = clamp_numbers("--col-a")
-        c_min, _c_default, c_max = clamp_numbers("--col-c")
+        # v0.11.1, item 2: the video column's widest is derived
+        # from the window (window width minus 620px, parsed out
+        # of the clamp), and at that widest the comments column
+        # is read at its smallest (260px) because its own clamp
+        # subtracts the video column. The fit question is now:
+        # at the video's widest, do video + comments smallest +
+        # transcript smallest + dividers + padding still fit?
+        a_line = re.search(r"--col-a: clamp\(([^;]*)\);", TEMPLATE)
+        self.assertIsNotNone(a_line)
+        reserve = int(
+            re.search(r"calc\(100vw - (\d+)px\)", a_line.group(1)).group(1)
+        )
+        a_min, a_default = 280, 350
+        c_min, c_default = 260, 310
         transcript_min = 320
         self.assertIn("minmax(320px, 1fr)", TEMPLATE)
         dividers = 10 + 10
         page_padding = 10 + 10
-        widest = a_max + c_max + transcript_min + dividers + page_padding
+        # The reserve is exactly the pieces that must survive at
+        # the video's widest.
+        self.assertEqual(
+            reserve,
+            transcript_min + c_min + dividers + page_padding,
+        )
+        a_max_at_1440 = 1440 - reserve
+        widest = (
+            a_max_at_1440 + c_min + transcript_min + dividers + page_padding
+        )
         self.assertLessEqual(widest, 1440)
         # At the defaults the transcript gets a wide, readable share.
-        a_default = clamp_numbers("--col-a")[1]
-        c_default = clamp_numbers("--col-c")[1]
         transcript_at_default = (
             1440 - page_padding - a_default - c_default - dividers
         )
@@ -299,11 +350,12 @@ class ServedFrontDoorTests(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             page = resp.read().decode("utf-8")
         for marker in (
-            'id="teachSlimBar"', 'id="teachToggle"', 'id="teachFull"',
+            'id="bringInBtn"', 'id="teachToggle"', 'id="teachFull"',
             "--col-a: clamp(280px", "--col-c: clamp(260px",
             "body.job-loaded #vid",
         ):
             self.assertIn(marker, page)
+        self.assertNotIn('id="teachSlimBar"', page)
 
 
 if __name__ == "__main__":

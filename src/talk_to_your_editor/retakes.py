@@ -27,9 +27,15 @@ Remove retakes the same shape:
   review, not a proposal.
 - The bands: Band A (trusted) emits ``cut_words`` proposals in the exact
   shape the silence pass emits, so the existing verifier and applier
-  decide what applies. Band B (borderline) is returned as a packet for
-  one model judgment call per video; with no model it degrades to
-  scored flags, never to silence. Band C is not a candidate at all.
+  decide what applies. Band B (borderline) is a suspected retake the
+  measurement alone could not settle. Strict is the default
+  (v0.11.1): a borderline pair is cut locally and marked unsure, so
+  no judgment call is made for it. Only an explicit choice for the
+  loose path (the profile's retakes knob, or a per-video direction
+  that says to only cut the sure ones) returns Band B to its older
+  route: a packet for one model judgment call per video, degrading
+  to scored flags with no model, never to silence. Band C is not a
+  candidate at all.
 
 Everything here is a pure function over a ``Timeline`` plus the creator
 profile's knobs (``profile["retakes"]``). Standard library only.
@@ -66,6 +72,15 @@ DEFAULT_SETTINGS = {
     # positional last-take rule still decides what applies, and Beta
     # only records the keeper it would have chosen).
     "keep": "last",
+    # Strict by default (v0.11.1, fix item 5): a suspected retake is
+    # taken out, keeping the take the keeper rule names, instead of
+    # waiting for a judgment call or a flag. A cut the pass was not
+    # sure about is marked unsure (see ``_unsure_mark``). An explicit
+    # choice says otherwise and wins: the profile's own retakes knob
+    # can set this to False, and a per-video direction that says to
+    # only cut the sure ones sets it for that video. With no explicit
+    # choice anywhere, a fresh state is strict.
+    "strict": True,
 }
 
 KEEP_MODES = ("last", "first", "best")
@@ -178,7 +193,28 @@ def settings_from_profile(profile: Optional[dict]) -> dict:
                     settings[key] = float(value)
             if knobs.get("keep") in KEEP_MODES:
                 settings["keep"] = knobs["keep"]
+            if isinstance(knobs.get("strict"), bool):
+                settings["strict"] = knobs["strict"]
     return settings
+
+
+def unsure_note(settings: Optional[dict] = None) -> str:
+    """The plain note an unsure cut carries, in the creator's pattern.
+
+    The keeper is named as it actually is: the first clean take
+    under the first-clean mode, and the last take in every other
+    mode, because Best delivery still applies the last take while
+    it runs in shadow.
+    """
+    keeper = (
+        "the first clean take"
+        if positional_keep(settings or {}) == "first"
+        else "the last take"
+    )
+    return (
+        "I was not sure about this one. I took it out so "
+        f"{keeper} stays. Double check here if you want it back."
+    )
 
 
 def positional_keep(settings: dict) -> str:
@@ -759,6 +795,67 @@ def _fragment_chain_candidates(units: list, settings: dict) -> list:
     return out
 
 
+def _unsure_mark(
+    timeline: Timeline,
+    cut_start: int,
+    cut_end: int,
+    keep_start: int,
+    keep_end: int,
+    band: str,
+    cut_complete: bool,
+    keep_complete: bool,
+) -> tuple:
+    """Whether a cut is an unsure one, and why, from signals on hand.
+
+    Two signals, both already measured by this pass:
+
+    - A near-duplicate that might carry something new: the pair only
+      reached the borderline band, or the cut side is a complete
+      delivery whose words include a content word the take that
+      stays does not say. Exact duplicates carry nothing new, and a
+      broken try that stops early is clearly superseded, so neither
+      is unsure on this signal alone.
+    - A close keeper choice: both deliveries complete the sentence,
+      they are not the same words, and the local keeper ranking
+      cannot separate them (a tie) or would have kept the other
+      one. Word-identical deliveries are a tie by definition too,
+      but they are exact duplicates, which the first rule already
+      settles as sure.
+
+    Returns (unsure, kind) where kind is "near_duplicate",
+    "close_keeper", or None.
+    """
+    cut_tokens = [
+        normalize_word(timeline.words[i].get("word", ""))
+        for i in range(cut_start, cut_end)
+    ]
+    keep_tokens = [
+        normalize_word(timeline.words[i].get("word", ""))
+        for i in range(keep_start, keep_end)
+    ]
+    identical = cut_tokens == keep_tokens
+    if band == "b":
+        return True, "near_duplicate"
+    if identical or not (cut_complete and keep_complete):
+        return False, None
+    extra = Counter(cut_tokens) - Counter(keep_tokens)
+    carries_new = any(
+        token and token not in _FUNCTION_WORDS for token in extra
+    )
+    pair = {
+        "cut": {"word_start": cut_start, "word_end": cut_end},
+        "keep": {"word_start": keep_start, "word_end": keep_end},
+        "cut_complete": cut_complete,
+        "keep_complete": keep_complete,
+    }
+    close = shadow_rank(pair, timeline)["pick"] in ("tie", "other")
+    if carries_new:
+        return True, "near_duplicate"
+    if close:
+        return True, "close_keeper"
+    return False, None
+
+
 # ---------------------------------------------------------------------------
 # The pass: pairs, bands, operations
 # ---------------------------------------------------------------------------
@@ -867,9 +964,21 @@ def find_pairs(
         if cut_start is None or keep_start is None or cut_start == keep_start:
             continue
         band = scored["band"]
+        unsure, unsure_kind = _unsure_mark(
+            timeline,
+            cut_start,
+            cut_end,
+            keep_start,
+            keep_end,
+            band,
+            cut_complete,
+            keep_complete,
+        )
         built.append(
             {
                 "pair_id": _pair_id(cut_start, cut_end, keep_start, keep_end),
+                "unsure": unsure,
+                "unsure_kind": unsure_kind,
                 "pair_key": f"{cut_start}-{cut_end}|{keep_start}-{keep_end}",
                 "cut": {
                     "word_start": cut_start,
@@ -978,6 +1087,43 @@ def band_a_operations(
                 "word_end": pair["cut"]["word_end"],
                 "reason": pair["reason"],
                 "confidence": round(min(0.99, max(0.90, coverage)), 2),
+                "model": "mock",
+                "risk_tier": 1,
+                "wonder_reviewed": False,
+            }
+        )
+    return operations
+
+
+def strict_cut_operations(
+    timeline: Timeline,
+    profile: Optional[dict] = None,
+    settings: Optional[dict] = None,
+    pairs: Optional[list] = None,
+) -> list:
+    """Strict cuts for borderline pairs, in the same operation shape.
+
+    Under the strict default a borderline pair is cut locally, the
+    way a trusted pair is, instead of waiting for a judgment call.
+    The reason each operation carries is the unsure note, because
+    every borderline pair is unsure by the mark above: its words
+    only nearly match, so the cut words might carry something new.
+    """
+    settings = settings or settings_from_profile(profile)
+    pairs = pairs if pairs is not None else find_pairs(timeline, profile, settings)
+    operations = []
+    for pair in pairs:
+        if pair["band"] != "b":
+            continue
+        coverage = pair["coverage"] or 0.6
+        operations.append(
+            {
+                "type": "cut_words",
+                "comment_id": pair["pair_id"],
+                "word_start": pair["cut"]["word_start"],
+                "word_end": pair["cut"]["word_end"],
+                "reason": unsure_note(settings),
+                "confidence": round(min(0.89, max(0.60, coverage)), 2),
                 "model": "mock",
                 "risk_tier": 1,
                 "wonder_reviewed": False,
