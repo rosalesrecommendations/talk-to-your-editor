@@ -883,12 +883,19 @@
      waveform under it all, with one playhead line running through
      every row. The band height is set by one variable, clamped so
      the band keeps a sane minimum and never takes the whole
-     window; the columns row above it gives up the space first
-     (flex: 1 1 auto with min-height: 0), so the band shrinks to
-     its minimum before anything is pushed out of view. */
+     window. When the workspace row above it is drag-sized, the
+     two remembered heights share one budget (fitRowBand in the
+     script): the band gives up height first, down to its
+     minimum, and only then does the row give up height, so
+     the band is never the part pushed out of view. The minimum
+     (156px) is the smallest height at which every row inside
+     the band still fits inside the band: the handle, the
+     transport, the ruler, the segments, and the captions row
+     are fixed, and the waveform row flexes down to a thin
+     strip to meet it. */
   .timeline-band {
     flex: none; width: 100%; max-width: 100%; min-width: 0;
-    height: clamp(120px, var(--band-height, 176px), 360px);
+    height: clamp(156px, var(--band-height, 176px), 360px);
     display: flex; flex-direction: column;
     background: var(--panel); border: 0.5px solid var(--line);
     border-radius: var(--radius-sm); padding: 0 10px 6px; margin-top: 10px;
@@ -913,7 +920,7 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     cursor: pointer;
   }
-  .tl-wave-row { position: relative; flex: 1 1 auto; min-height: 28px; margin-top: 4px; cursor: pointer; }
+  .tl-wave-row { position: relative; flex: 1 1 auto; min-height: 10px; margin-top: 4px; cursor: pointer; }
   #tlWaveCanvas { display: block; width: 100%; height: 100%; }
   .tl-wave-note { position: absolute; inset: 0; display: flex; align-items: center; font-size: 12px; color: var(--faint); margin: 0; }
   #tlDots { position: absolute; inset: 0; pointer-events: none; }
@@ -1133,7 +1140,10 @@
      is read through a clamp: at least 320px, and no more than
      the window height minus 120px for the header and padding,
      so a height saved on a big screen can never push the row
-     out of a smaller window. While the row is sized this way,
+     out of a smaller window. The script's fitRowBand then fits
+     that height against the timeline band under the row (the
+     band yields to its minimum first), so the pair together
+     never pushes the band out of view either. While the row is sized this way,
      the video picture also reads that height: a tall video is
      capped by the row it sits in, so making the row taller
      makes the picture taller too, and the panel still scrolls
@@ -2301,6 +2311,7 @@
         split.classList.remove("row-sized");
       }
       layoutState = { swapped: false, video: false, transcript: false, expanded: null, bandHeight: null };
+      rowHeightWanted = null;
       applyLayout();
       applyCommentsOpen(true);
     });
@@ -2325,20 +2336,62 @@
         layoutState.bandHeight =
           typeof parsedLayout.bandHeight === "number" &&
           isFinite(parsedLayout.bandHeight)
-            ? Math.min(360, Math.max(120, Math.round(parsedLayout.bandHeight)))
+            ? Math.min(360, Math.max(156, Math.round(parsedLayout.bandHeight)))
             : null;
       }
     }
   } catch (err) {}
-  function applyLayout() {
+  // -- row and band fit (v0.11.1, item 4's rule): the workspace
+  // row's dragged height and the timeline band's dragged height
+  // share one budget, the room under the header. When the two
+  // together do not fit, the band gives up height first, down
+  // to its 156px minimum, and only then does the row give up
+  // height, so the band shrinks to its minimum before anything
+  // is pushed out of view and the band is never the part pushed
+  // out. The remembered heights are never rewritten by the
+  // fitting: make the window bigger and both come back.
+  var rowHeightWanted = null;
+  function fitRowBand() {
+    var split = document.getElementById("reviewSplit");
     var bandEl = document.getElementById("timelineBand");
-    if (bandEl) {
+    if (!split || !bandEl) { return; }
+    var bandWanted = (typeof layoutState.bandHeight === "number")
+      ? layoutState.bandHeight : 176;
+    var band = Math.min(360, Math.max(156, Math.round(bandWanted)));
+    if (rowHeightWanted === null) {
+      // The row fills the space the band leaves; only the
+      // band's own height needs setting.
       if (typeof layoutState.bandHeight === "number") {
-        bandEl.style.setProperty("--band-height", layoutState.bandHeight + "px");
+        bandEl.style.setProperty("--band-height", band + "px");
       } else {
         bandEl.style.removeProperty("--band-height");
       }
+      return;
     }
+    var main = document.querySelector("main");
+    var head = document.querySelector(".app-head");
+    if (!main || !head) { return; }
+    var mainStyle = window.getComputedStyle(main);
+    var padTop = parseFloat(mainStyle.paddingTop) || 0;
+    var padBottom = parseFloat(mainStyle.paddingBottom) || 0;
+    // The band's top margin (10px) is the one gap between the
+    // row and the band.
+    var budget = main.clientHeight - padTop - padBottom
+      - head.offsetHeight - 10;
+    var splitH = Math.max(320, Math.round(rowHeightWanted));
+    if (splitH + band > budget) {
+      var cut = Math.min(splitH + band - budget, band - 156);
+      band -= cut;
+    }
+    if (splitH + band > budget) {
+      splitH = Math.max(320, budget - band);
+    }
+    bandEl.style.setProperty("--band-height", band + "px");
+    split.style.setProperty("--pane-height", splitH + "px");
+    split.classList.add("row-sized");
+  }
+  function applyLayout() {
+    fitRowBand();
     document.body.classList.toggle("panels-swapped", layoutState.swapped);
     document.body.classList.toggle("video-hidden", layoutState.video);
     document.body.classList.toggle("transcript-hidden", layoutState.transcript);
@@ -2443,13 +2496,13 @@
   // edge up or down. The height is remembered in the same layout
   // store as the panel arrangement, under its own key (bandHeight),
   // and Reset layout puts it back with the rest. The drag stops at
-  // the same limits the band CSS uses: at least 120px, at most
+  // the same limits the band CSS uses: at least 156px, at most
   // 360px, so the band can shrink to its minimum and the columns
   // above it always keep a share of the window.
   var tlBandHandle = document.getElementById("tlBandHandle");
   var timelineBandEl = document.getElementById("timelineBand");
   function setBandHeight(px) {
-    px = Math.min(360, Math.max(120, Math.round(px)));
+    px = Math.min(360, Math.max(156, Math.round(px)));
     layoutState.bandHeight = px;
     applyLayout();
   }
@@ -7997,22 +8050,24 @@
   // the workspace up or down to make the row taller or
   // shorter. The height is remembered on this computer in the
   // same storage the pane widths use, under its own key, and
-  // Reset layout clears it with the widths. The widest the row
-  // can get comes from the window: the window height minus
-  // 120px for the header and padding, matching the clamp the
-  // row reads its stored height through, so the row can never
-  // be dragged or remembered out of the view.
+  // Reset layout clears it with the widths. What the person
+  // asks for is remembered as asked; what is applied is fitted
+  // against the window and the timeline band by fitRowBand
+  // (the band gives up height first, down to its minimum, and
+  // the row gives up height after that), so the row can never
+  // be dragged or remembered out of the view, and the band is
+  // never pushed out from under it.
   function clampRowHeight(px) {
-    var maxPx = Math.max(320, window.innerHeight - 120);
-    return Math.min(maxPx, Math.max(320, Math.round(px)));
+    return Math.min(2400, Math.max(320, Math.round(px)));
   }
   function setRowHeight(px) {
     var split = document.getElementById("reviewSplit");
     if (!split) { return; }
-    var heightValue = clampRowHeight(px) + "px";
-    split.style.setProperty("--pane-height", heightValue);
-    split.classList.add("row-sized");
-    try { window.localStorage.setItem("tye-pane-height", heightValue); } catch (err) {}
+    rowHeightWanted = clampRowHeight(px);
+    try {
+      window.localStorage.setItem("tye-pane-height", rowHeightWanted + "px");
+    } catch (err) {}
+    fitRowBand();
   }
   function wireRowDivider() {
     var divider = document.getElementById("rowDivider");
@@ -8021,8 +8076,8 @@
     try {
       var saved = window.localStorage.getItem("tye-pane-height");
       if (saved) {
-        split.style.setProperty("--pane-height", saved);
-        split.classList.add("row-sized");
+        rowHeightWanted = clampRowHeight(parseFloat(saved));
+        fitRowBand();
       }
     } catch (e) {}
     divider.addEventListener("pointerdown", function (e) {
@@ -8077,6 +8132,13 @@
 
   // A window resize repaints the waveform at its new width.
   window.addEventListener("resize", function () { renderWaveform(); });
+
+  // A window resize also re-fits the workspace row and the
+  // timeline band against the new height (fitRowBand): a height
+  // remembered on a big screen can never push the band out of
+  // a smaller window, and growing the window gives both heights
+  // back.
+  window.addEventListener("resize", function () { fitRowBand(); });
 
   fetch("/api/job").then(function (r) { return r.json(); }).then(function (job) {
     videos = job.videos || [];

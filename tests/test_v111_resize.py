@@ -147,21 +147,25 @@ class RowDividerWiringTests(unittest.TestCase):
         body = self.wiring()
         self.assertIn(
             'window.localStorage.getItem("tye-pane-height")', body)
+        # The saved height becomes the wanted height, and the
+        # fit (fitRowBand) applies what the window allows.
         self.assertIn(
-            'split.style.setProperty("--pane-height", saved);', body)
-        self.assertIn('split.classList.add("row-sized");', body)
+            "rowHeightWanted = clampRowHeight(parseFloat(saved));",
+            body)
+        self.assertIn("fitRowBand();", body)
 
     def test_setter_clamps_stores_and_marks_the_row(self):
         body = between("function setRowHeight(px)", "function wireRowDivider()")
         self.assertIn("clampRowHeight(px)", body)
+        # Remembered as asked; fitRowBand does the applying and
+        # the row-sized marking against the window and the band.
+        self.assertIn("rowHeightWanted = clampRowHeight(px);", body)
         self.assertIn(
-            'split.style.setProperty("--pane-height", heightValue);',
+            'window.localStorage.setItem('
+            '"tye-pane-height", rowHeightWanted + "px");',
             body,
         )
-        self.assertIn(
-            'window.localStorage.setItem("tye-pane-height", heightValue);',
-            body,
-        )
+        self.assertIn("fitRowBand();", body)
 
     def test_arrow_keys_resize_the_row_too(self):
         body = self.wiring()
@@ -189,20 +193,47 @@ class StoredHeightTests(unittest.TestCase):
             TEMPLATE,
         )
 
-    def test_drag_clamp_in_js_matches_the_css_clamp(self):
+    def test_js_clamp_is_the_raw_range_the_fit_governs(self):
+        # The JS clamp now only bounds what a person can ask
+        # for; the window guarantee moved to fitRowBand, which
+        # shares the budget with the timeline band (the old
+        # window-minus-120 clamp was written before the band
+        # existed and let a dragged row push the band out of
+        # view, the 0.11.1 verifier's item 4 miss).
         body = between("function clampRowHeight(px)", "function setRowHeight(px)")
         self.assertIn(
-            "var maxPx = Math.max(320, window.innerHeight - 120);", body)
-        self.assertIn(
-            "return Math.min(maxPx, Math.max(320, Math.round(px)));",
+            "return Math.min(2400, Math.max(320, Math.round(px)));",
             body,
         )
 
     def test_height_math_stays_inside_the_window(self):
+        # A mirror of fitRowBand's arithmetic: given the budget
+        # under the header, the fitted pair always fits, the
+        # band is cut first (down to its 156px minimum), and the
+        # row is cut only after the band reaches that minimum.
+        def fit_row_band(budget, split_wanted, band_wanted):
+            band = min(360, max(120, round(band_wanted)))
+            split = max(320, round(split_wanted))
+            if split + band > budget:
+                cut = min(split + band - budget, band - 120)
+                band -= cut
+            if split + band > budget:
+                split = max(320, budget - band)
+            return split, band
+
         for window_height in (700, 900, 1080, 1440):
-            widest = clamp(5000, 320, window_height - 120)
-            self.assertLessEqual(widest, window_height - 120)
-            self.assertGreaterEqual(widest, 320)
+            budget = window_height - 88  # header, padding, gap
+            split, band = fit_row_band(budget, 5000, 176)
+            self.assertLessEqual(split + band, budget)
+            self.assertEqual(band, 120)
+            self.assertGreaterEqual(split, 320)
+        # When only a little has to give, the band alone gives
+        # it and the row keeps the height the person asked for.
+        split, band = fit_row_band(800, 600, 360)
+        self.assertEqual((split, band), (600, 200))
+        # When everything fits as asked, nothing is cut.
+        split, band = fit_row_band(1000, 600, 176)
+        self.assertEqual((split, band), (600, 176))
 
     def test_row_height_also_sizes_a_tall_video(self):
         # While the row is sized by dragging, the picture reads

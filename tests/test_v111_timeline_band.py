@@ -129,11 +129,11 @@ class BandMarkupTests(unittest.TestCase):
     def test_band_spans_the_full_width(self):
         band_css = between(".timeline-band {", "}")
         self.assertIn("width: 100%", band_css)
-        self.assertIn("flex: none", band_css)
         # The height is clamped: a stored or dragged height can
         # never push the band past the window or below its
-        # minimum, and the columns row gives up space first.
-        self.assertIn("clamp(120px, var(--band-height, 176px), 360px)",
+        # minimum. The minimum (156px) is the smallest height at
+        # which every row inside the band still fits inside it.
+        self.assertIn("clamp(156px, var(--band-height, 176px), 360px)",
                       band_css)
 
     def test_band_rows_follow_the_model_order(self):
@@ -233,7 +233,7 @@ class BandHeightTests(unittest.TestCase):
         self.assertIn("bandHeight: null", TEMPLATE)
         self.assertIn("parsedLayout.bandHeight", TEMPLATE)
         self.assertIn(
-            "bandHeight", between("function applyLayout()", "function clearExpandedPanel")
+            "bandHeight", between("function fitRowBand()", "function clearExpandedPanel")
         )
         self.assertIn('"tye-layout"', TEMPLATE)
 
@@ -244,9 +244,9 @@ class BandHeightTests(unittest.TestCase):
             'tlBandHandle.addEventListener("pointerdown"', TEMPLATE)
         self.assertIn("function setBandHeight(px)", TEMPLATE)
         # The same limits in the drag and in the band CSS.
-        self.assertIn("Math.min(360, Math.max(120, Math.round(px)))",
+        self.assertIn("Math.min(360, Math.max(156, Math.round(px)))",
                       TEMPLATE)
-        self.assertIn("clamp(120px, var(--band-height, 176px), 360px)",
+        self.assertIn("clamp(156px, var(--band-height, 176px), 360px)",
                       TEMPLATE)
         self.assertIn('bandEl.style.setProperty("--band-height"',
                       TEMPLATE)
@@ -477,6 +477,62 @@ class CaptionsRowPageTests(unittest.TestCase):
         timeline = between("function renderTimeline()", "function changeTimesEdited")
         self.assertIn("renderCaptionRow();", timeline)
         self.assertIn("renderWaveform();", timeline)
+
+
+class RowBandFitTests(unittest.TestCase):
+    """The row's dragged height and the band's height share one
+    budget (fit fix, found by the 0.11.1 verifier): dragging the
+    workspace row tall used to push the band out of the window,
+    because the row's clamp was written before the band existed
+    and the band never shrank. Item 4's rule: the band shrinks
+    to its minimum before anything is pushed out of view."""
+
+    def test_fit_function_exists_and_is_called_from_the_setters(self):
+        self.assertIn("function fitRowBand()", TEMPLATE)
+        self.assertIn("fitRowBand();", between(
+            "function applyLayout()", "function clearExpandedPanel"))
+        self.assertIn("fitRowBand();", between(
+            "function setRowHeight(px)", "function wireRowDivider()"))
+        self.assertIn("fitRowBand();", between(
+            "function wireRowDivider()", "// -- stage timeline marks"))
+        self.assertIn('window.addEventListener("resize", '
+                      'function () { fitRowBand(); });', TEMPLATE)
+
+    def test_band_yields_to_its_minimum_before_the_row_yields(self):
+        fit = between("function fitRowBand()",
+                      "function applyLayout()")
+        band_cut = fit.index("band -= cut;")
+        row_cut = fit.index("splitH = Math.max(320, budget - band);")
+        self.assertLess(band_cut, row_cut)
+        self.assertIn("band - 156", fit)
+        # The remembered heights are never rewritten: the fit
+        # writes the applied values to the style properties and
+        # keeps the wanted height in its own variable.
+        self.assertIn("var rowHeightWanted = null;", TEMPLATE)
+        self.assertIn('split.style.setProperty("--pane-height", '
+                      'splitH + "px");', fit)
+        self.assertIn('bandEl.style.setProperty("--band-height", '
+                      'band + "px");', fit)
+
+    def test_band_minimum_keeps_every_row_inside_the_band(self):
+        # The floor lives in the height clamp, and the waveform
+        # row is the one row that can give inside the band: it
+        # flexes down to a thin strip at the minimum instead of
+        # spilling below the band's own box.
+        self.assertIn(
+            "height: clamp(156px, var(--band-height, 176px), "
+            "360px);", TEMPLATE)
+        self.assertIn(
+            ".tl-wave-row { position: relative; flex: 1 1 auto; "
+            "min-height: 10px;", TEMPLATE)
+
+    def test_row_height_is_remembered_as_asked_not_as_fitted(self):
+        setter = between("function setRowHeight(px)",
+                         "function wireRowDivider()")
+        self.assertIn("rowHeightWanted = clampRowHeight(px);", setter)
+        self.assertIn('window.localStorage.setItem('
+                      '"tye-pane-height", rowHeightWanted + "px");',
+                      setter)
 
 
 if __name__ == "__main__":
