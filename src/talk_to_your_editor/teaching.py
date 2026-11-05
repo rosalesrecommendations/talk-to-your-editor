@@ -36,10 +36,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from . import framing
 from . import transcribe as speech
 
 TEACHING_DIR_NAME = "teaching"
 DRAFTS_FILENAME = "teaching_drafts.json"
+FRAMING_FILENAME = "framing_profile.json"
 SESSION_META_FILENAME = "teach.json"
 
 VIDEO_SUFFIXES = (".mp4", ".mov", ".m4v", ".webm")
@@ -301,6 +303,117 @@ def transcribe_media(
 
 def _norm(token: str) -> str:
     return str(token or "").lower().strip(string.punctuation)
+
+
+def _fmt_seconds(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _kept_sound_pauses(words: list, finished_path) -> Optional[tuple]:
+    """(kept, total) pauses in the finished edit that hold sound.
+
+    A pause is the gap between one finished word's end and the
+    next word's start, 0.15 to 1.5 s. It holds sound when the
+    finished file's own audio is not silent across the whole
+    gap: a breath, water, room life. The count comes from the
+    sound envelope, never from the word stamps alone. Returns
+    None when the sound cannot be measured, so the caller
+    leaves the line out instead of guessing.
+    """
+    if finished_path is None:
+        return None
+    try:
+        import tempfile
+
+        from . import smooth
+
+        with tempfile.TemporaryDirectory() as td:
+            wav = Path(td) / "finished.wav"
+            speech.extract_audio(Path(finished_path), wav)
+            env = smooth.envelope_db(wav)
+        if not env:
+            return None
+        room = smooth.room_level_db(env)
+        runs = smooth.audio_silence_runs(env, room, min_s=0.15)
+    except Exception:
+        return None
+    kept = 0
+    total = 0
+    for prev, nxt in zip(words, words[1:]):
+        try:
+            gap_start = float(prev["end"])
+            gap_end = float(nxt["start"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0.15 <= gap_end - gap_start <= 1.5:
+            continue
+        total += 1
+        silent = any(
+            a <= gap_start + 0.03 and b >= gap_end - 0.03
+            for a, b in runs
+        )
+        if not silent:
+            kept += 1
+    if not total:
+        return None
+    return kept, total
+
+
+def measured_summary(
+    raw_words: Optional[list],
+    finished_words: Optional[list],
+    finished_path=None,
+) -> list:
+    """What the pair actually measures, as plain lines for the chat.
+
+    The teach summary used to print only the draft rules'
+    statements, which read as generic advice (0.27.1, P2
+    item 11). These lines are measured from the pair itself:
+    the finished edit's opening words, the pauses between its
+    sentences, and how many of its pauses keep real sound.
+    A line that cannot be measured is left out, never
+    estimated. ``raw_words`` is accepted for symmetry with
+    the drafts and for future contrasts; today's lines read
+    the finished edit, which is the style being taught.
+    """
+    lines: list = []
+    words = [
+        w for w in (finished_words or [])
+        if isinstance(w, dict) and w.get("word")
+    ]
+    if not words:
+        return lines
+    opening = " ".join(
+        str(w.get("word")) for w in words[:9]
+    ).strip()
+    if opening:
+        lines.append(f"Your finished edit opens on: \u201c{opening}\u201d")
+    gaps: list = []
+    for prev, nxt in zip(words, words[1:]):
+        tail = str(prev.get("word") or "").rstrip("\"'\u201d\u2019)")
+        if not tail.endswith((".", "?", "!")):
+            continue
+        try:
+            gap = float(nxt["start"]) - float(prev["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= gap < 5:
+            gaps.append(gap)
+    if len(gaps) >= 3:
+        gaps.sort()
+        median = gaps[len(gaps) // 2]
+        lines.append(
+            "Pauses between sentences in your edit run about "
+            f"{_fmt_seconds(median)} seconds ({len(gaps)} measured)."
+        )
+    pauses = _kept_sound_pauses(words, finished_path)
+    if pauses is not None:
+        kept, total = pauses
+        lines.append(
+            f"You keep the sound in {kept} of the {total} pauses "
+            "in your edit (breaths, water), not dead air."
+        )
+    return lines
 
 
 def pair_diff(raw_words: list, finished_words: list) -> dict:
@@ -610,10 +723,10 @@ def surface_drafts(finished_words: list, kind: str = "style") -> list:
 # ---------------------------------------------------------------------------
 
 
-def _download(url: str, dest: Path) -> Path:
+def _download(url: str, dest: Path, user_agent: str = "TalkToYourEditor") -> Path:
     """Download one URL to ``dest``, under the size cap."""
     request = urllib.request.Request(
-        url, headers={"User-Agent": "TalkToYourEditor"}
+        url, headers={"User-Agent": user_agent}
     )
     total = 0
     try:
@@ -704,15 +817,349 @@ def _video_candidate(page: str, base_url: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# YouTube links (v0.17, feedback item 3)
+#
+# A YouTube watch page names no video file in its meta tags, so
+# the generic page read above found nothing and Justin's own
+# video would not come in ("It should be able to do that from
+# YouTube. I need you to fix that"). The watch page does carry
+# the player's own data, including the stream addresses for a
+# public video. This branch reads that data: a ready-made
+# (picture and sound together) stream is downloaded as it is;
+# when only separate picture and sound streams are offered,
+# both are downloaded and joined with ffmpeg, the same tool
+# the app already uses. When YouTube offers neither (a private
+# video, a sign-in wall, an encoded stream address), the error
+# says what happened and what to do instead, in plain words.
+# ---------------------------------------------------------------------------
+
+_YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+}
+_YOUTUBE_ID = re.compile(r"^[A-Za-z0-9_-]{6,20}$")
+_YOUTUBE_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
+_YOUTUBE_FALLBACK = (
+    "If it is your own video, YouTube Studio can download it: "
+    "open the video there, choose Download, then drop the "
+    "file in here instead."
+)
+
+
+def _youtube_video_id(parts) -> Optional[str]:
+    """The video id in a YouTube link, or None for other links."""
+    host = (parts.hostname or "").lower()
+    if host not in _YOUTUBE_HOSTS:
+        return None
+    candidate = ""
+    if host == "youtu.be":
+        candidate = parts.path.lstrip("/").split("/")[0]
+    elif parts.path == "/watch":
+        query = urllib.parse.parse_qs(parts.query)
+        candidate = (query.get("v") or [""])[0]
+    else:
+        segments = [s for s in parts.path.split("/") if s]
+        if len(segments) >= 2 and segments[0] in (
+            "shorts", "embed", "live", "v",
+        ):
+            candidate = segments[1]
+    if candidate and _YOUTUBE_ID.match(candidate):
+        return candidate
+    return None
+
+
+def _fetch_youtube_page(video_id: str) -> str:
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    request = urllib.request.Request(
+        url, headers={"User-Agent": _YOUTUBE_UA}
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=LINK_TIMEOUT_S
+        ) as response:
+            raw = response.read(8 * 1024 * 1024)
+    except Exception as exc:
+        raise TeachingLinkError(
+            "The app could not get that video from the link."
+        ) from exc
+    return raw.decode("utf-8", "replace")
+
+
+def _player_response(page: str) -> Optional[dict]:
+    """The ytInitialPlayerResponse object embedded in a watch page.
+
+    The object is JSON assigned to a page variable; it is read
+    by brace matching, aware of strings, so nested objects and
+    braces inside text cannot end it early.
+    """
+    marker = page.find("ytInitialPlayerResponse")
+    if marker < 0:
+        return None
+    start = page.find("{", marker)
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(page)):
+        char = page[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    parsed = json.loads(page[start:index + 1])
+                except ValueError:
+                    return None
+                return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _declared_size(entry: dict) -> Optional[int]:
+    try:
+        return int(entry.get("contentLength"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_stream(entries: list) -> Optional[dict]:
+    """The best direct stream: unknown size counts as fittable.
+
+    Largest picture first among the entries whose declared size
+    fits the cap (or say nothing about size); when every entry
+    declares over the cap, the smallest is picked so the
+    downloader's own cap answers with the too-large message.
+    """
+    usable = [entry for entry in entries if entry.get("url")]
+    if not usable:
+        return None
+
+    def height(entry):
+        try:
+            return int(entry.get("height") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    fitting = [
+        entry for entry in usable
+        if _declared_size(entry) is None
+        or _declared_size(entry) <= MAX_LINK_BYTES
+    ]
+    if fitting:
+        return max(fitting, key=height)
+    return min(usable, key=lambda entry: _declared_size(entry) or 0)
+
+
+def _youtube_plan(player: dict):
+    """What to download for this video, or the plain reason not to.
+
+    Returns ("single", entry) or ("pair", video_entry,
+    audio_entry). Raises TeachingLinkError with the plain,
+    actionable message for a video YouTube will not hand over.
+    """
+    playability = player.get("playabilityStatus") or {}
+    status = str(playability.get("status") or "")
+    if status and status != "OK":
+        reason = str(playability.get("reason") or "").strip()
+        if status == "LOGIN_REQUIRED" or "private" in reason.lower():
+            raise TeachingLinkError(
+                "YouTube says that video is private or needs a "
+                "sign-in, so the app cannot bring it in from the "
+                "link. " + _YOUTUBE_FALLBACK
+            )
+        raise TeachingLinkError(
+            "YouTube would not play that video for the app"
+            + (f" ({reason})" if reason else "")
+            + ". " + _YOUTUBE_FALLBACK
+        )
+    streaming = player.get("streamingData") or {}
+    formats = [
+        entry for entry in streaming.get("formats") or []
+        if isinstance(entry, dict)
+    ]
+    single = _pick_stream(formats)
+    if single is not None:
+        return ("single", single)
+    adaptive = [
+        entry for entry in streaming.get("adaptiveFormats") or []
+        if isinstance(entry, dict)
+    ]
+    videos = [
+        entry for entry in adaptive
+        if str(entry.get("mimeType") or "").startswith("video/mp4")
+    ] or [
+        entry for entry in adaptive
+        if str(entry.get("mimeType") or "").startswith("video/")
+    ]
+    audios = [
+        entry for entry in adaptive
+        if str(entry.get("mimeType") or "").startswith("audio/mp4")
+    ] or [
+        entry for entry in adaptive
+        if str(entry.get("mimeType") or "").startswith("audio/")
+    ]
+    video = _pick_stream(videos)
+    audio = _pick_stream(audios)
+    if video is not None and audio is not None:
+        return ("pair", video, audio)
+    raise TeachingLinkError(
+        "YouTube did not offer that video in a form the app "
+        "can download. " + _YOUTUBE_FALLBACK
+    )
+
+
+def _merge_youtube_parts(
+    video_path: Path, audio_path: Path, dest: Path
+) -> Path:
+    """Join a separate picture and sound download into one file."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-i", str(video_path),
+                "-i", str(audio_path),
+                "-c", "copy",
+                str(dest),
+            ],
+            capture_output=True,
+            timeout=LINK_TIMEOUT_S * 5,
+        )
+    except FileNotFoundError as exc:
+        raise TeachingLinkError(
+            "ffmpeg was not found on this computer, so the app "
+            "could not join the video and sound YouTube sent."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise TeachingLinkError(
+            "Joining the video and sound YouTube sent took too "
+            "long, so the app stopped. " + _YOUTUBE_FALLBACK
+        ) from exc
+    if result.returncode != 0 or not dest.is_file():
+        dest.unlink(missing_ok=True)
+        raise TeachingLinkError(
+            "The app could not join the video and sound YouTube "
+            "sent. " + _YOUTUBE_FALLBACK
+        )
+    return dest
+
+
+def _fetch_youtube(video_id: str, dest_dir: Path) -> Path:
+    """Bring in one public YouTube video by its id."""
+    page = _fetch_youtube_page(video_id)
+    player = _player_response(page)
+    if player is None:
+        raise TeachingLinkError(
+            "YouTube did not give the app a playable copy of "
+            "that video. " + _YOUTUBE_FALLBACK
+        )
+    plan = _youtube_plan(player)
+    if plan[0] == "single":
+        entry = plan[1]
+        mime = str(entry.get("mimeType") or "")
+        suffix = ".webm" if "webm" in mime else ".mp4"
+        return _download(
+            entry["url"],
+            dest_dir / f"linked{suffix}",
+            user_agent=_YOUTUBE_UA,
+        )
+    _kind, video_entry, audio_entry = plan
+    video_part = dest_dir / ".youtube-video.part"
+    audio_part = dest_dir / ".youtube-audio.part"
+    try:
+        _download(
+            video_entry["url"], video_part, user_agent=_YOUTUBE_UA
+        )
+        _download(
+            audio_entry["url"], audio_part, user_agent=_YOUTUBE_UA
+        )
+        return _merge_youtube_parts(
+            video_part, audio_part, dest_dir / "linked.mp4"
+        )
+    finally:
+        video_part.unlink(missing_ok=True)
+        audio_part.unlink(missing_ok=True)
+
+
+def direct_download_url(url: str) -> Optional[str]:
+    """The file address behind a Drive or Dropbox share link.
+
+    A Google Drive share page names no file the app can read, so
+    the share link is turned into Drive's own download address
+    for the same file. A Dropbox share link is served as the
+    file itself by Dropbox's download host when asked with
+    ``dl=1``. Anything else returns None and the caller falls
+    back to reading the page. Only the pasted link's own file is
+    ever addressed.
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    if host in ("drive.google.com", "www.drive.google.com"):
+        segments = [s for s in parts.path.split("/") if s]
+        if len(segments) >= 3 and segments[0] == "file" and segments[1] == "d":
+            return (
+                "https://drive.google.com/uc?export=download&id="
+                + urllib.parse.quote(segments[2])
+            )
+        query = urllib.parse.parse_qs(parts.query)
+        file_id = (query.get("id") or [""])[0]
+        if file_id:
+            return (
+                "https://drive.google.com/uc?export=download&id="
+                + urllib.parse.quote(file_id)
+            )
+        return None
+    if host in ("dropbox.com", "www.dropbox.com"):
+        query = urllib.parse.parse_qs(parts.query)
+        query["dl"] = ["1"]
+        return urllib.parse.urlunsplit(
+            (
+                parts.scheme or "https",
+                "dl.dropboxusercontent.com",
+                parts.path,
+                urllib.parse.urlencode(query, doseq=True),
+                "",
+            )
+        )
+    return None
+
+
 def fetch_link(url: str, dest_dir: Path) -> Path:
     """Bring in the video at a pasted link; returns where it landed.
 
-    A link straight to a video file is downloaded as it is. Any
-    other link's page is read for the video file it points at
-    (an og:video meta tag, or a source tag naming a video file),
-    and that file is downloaded. Anything else raises
-    TeachingLinkError. Only the pasted URL, and the one video file
-    its own page names, are ever fetched.
+    A link straight to a video file is downloaded as it is. A
+    YouTube link is read through the player's own data on its
+    watch page (v0.17, feedback item 3). Any other link's page
+    is read for the video file it points at (an og:video meta
+    tag, or a source tag naming a video file), and that file is
+    downloaded. Anything else raises TeachingLinkError. Only
+    the pasted URL, and the one video file its own page names,
+    are ever fetched.
     """
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -726,6 +1173,12 @@ def fetch_link(url: str, dest_dir: Path) -> Path:
         raise TeachingLinkError(
             "The app could not get that video from the link."
         )
+    video_id = _youtube_video_id(parts)
+    if video_id:
+        return _fetch_youtube(video_id, dest_dir)
+    direct = direct_download_url(url)
+    if direct is not None:
+        return _download(direct, dest_dir / "linked.mp4")
     suffix = Path(parts.path).suffix.lower()
     if suffix in VIDEO_SUFFIXES:
         return _download(url, dest_dir / f"linked{suffix}")
@@ -741,3 +1194,164 @@ def fetch_link(url: str, dest_dir: Path) -> Path:
     if candidate_suffix not in VIDEO_SUFFIXES:
         candidate_suffix = ".mp4"
     return _download(candidate, dest_dir / f"linked{candidate_suffix}")
+
+
+# ---------------------------------------------------------------------------
+# Framing: what the finished video's picture teaches
+# ---------------------------------------------------------------------------
+
+
+def shape_for_profile(profile: dict) -> Optional[str]:
+    """The shape a profile's reference video is: "9:16" or "16:9".
+
+    Each reference teaches the shape it is, so profiles are kept
+    per shape and neither overwrites the other. The shape comes
+    from the reference's own aspect: the nearer of the two shapes,
+    measured in log space so a tall 4:5 still lands on 9:16. None
+    when the profile carries no size to judge by.
+    """
+    if not isinstance(profile, dict):
+        return None
+    aspect = profile.get("source_aspect")
+    if not isinstance(aspect, (int, float)) or aspect <= 0:
+        width = profile.get("source_width")
+        height = profile.get("source_height")
+        if (
+            isinstance(width, (int, float))
+            and isinstance(height, (int, float))
+            and width > 0
+            and height > 0
+        ):
+            aspect = width / height
+        else:
+            return None
+    import math
+
+    return min(
+        framing.ASPECTS,
+        key=lambda shape: abs(
+            math.log(aspect) - math.log(framing.ASPECTS[shape])
+        ),
+    )
+
+
+def framing_path(session_dir: Path, shape: Optional[str] = None) -> Path:
+    if shape in framing.ASPECTS:
+        return Path(session_dir) / (
+            "framing_profile_" + shape.replace(":", "x") + ".json"
+        )
+    return Path(session_dir) / FRAMING_FILENAME
+
+
+def _read_framing_file(path: Path) -> Optional[dict]:
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict) and isinstance(
+            payload.get("profile"), dict
+        ):
+            return payload["profile"]
+    return None
+
+
+def save_framing_profile(session_dir: Path, profile: dict) -> None:
+    """Keep one teaching run's framing profile, per shape.
+
+    A 9:16 reference saves the 9:16 profile and a 16:9 reference
+    saves the 16:9 one, side by side, so teaching one shape never
+    overwrites the other. A profile with no size to judge by keeps
+    the old single file name.
+    """
+    path = framing_path(session_dir, shape_for_profile(profile))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"profile": profile}, handle, indent=2)
+        handle.write("\n")
+
+
+def load_framing_profile(
+    session_dir: Path, shape: Optional[str] = None
+) -> Optional[dict]:
+    """The saved framing profile, or None.
+
+    With a shape, that shape's profile comes back: its own file
+    first, then the old single file when that file's reference is
+    the same shape (or carries no size). Without a shape, the old
+    single file wins when it exists, else the newest per-shape
+    file, so older callers keep working.
+    """
+    if shape in framing.ASPECTS:
+        profile = _read_framing_file(framing_path(session_dir, shape))
+        if profile is not None:
+            return profile
+        legacy = _read_framing_file(framing_path(session_dir))
+        if legacy is not None and shape_for_profile(legacy) in (
+            None,
+            shape,
+        ):
+            return legacy
+        return None
+    legacy = _read_framing_file(framing_path(session_dir))
+    if legacy is not None:
+        return legacy
+    candidates = []
+    for known in framing.ASPECTS:
+        path = framing_path(session_dir, known)
+        if path.is_file():
+            candidates.append(path)
+    if not candidates:
+        return None
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return _read_framing_file(newest)
+
+
+def framing_draft_for(
+    session_dir: Path,
+    finished_path: Path,
+    *,
+    kind: str,
+    basis: str,
+    source_note: str,
+    profile_fn=None,
+) -> Optional[dict]:
+    """Read a finished video's framing and draft the one line.
+
+    Returns a draft in the usual shape carrying the plain
+    framing sentence, and saves the profile with the session so
+    a render can cut a new shape around the same face position.
+    When no face can be read (none there, or this computer
+    cannot spot faces), returns None and saves nothing: the
+    teach summary never claims framing it did not see.
+    ``profile_fn`` is the seam tests stub.
+    """
+    if profile_fn is None:
+        # The reference is read with the one ruler, the same
+        # read a rendered output is later checked with, so the
+        # size comparison on Finish is honest (framing's
+        # ruler_profile says why).
+        profile_fn = framing.ruler_profile
+    profile = profile_fn(Path(finished_path))
+    if not isinstance(profile, dict) or profile.get("status") != "ok":
+        return None
+    sentence = framing.framing_sentence(profile)
+    if not sentence:
+        return None
+    save_framing_profile(session_dir, profile)
+    face = profile["face"]
+    percent = int(round(float(face["width"]) * 100))
+    return make_draft(
+        statement=sentence,
+        reason=(
+            "From the finished video's picture: across "
+            f"{profile.get('frames_with_face', 0)} sampled "
+            "moments, your face takes about "
+            f"{percent}% of the frame's width."
+        ),
+        at_s=None,
+        quote="",
+        basis=basis,
+        kind=kind,
+        source_note=source_note,
+    )

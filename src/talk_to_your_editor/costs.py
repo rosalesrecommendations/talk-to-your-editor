@@ -271,6 +271,17 @@ def dictation_cost(duration_s: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+def format_dollars(usd: float) -> str:
+    """One money figure as dollars: "$0.85", "$1.56", "$0.00".
+
+    The one format every surface that names a run's price uses
+    (0.27.1, P1 item 8): the offer card, the chat, and the Done
+    bubble all print this, so a run never wears two different
+    numbers in two different shapes.
+    """
+    return f"${float(usd or 0.0):.2f}"
+
+
 def format_usd(usd: float) -> str:
     """One money figure in the app's plain words.
 
@@ -551,6 +562,7 @@ def job_cost_block(entries: list) -> Optional[dict]:
         "lines": rows,
         "total_usd": total,
         "total_text": format_usd(total),
+        "total_dollars": format_dollars(total),
         "recap_lines": lines,
     }
 
@@ -731,6 +743,7 @@ def estimate_run(
         "lines": rows,
         "total_usd": total,
         "total_text": format_usd(total),
+        "total_dollars": format_dollars(total),
         "sentence": f"{opener} {format_usd(total)}.",
         "explanation": estimate_explanation(
             surface, settings, has_direction, route, spark_route

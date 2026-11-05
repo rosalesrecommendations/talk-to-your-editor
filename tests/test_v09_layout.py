@@ -43,14 +43,22 @@ class HeroTests(unittest.TestCase):
         )
 
     def test_hero_carries_the_direction_box_and_the_primary_action(self):
-        hero = between('id="directionHero"', 'id="stagedFlow"')
-        self.assertIn("Describe your edit", hero)
+        # v0.15 Batch C, item 3: the stages list moved behind the
+        # How this works door, so the hero's slice now ends at the
+        # Remove tools that follow it in the intake pop-up.
+        hero = between('id="directionHero"', 'id="inRemoveGroup"')
+        # v0.17 (feedback item 23): the box is named for what
+        # Justin puts in it.
+        self.assertIn("Requests for your editor", hero)
         self.assertIn('id="intakeDirection"', hero)
         self.assertIn('id="firstEditBtn"', hero)
         self.assertIn("hero-action", hero)
 
     def test_remove_tools_sit_in_a_side_panel_on_desktop(self):
-        self.assertIn('grid-template-areas: "hero tools" "stages tools"',
+        # v0.15 Batch C, item 3: the stages area left the grid
+        # with the stages list (now behind How this works); the
+        # hero and the Remove tools keep the two-area row.
+        self.assertIn('grid-template-areas: "hero tools"',
                       TEMPLATE)
         self.assertIn('#inRemoveGroup { grid-area: tools;', TEMPLATE)
 
@@ -61,14 +69,17 @@ class ToolRowTests(unittest.TestCase):
     def test_every_tool_row_starts_with_its_options_hidden(self):
         # Five intake rows (retakes, silence, fillers, mode, and
         # the v0.10 editing style) and six review rows (those five
-        # plus formats/direction).
-        self.assertEqual(TEMPLATE.count('class="tool-options" hidden'), 11)
-        self.assertEqual(TEMPLATE.count('class="tool-open"'), 11)
+        # plus formats/direction). v0.15 Batch I: a seventh
+        # review row joined — Smooth the joins (crossfade).
+        self.assertEqual(TEMPLATE.count('class="tool-options" hidden'), 12)
+        self.assertEqual(TEMPLATE.count('class="tool-open"'), 12)
 
     def test_rows_open_pre_set_to_the_recommended_choice(self):
         self.assertIn("Last take stays (recommended)", TEMPLATE)
         self.assertIn("Leave 0.1 seconds (recommended)", TEMPLATE)
-        self.assertIn("Cleanest cut (recommended)", TEMPLATE)
+        # v0.15 (Batch D, item 9): the involvement pill's chosen
+        # name is Proactive; the row summary follows it.
+        self.assertIn("Proactive (recommended)", TEMPLATE)
         # The recommended keep mode and involvement mode are the
         # ones the page selects on load.
         self.assertIn('setInKeepMode("last")', TEMPLATE)
@@ -94,9 +105,13 @@ class FrontDoorTests(unittest.TestCase):
     """Items 10 and 27: one main action, short labels, plain drop line."""
 
     def test_drop_area_says_what_one_video_and_a_folder_do(self):
+        # v0.15 Batch C, item 3: the first page's explanatory
+        # lines are cut to one short line; the longer account of
+        # what a video and a folder do lives behind How this
+        # works (superseding check: Batch C tests in
+        # tests/test_v15_batch_c.py).
         line = between('id="dropAcceptsLine"', 'id="dropPickFolder"')
-        self.assertIn("One video: it plays here", line)
-        self.assertIn("A job folder: it opens as one job", line)
+        self.assertIn("Bring in a video, or a job folder.", line)
 
     def test_long_front_door_explanations_are_tucked_behind_expansion(self):
         self.assertNotIn(
@@ -105,9 +120,14 @@ class FrontDoorTests(unittest.TestCase):
             "Terminal.",
             TEMPLATE,
         )
+        # v0.15 Batch C, item 3: the drop card's own expansion is
+        # gone; its text moved behind the How this works door,
+        # and the hero keeps its direction-and-captions expansion.
         drop = between('id="dropCard"', 'id="dropVideoWrap"')
-        self.assertIn('<details class="more-info">', drop)
-        hero = between('id="directionHero"', 'id="stagedFlow"')
+        self.assertNotIn('<details class="more-info">', drop)
+        how = between('id="howItWorksPanel"', 'id="settingsPanel"')
+        self.assertIn("No path typing, no Terminal.", how)
+        hero = between('id="directionHero"', 'id="inRemoveGroup"')
         self.assertIn('<details class="more-info">', hero)
 
 
@@ -156,7 +176,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn('id="toolsPane"', split)
         self.assertIn('id="transcriptCard"', split)
         self.assertIn('id="makeEditCard"', split)
-        for card in ("pinCard", "historyCard", "revisedCard"):
+        # v0.15 Batch E1: the pin card is the Editor panel now.
+        for card in ("editorPanel", "historyCard", "revisedCard"):
             self.assertIn(f'id="{card}"', split)
 
     def test_workspace_fits_the_window_and_scrolls_inside_panes(self):
@@ -212,7 +233,16 @@ class StagedFlowTests(unittest.TestCase):
         self.assertIn("collectIntakeSettings()", body)
 
     def test_each_pass_has_its_own_button_with_a_line_of_context(self):
-        passes = between('id="passList"', 'id="fdFire"')
+        # v0.12, change 3: fdFire moved out of the card into the
+        # action row ahead of it, so the pass list's slice now
+        # ends at the format row that follows Edit settings
+        # (superseding check: ChoicesRegionTests in
+        # tests/test_v12_left_column.py).
+        # v0.15 Batch I, item 35: the pass list moved with
+        # Edit settings into the settings bar above the band,
+        # so the slice now ends at the band (superseding
+        # check: the Batch I settings-bar tests).
+        passes = between('id="passList"', 'id="timelineBand"')
         for btn in ("passRetakesBtn", "passSilenceBtn", "passFillersBtn"):
             self.assertIn(f'id="{btn}"', passes)
         self.assertIn("When a line is said more than once", passes)
@@ -243,12 +273,26 @@ class ReviewScreenTests(unittest.TestCase):
 
     def test_review_remove_settings_are_a_compact_details_affordance(self):
         card = between('id="makeEditCard"', 'id="transcriptCard"')
+        # v0.15 Batch I, item 35: Edit settings moved out of
+        # the card into the slim settings bar directly above
+        # the timeline band (superseding home; the disclosure
+        # itself is unchanged).
+        bar = between('id="editSettingsBar"', 'id="timelineBand"')
         self.assertIn('<details class="settings-details" id="editSettings">',
-                      card)
-        self.assertIn("Edit settings", card)
+                      bar)
+        self.assertIn("Edit settings", bar)
+        self.assertNotIn('id="editSettings"', card)
         self.assertNotIn('<h3 class="remove-heading">Remove</h3>', card)
-        # The primary action stays outside the collapsed settings.
-        self.assertLess(card.index("</details>"), card.index('id="fdFire"'))
+        # The primary action stays outside the collapsed settings:
+        # v0.12, change 3 moved it out of the card altogether,
+        # into the action row at the column's foot ahead of the
+        # Edit choices region (superseding check: ActionRowTests
+        # in tests/test_v12_left_column.py).
+        self.assertNotIn('id="fdFire"', card)
+        self.assertLess(
+            TEMPLATE.index('id="fdFire"'),
+            TEMPLATE.index('id="makeEditCard"'),
+        )
 
     def test_remove_controls_exist_once_per_surface(self):
         self.assertEqual(TEMPLATE.count('id="fdRetakes"'), 1)
@@ -262,14 +306,16 @@ class HierarchyTests(unittest.TestCase):
 
     def test_primary_actions_are_visually_distinct(self):
         self.assertIn(".hero-action", TEMPLATE)
-        self.assertIn("min-height: 56px", TEMPLATE)
+        # v0.14 Batch B: the primary shape is 48 tall (was 56).
+        self.assertIn("min-height: 48px", TEMPLATE)
         self.assertIn('id="firstEditBtn" class="primary hero-action"',
                       TEMPLATE)
         self.assertIn('id="fdFire" class="primary hero-action"', TEMPLATE)
 
     def test_type_scale_tracks_importance(self):
         self.assertIn("h1 { font-size: 32px; }", TEMPLATE)
-        self.assertIn("h2 { font-size: 20px; }", TEMPLATE)
+        # v0.14 Batch B: card headings are all 17px (was 20px).
+        self.assertIn("h2 { font-size: 17px; }", TEMPLATE)
         self.assertIn(".hero-title { font-size: 24px;", TEMPLATE)
 
 
@@ -292,14 +338,19 @@ class V2FrameTests(unittest.TestCase):
         # and the transcript keeps at least 320px, so the three
         # columns always fit the window with no sideways scroll.
         self.assertIn(
-            "grid-template-columns: var(--col-a) 10px "
-            "minmax(320px, 1fr) 10px var(--col-c);",
+            "grid-template-columns: var(--col-a) 8px "
+            "minmax(340px, 1fr) 8px var(--col-c);",
             TEMPLATE,
         )
         # 1280-wide windows get the narrower columns.
-        self.assertIn("--pane-a: 320px; --pane-c: 280px;", TEMPLATE)
-        # The transcript line is capped, never stretched.
-        self.assertIn("max-width: 68ch", TEMPLATE)
+        self.assertIn("--pane-a: 380px; --pane-c: 280px;", TEMPLATE)
+        # The transcript line: the narrow measure is capped;
+        # the wide measure is uncapped since v0.17 (feedback
+        # item 27: the old 68ch cap made Wider look broken).
+        self.assertIn("max-width: 57ch", TEMPLATE)
+        self.assertIn(
+            "body.reading-wide .tx-words { max-width: none; }",
+            TEMPLATE)
 
     def test_top_bar_carries_the_three_labelled_buttons(self):
         head = between('class="app-head"', 'id="popupScrim"')
@@ -312,7 +363,7 @@ class V2FrameTests(unittest.TestCase):
 
     def test_comments_panel_closes_and_reopens_from_the_top_bar(self):
         self.assertIn('id="hideCommentsBtn"', TEMPLATE)
-        self.assertIn("Hide comments", TEMPLATE)
+        self.assertIn("Hide editor", TEMPLATE)
         self.assertIn("function applyCommentsOpen(open)", TEMPLATE)
         self.assertIn('"tye-comments-open"', TEMPLATE)
         self.assertIn("body.comments-closed #toolsPane", TEMPLATE)
@@ -387,16 +438,22 @@ class V2TransportTests(unittest.TestCase):
     """One centered row; a word under every button; Play is the
     only blue button; the old Now-at readout is gone."""
 
-    def test_words_under_every_button(self):
+    def test_words_beside_every_button(self):
+        # v0.15 Batch I, item 39: the words moved from under
+        # the icons to beside them, at 13px (was: words under
+        # every button at 11px).
         row = between('id="fmtRow"', 'id="tlbar"')
         for label in (">Start<", ">Back 5<", ">Play<", ">Fwd 5<",
                       ">End<", ">Prev change<", ">Next change<"):
             self.assertIn(label, row)
         self.assertIn('class="tp-label"', row)
-        self.assertIn(".tp-label { font-size: 11px;", TEMPLATE)
+        self.assertIn(".tp-label { font-size: 13px;", TEMPLATE)
 
     def test_play_is_the_only_blue_button(self):
-        self.assertIn(".tp-play { background: #0064d1;", TEMPLATE)
+        # v0.14 Batch A: the one blue is a single token, defined
+        # once; Play fills with it like every primary surface.
+        self.assertIn("--blue: #0064d1;", TEMPLATE)
+        self.assertIn(".tp-play { background: var(--blue);", TEMPLATE)
         self.assertIn('id="playPauseBtn"', TEMPLATE)
 
     def test_time_readout_is_the_edited_clock_pair(self):
@@ -454,7 +511,11 @@ class V2TranscriptTests(unittest.TestCase):
     """Paragraphs, one gutter time each, the one help line."""
 
     def test_help_line_is_exact_and_instructions_are_gone(self):
-        self.assertIn(
+        # The "Times match..." help line sat in the transcript
+        # header until v0.13 (item 7): the calm header carries
+        # no helper prose at rest, and the line is gone.
+        self.assertNotIn("txClockNote", TEMPLATE)
+        self.assertNotIn(
             "Times match the video you are watching.", TEMPLATE)
         self.assertNotIn(
             "The words of the edit, in order. Words that were cut "
@@ -530,9 +591,14 @@ class V2FrontDoorTests(unittest.TestCase):
         self.assertIn("#dropVideo { max-height: 200px;", TEMPLATE)
 
     def test_how_bringing_in_a_job_works_starts_closed(self):
+        # v0.15 Batch C, item 3: the "How bringing in a job works"
+        # expansion left the drop card; its text now sits behind
+        # the How this works door, which starts closed.
         drop = between('id="dropCard"', 'id="dropVideoWrap"')
-        self.assertIn('<details class="more-info">', drop)
-        self.assertNotIn('<details class="more-info" open', drop)
+        self.assertNotIn("How bringing in a job works", drop)
+        self.assertIn('id="howItWorksPanel" hidden', TEMPLATE)
+        how = between('id="howItWorksPanel"', 'id="settingsPanel"')
+        self.assertIn("Bringing in a job", how)
 
 
 class V2ArrangementTests(unittest.TestCase):
@@ -542,14 +608,15 @@ class V2ArrangementTests(unittest.TestCase):
 
     def test_plain_controls_exist_in_panel_headers_and_top_bar(self):
         for marker in (
-            'id="swapSidesBtn"', ">Swap sides<",
-            'id="videoHideBtn"', ">Hide video<",
+            'id="swapSidesBtn"',
+            'title="Swap transcript and Editor sides"',
+            'id="videoHideBtn"', 'title="Hide video"',
             'id="videoExpandBtn"', 'id="transcriptExpandBtn"',
-            'id="commentsExpandBtn"', ">Make wider<",
+            'id="commentsExpandBtn"', 'title="Make wider"',
             '"Back to normal"',
-            'id="transcriptHideBtn"', ">Hide transcript<",
-            'id="showVideoBtn"', ">Show video<",
-            'id="showTranscriptBtn"', ">Show transcript<",
+            'id="transcriptHideBtn"', 'title="Hide transcript"',
+            'id="showVideoBtn"', 'title="Show video"',
+            'id="showTranscriptBtn"', 'title="Show transcript"',
         ):
             self.assertIn(marker, TEMPLATE)
 
@@ -570,10 +637,14 @@ class V2ArrangementTests(unittest.TestCase):
         self.assertIn('id="vid"', left)
         band = between('id="timelineBand"', '</main>')
         self.assertIn('id="tlbar"', band)
-        self.assertIn("body.job-loaded.panels-swapped .review-left "
+        # v0.15 Batch F, item 14b supersedes the v2 swap: the
+        # swap now trades the transcript and the Editor panel,
+        # so the Editor takes column 3 and the transcript
+        # column 5; the video and the band do not move.
+        self.assertIn("body.job-loaded.panels-swapped #toolsPane "
                       "{ grid-column: 3; }", TEMPLATE)
         self.assertIn("body.job-loaded.panels-swapped .review-right "
-                      "{ grid-column: 1; }", TEMPLATE)
+                      "{ grid-column: 5; }", TEMPLATE)
 
     def test_every_arrangement_keeps_the_one_screen_fit(self):
         for marker in (

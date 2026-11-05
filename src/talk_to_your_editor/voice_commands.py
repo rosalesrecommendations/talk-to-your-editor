@@ -125,6 +125,19 @@ PHRASE_LISTS: dict = {
         "restore the retakes",
         "bring back the retakes",
         "put the retakes back",
+        "put the retakes back in",
+        "put them back in",
+        "put them back",
+        "bring them back",
+        "bring those back",
+        "add them back",
+        "put those back",
+        "put those back in",
+        "restore them",
+        "put everything back",
+        "bring everything back",
+        "put them all back",
+        "put them all back in",
         "leave the retakes in",
         "keep all the takes",
         "do not remove retakes",
@@ -180,6 +193,7 @@ PHRASE_LISTS: dict = {
         "pause",
         "pause it",
         "pause the video",
+        "stop",
         "stop the video",
         "stop playing",
         "hold on",
@@ -543,6 +557,54 @@ def _match_navigation(normalized: str):
 
 
 # ---------------------------------------------------------------------------
+# Restores said the natural way (v0.17)
+# ---------------------------------------------------------------------------
+
+_RESTORE_OBJECT = (
+    r"(them|those|the retakes|retakes|all of them|them all|everything)"
+)
+
+
+def _match_restore(normalized: str):
+    """A plain restore of what was taken out, or None.
+
+    "Put them back in" names no time and no move in the video;
+    it asks for the retakes that came out to come back. The
+    navigation parser below hears the word "back" in it and
+    calls it a five-second seek, which is exactly what the
+    0.16 conversation test caught ("put them back in" restored
+    nothing; the video jumped back 5 seconds instead). Restore
+    shapes are read here, before navigation: a restore verb
+    (put, bring, add, restore, get), the thing that was taken
+    out (them, those, the retakes, everything), and "back",
+    with no time words and no digits anywhere in the sentence.
+    A sentence carrying a time ("go back five seconds") is a
+    move, never a restore, and is left for navigation.
+    """
+    if any(unit in normalized for unit in _UNIT_SECONDS):
+        return None
+    if re.search(r"\d", normalized):
+        return None
+    match = re.fullmatch(
+        r"(?:please )?(put|bring|add|restore|get) "
+        + _RESTORE_OBJECT
+        + r"( back| back in| in)?",
+        normalized,
+    )
+    if match:
+        return {"command": "keep_retakes", "seconds": None}
+    match = re.fullmatch(
+        r"(?:please )?(put|bring|add|restore) back "
+        + _RESTORE_OBJECT
+        + r"( in)?",
+        normalized,
+    )
+    if match:
+        return {"command": "keep_retakes", "seconds": None}
+    return None
+
+
+# ---------------------------------------------------------------------------
 # The match itself
 # ---------------------------------------------------------------------------
 
@@ -552,15 +614,39 @@ def _contains_matches(normalized: str) -> list:
 
     Navigation phrases are parameterized, so they are matched
     by the navigation parser, never by this containment scan.
+
+    A one-word phrase ("wait", "pause") inside a longer message
+    is not a command: "this is a long time to wait" is a
+    complaint about waiting, not an order to pause (0.27.1, P1
+    item 5). One-word phrases count only when the whole message
+    is short enough to be the command itself with a courtesy
+    word or two around it.
+
+    A multi-word phrase buried in a longer sentence is not a
+    command either: the phrase must make up at least half the
+    message's words. "pause the video when it gets loud" is an
+    instruction about the video, not an order to pause, and
+    "the part where he says cut the retakes is loud" names a
+    command inside a sentence about the video; neither runs
+    anything. A command said plainly, with a courtesy word or
+    two around it ("please remove the retakes from the video"),
+    still counts.
     """
+    word_count = len(normalized.split())
     found = []
     for command, phrases in PHRASE_LISTS.items():
         if command in ("seek_relative", "seek_absolute", "seek_start", "seek_end"):
             continue
         for phrase in phrases:
-            if phrase in normalized:
-                found.append(command)
-                break
+            if phrase not in normalized:
+                continue
+            phrase_words = len(phrase.split())
+            if phrase_words == 1 and word_count > 3:
+                continue
+            if phrase_words >= 2 and phrase_words * 2 < word_count:
+                continue
+            found.append(command)
+            break
     return found
 
 
@@ -652,6 +738,18 @@ def match_voice_command(text) -> dict:
             else:
                 result.update(decision="command", command=command)
             return result
+
+    # Restores said the natural way ("put them back in") are
+    # read before navigation: the word "back" in them is not
+    # a move in the video (v0.17).
+    restore = _match_restore(normalized)
+    if restore is not None:
+        result.update(
+            decision="command",
+            command=restore["command"],
+            seconds=restore["seconds"],
+        )
+        return result
 
     navigation = _match_navigation(normalized)
     if navigation is not None:

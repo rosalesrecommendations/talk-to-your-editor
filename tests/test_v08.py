@@ -789,7 +789,12 @@ class TemplateTests(ServerCase):
     def test_phrase_editing_is_wired(self):
         html = self.page()
         self.assertIn("/api/word-range", html)
-        self.assertIn("Backspace cuts it", html)
+        # The hint line that used to spell this out ("Backspace
+        # cuts it") was deleted in v0.13, item 3; the behavior
+        # is unchanged, so the wiring is pinned on the handler
+        # itself: Backspace on a pick runs the range cut.
+        self.assertIn('if (e.key !== "Backspace"', html)
+        self.assertIn('runSelectionToggle("cut");', html)
 
 
 if __name__ == "__main__":

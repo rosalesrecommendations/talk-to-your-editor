@@ -12,6 +12,271 @@ This version is built around one idea: keep the front door simple. Two choices, 
 
 ## Mac test
 
+### 0.21 New in 0.27.6: cut words right in the transcript, and set each pause by hand
+
+Two steps:
+
+1. In the transcript, select a few words (drag across them, or click to pick) and press Backspace: the words cut, and a small toolbar above the selection offers Cut, Bring back, and Comment. Press Undo and the words come back, exactly as they were.
+2. Find a shortened pause shown as a small mark between words, like "·0.2 s", and click it: step the pause down and up with the − 0.1 s and + 0.1 s buttons, tap Original to restore the pause as recorded, and tap Listen to hear the join. The pause can never be set longer than the one you recorded.
+
+### 0.20 New in 0.27.5: the keyed run passes through the same gate, your style survives the unzip, and the editor learns from your taps
+
+Three steps:
+
+1. Teach it your style once (your Day 30 pair, Learn from this) and save a rule or two. Then unzip this kit fresh, in a new folder, and open it: your style and your saved rules are still there, because they now live in ~/.talk-to-your-editor on your Mac, not inside the kit folder, so no update can take them away again.
+2. With your key saved, run Day 30 and Day 48. On both, the passages said only once stay in, and when you say the same line a few ways while you search for it, the tries arrive already cut under one spot ("N tries at this line, kept the last") with Bring back on it; a try whose wording flips a meaning (a not, a different number) still waits as your call instead.
+3. Answer one spot with Cut it or Keep it: the editor offers the rule behind your tap in plain words, with Save and Not now. Tap Save and it answers "Thanks. Learned: ..." in the chat. Run one more edit and read the Done bubble: it counts the rules it used from your last edit.
+
+### 0.19 New in 0.27.4: said once means it stays, both shapes are one edit, and Day 48 holds up
+
+Three steps:
+
+1. Save your key, send your Day 30 raw video, and tap Make the edit (please record it). Play the finished video: the July testing passage is in ("This thyroid cancer was originally tested in July at, found to be 2.18 centimeters...") and the wife line is in ("My wife has been telling me this,"), the video starts right on "Today's" with no breath held in front of it, and the retakes arrive already cut, each one waiting as a spot you can bring back. Then tap Export both: the 16:9 and the 9:16 are the same edit, same cuts, same length.
+2. Send the Day 48 raw video and make the edit. Listen through it: a phrase he starts and restarts plays only in its last, complete saying, no silence runs half a second or longer anywhere, and the video ends on the subscribe line, with nothing after it.
+3. Pick one spot and try both directions: bring a cut retake back from its spot, watch it return, then Undo and watch the whole run restore. Nothing is final until you say so.
+
+### 0.18 New in 0.27.3: the cut is checked one last time, and the edit is one conversation
+
+Three steps:
+
+1. Save your key, send your Day 30 raw video, and tap Make the edit (please record it). Play the finished video: the stopped take and its silence are out (after "offer up to God" the full saying follows right away, no 2.2 seconds of dead air, no "I got if I ever get cancer"), your sign-off is the last line you hear ("God bless you, friends, and I'll see you tomorrow."), and the video opens at the breath, one breath and then "Today's day 30", not a long stretch of quiet.
+2. Watch the conversation do the work: one progress bubble carries the whole run (the stages check off and strike through as they finish, with elapsed time and about how long is left). When it lands, answer the spots right in the chat with Cut it, Keep it, or Skip, then export from the chat (Export both, or one shape only) and check the files it names are in Downloads.
+3. Teach it your style once more ("Teach me your style", your Day 30 pair, Learn from this): the counts it shows are the counts it saves (rules and measurements named as what they are, and a partial save says "Saved X of the N rules"), and after saving it tells you the next step: "Drop a video and I will edit it in this style."
+
+### 0.17 New in 0.27.2: the four fixes from your 0.27.1 run
+
+Three steps:
+
+1. Save your key, send your Day 30 raw video, and tap Make the edit (please record it). Play the finished video and listen for three things: the testing passage is in ("This thyroid cancer was originally tested in July at, found to be 2.18 centimeters, which is too large to surgically burn from my body."), the wife line is in ("My wife has been telling me this,"), and the stopped take with its dead air is out (after "offer up to God" the full saying follows right away, no 2.2 seconds of silence, no "I got if I ever get cancer").
+2. Open the spots to review: the wife-and-friends pair waits there as your call, and the closing prayer is not flagged as a repeat. Tap Approve on a spot and watch the cut apply instead of refusing; an approval now widens to whole words at the edges and lands.
+3. Nothing else changed on purpose: this kit carries only these four fixes on top of 0.27.1. If the edit still cuts something said only once, or a line you meant as your call, that is the feedback we need.
+
+### 0.16 New in 0.27.1: the keyed (Scribe) run, a calmer chat, and the screens match your pictures
+
+Three steps:
+
+1. Save your model key in Settings, then send your Day 30 raw video in the chat and tap Make the edit (this is the keyed run; please record it). Play the finished video: it opens on your first line ("Today is day thirty of seeing if God will use cold water..."), the book sentence plays whole ("Him and I published a book about ways that people could cold train safely, and when we finished..."), and the take you stopped partway ("Hey God, if I ever get cancer in") is gone, silence and all. While the edit runs, ask "How's it going?" in the chat: you get short progress lines (stage, elapsed, roughly how long is left). Type a complaint like "This is taking a while": nothing runs and nothing is charged, you just get one short line back.
+2. Open the spots to review and walk them: tap Approve on a spot and the cut lands. If a spot ever cannot be cut safely, the reason stays on that spot's card instead of the walk silently moving on, and the spot stays counted until you decide.
+3. Check the screens against your reference pictures: teaching lives in the chat now ("Teach me your style" opens two file slots and Learn from this, right in the conversation), home centers the conversation and fills the window, the Edit screen has one top row (Chat, Edit, Finish, Export) with a bigger player and the full timeline, and Finish shows a small framed preview of each shape before you export.
+
+### 0.15 New in 0.27.0: the cut matches your edit, and Finish exports full frame
+
+Three steps:
+
+1. Save your model key in Settings first (this run proves the with-key path; please record it). Then send your Day 30 raw video in the chat and tap Make the edit. Play the finished video: the six lines the last build dropped are back ("Why?", "Why cold water?", "So here we are.", "So what's next?", the December 29th line, "this was worth it"), the takes you stopped partway through are gone, and where an earlier take was cut, it comes out whole, head and all, never just its tail.
+2. Open the spots to review: two of them read "This makes the same point as [time]. Cut it?", each with Approve, Reject, or Reply. Approving both brings the running time in line with your own edit; leaving them is fine too, nothing cuts itself.
+3. Go to Finish, pick a shape (9:16 or 16:9), and check the framing match line on its tab. Then tap Export the finished video: the file is full frame (2160x3840 for 9:16, 3840x2160 for 16:9), the face size sits within a few percent of your reference, and the sound measures about -14 LUFS.
+
+### 0.14 New in 0.26.0: sound tells the truth, one soundtrack, and Undo on the Done bubble
+
+Three steps:
+
+1. Send your Day 30 raw video in the chat and tap Make the edit. Play the finished video bubble: it must build and play, open on your first line ("Today's day 30...") with only the breath right before it, run close to your own 2:45 with no long silences inside it, and the sound must stay with the picture all the way to the last word, with no silent holes at the joins.
+2. While an edit is running, reload the page: the progress bubble is still there with the same stage and the true elapsed time, not a restarted clock. Let it finish: the Done bubble replaces the progress bubble in the same place, shows the single "🙋 N spots to review" link, and every number on it matches the review and the transcript header. Then tap "Undo this edit" on the Done bubble: the video goes back to how it was before this edit.
+3. Ask the editor "Why did you cut that?" in the chat: it answers from the record, naming the most recent cut and where it sits (or asks which one you mean), and it must not start an edit, run a pass, or charge anything.
+
+### 0.13 New in 0.25.0: the Day 30 fix round (clean first line, honest counts, home matches your picture)
+
+Three steps:
+
+1. Open the app. Home should match your reference picture: "Talk to Your Editor" with the Beta tag at the top of the left column, the slim video list under it with a divider on its right edge, no bar across the top, and the conversation filling the rest of the window, with the rules links and the Style pill under the editor's name. Then send your Day 30 raw video in the chat, tap Make the edit, and play the finished video bubble: the player must show a real length (not 0:00 / 0:00) and play, the video must open on your first line ("Today's day 30...") with only the breath right before it, and it should run close to your own 2:45 with no long silences sitting inside it.
+2. Reload the page: the Done message is still there, with the same time, cost, and counts. Now reload again, and the very first thing you do, before anything else, send a chat message; reload once more and that message is still there too. Scroll up in the chat while a reply lands: your view stays put and a "New message" pill appears; tap it to jump to the bottom. While you are here, check the numbers agree: retakes removed, spots to review, and the joins line should read the same in the Done message, the blue review link, and the transcript header, and a join is only a spot when it fails a real check.
+3. Ask the editor a question in the chat, like "Why did you cut that?" or "What did you change?": it must answer from the record, and it must not start an edit, run a pass, or charge anything. Only a clear command ("Make the edit", "Cut it tighter") starts work.
+
+### 0.12 New in 0.24.0: the P0 fixes (the video builds, silences trimmed, clean opening)
+
+Three steps:
+
+1. Open the app and send one of your real raw videos in the chat, then tap Make the edit. Wait for Done, then tap the finished video bubble: the player must show a real length (not 0:00 / 0:00) and the video must play. That is the fix for the build that died on your Mac last time.
+2. Watch the start and listen as you go: the video should open on your first real line, with only the breath right before it kept, no setup talk or false start before it. The whole video should feel tight, with no long silences sitting inside it, and joins that do not chop words.
+3. Send a few chat messages until the thread is taller than the window: it should sit on the newest message each time. Scroll up to read, and a new message should not yank you back down. The home screen is the slim list on the left and the conversation in the middle, like your reference picture.
+
+### 0.11 New in 0.23.0: the conversation is home, and cuts land smooth (Message 2R)
+
+Three steps:
+
+1. Open the app. It opens on the conversation with your videos in a slim list on the left. Drop a video anywhere on the page (or tap + in the message bar): it waits as a thumbnail in the bar. Type what you want in the same message and send. The editor answers in one bubble: the style it will use, the toggles, a line with the cost and the usual time, and Make the edit. If the editor instead asks whether you want to teach it your style first, tap Skip, just edit.
+2. Tap Make the edit. Progress runs inside that same bubble. The done message reads "Done in" with the time and the cents, then short tappable lines for what changed, and a blue "spots to review" link when a spot is your call. Tap it: each spot offers Approve, Reject, or Reply. Tap your finished video bubble to watch it in the pop-up player; Make edits (or View & edit) opens the Edit screen with this same chat docked beside the work, and Back to chat returns here.
+3. Tap the "N rules saved" link in the header: your rules open over the chat. Tap one for its examples, edit its words in place, or hover for the minus and Undo. Under the editor's name, the Style picker switches styles; switching after an edit exists warns you in plain words first. And listen to the joins in this build's edit: cuts are placed on the room sound, never mid-word, with breaths kept whole or cut whole.
+
+### 0.10 New in 0.22.0: Train fixes and the Edit screen (Message 2)
+
+From your Nov 1 feedback on Train, plus the Edit screen itself.
+
+Train first:
+
+1. The raw video slot is first now, the finished edit second, in the order you work.
+2. Tap "A style I like": the raw and recording slots go away. Drop in several finished videos, or paste links and tap Add the link; each one waits in a list. Tap Learn from this. The editor sums up the style in the chat (style only: pacing, cut rhythm, captions, framing), and only when you tap Save as Inspiration does it save, under Your Inspiration at the bottom of Train, apart from Your rules.
+3. Your rules sits under the teaching area. Tap any saved rule: it opens the examples it came from (the words, the moment, and a Play button when the teaching carried a time). Below the list, Find more rules makes the editor look again, and Add my own rule takes a rule in your own words, typed or dictated. Nothing saves without your tap.
+
+Then Edit:
+
+4. The Edit screen opens empty with one drop target. Drop a video, or several parts: each part shows as a small picture, and you can drag them into order before anything uploads. Tap Bring these in.
+5. On the direction card, change the switches and notice: changing a switch costs nothing, and the line above Make the edit says what the edit will cost before you tap it. Tap Make the edit and watch the levels and the steady clock; the last level lights only when the edit is on screen.
+6. In the transcript, held spots are tagged your call. Pick words and tap Send to Editor, then ask why in the chat. Press T for the timeline, R to replay around a picked cut, and the bracket keys to nudge an edge. Panels hide and come back from the worded buttons (Video: On, and the rest), and Download appears once a finished video exists.
+
+### 0.9 New in 0.21.0: the Studio front end, Train screen (Message 1)
+
+The app opens on a new page now, called Studio. Three screens across the top: Train, Edit, Finish. Only Train is built; Edit and Finish say so plainly and open in later rounds. The old page is still there at /classic if you add that to the address.
+
+1. Open the app the normal way. Studio opens, the editor greets you by its name, and the line under the name shows how many rules you have saved.
+2. On Train, drop a finished edit and its raw video (or paste a YouTube link to a finished video). The cost for the run shows before you start. Tap Learn from this and watch the levels across the top: Bring in, Words, Notice, Save, with one steady clock.
+3. Read what the editor says it noticed in the chat. Nothing is saved until you tap Save these. Tap Not yet and nothing saves; run it again and tap Save these and the rule count under the editor's name goes up.
+4. Quit the app and open it again. The rule count is still there. Rules now live in one place for the whole app (your home folder, .talk-to-your-editor), not inside one job, so a rule you save on Train is used by the next video you bring in.
+5. The mic in the message bar: tap it and talk, your words land in the bar to check first, and nothing sends until you tap the send arrow. You can also hold the Option key to talk.
+
+### 0.8 New in 0.20.0, chunk D: readable type, a video that fits its shape, and Train the editor up front
+
+From your Nov 1 run of 0.19 and your recording of the editing page. Work through these on the start screen first, then on a job with one of your vertical videos.
+
+1. Train the editor is a main path: under "Bring in a video" there is now a "Train the editor" section of its own, saying what teaching does in plain words: show the editor one finished edit, it shows you the rules it learned before anything is saved, and its cuts start closer to yours. The cap on the button is a normal size (it used to render huge), and the line beside the button gives the real cost: about 4 cents for every 10 minutes of video, plus about 5 cents for the read. No "optional", no "a few cents". The teaching card it opens no longer calls teaching optional either.
+2. The words are bigger: open a job and read the transcript. The words are a step bigger than before, and so are the panel names, the notes, and the cards. Open Settings and flip Bigger text: the words step up once more from the new size, and flip back when you turn it off.
+3. Review suggestions read cleanly: after an edit, look at the Review suggestions in the right hand column. Each one is bigger, and a long quoted line wraps inside its own card instead of running past the card's edge. The suggestions under Your style read the same way.
+4. The video fits its shape: your vertical video should stand tall and large in the Video panel now, filling the panel's height, not sit small inside a wide black box. The play bar and controls ride on the picture as before. Drag the panel wider or narrower, or make the video wider with its panel button: the picture keeps its own shape and stays centered.
+5. The Edit settings strip stays whole: the "Edit settings" line above the timeline sits fully inside the window, not clipped at the bottom edge. Open it: the rows scroll inside the strip's own bar, and the "Edit settings" line stays at the top of the bar while they scroll. Close it and the timeline keeps its place.
+
+### 0.7 New in 0.20.0, chunk C: a steady clock, a usual length, and no clipped words
+
+From your Nov 1 run of 0.19. Work through these with one of your own videos.
+
+1. The clock counts steadily: bring in a video and click Make the edit. Watch the time in the card in the middle of the screen: it counts 1, 2, 3 seconds the whole way. It never falls back to 2 seconds, sits there, and starts counting again.
+2. A usual length, once the app knows one: the app remembers how long each finished first edit took on this Mac. For the first run or two the line shows only the time so far. After a few finished edits, the same line adds plain words, like "usually about 2 minutes". It is a usual, not a countdown: the words do not tick down as the run goes, and there is still no percentage anywhere.
+3. Words stay whole behind the card: while the edit runs, look at the page behind the middle card. The words at the edges of the page ("Word gaps", "How involved do you want to be?") are whole, not cut off, and the card itself sits inside the window with space around it on every side.
+
+### 0.6 New in 0.20.0, chunk A2: the chat looks like a text conversation
+
+From your Nov 1 run of 0.19, and the screenshot you sent of your own chat: you want this conversation to look like that one. Work through these on the start screen first, then on a job.
+
+1. A face and a name at the top, centered: the chat at the top of the first page opens with the Editor's round 🎬 avatar and its name centered over the thread, like the person at the top of a text conversation. The Editor panel on a job tops its thread the same way, with the waiting count and the panel buttons still at the sides.
+2. Blue on your side, dark on the Editor's: ask a starter question on the first page. Your question sits in a filled blue bubble on the right; the answer sits in a plain dark bubble on the left. On a job, your messages and the Editor's read the same way. (Before, the colors were the other way around.)
+3. Three dots while it thinks: on the first page, a small bubble of three dots shows for a beat before the answer lands. On a job, send the Editor a message: the same three dots sit under the thread while it works, and they are gone when the reply arrives.
+4. One message bar at the bottom: each thread ends in one typing bar with a round blue send button. On the first page the box itself is rounded now too, with the round send beside it.
+5. Nothing else moved: the three-dot menu beside each Editor message still gives Copy, Reply, and Undo; double-clicking the name still renames the Editor on both pages; Coach mode answers the same as before.
+
+### 0.5 New in 0.20.0, chunk B: one bring-in, and direction on the editing page
+
+From your Nov 1 run of 0.19. Work through these on the start screen, then with one of your own videos.
+
+1. One bring-in only: the start screen shows one "Bring in a video" card and one heading. The three empty Video, Transcript, and Editor panels that used to wait underneath are gone.
+2. The pop-up is only the bring-in: drop or pick a video and the pop-up lists the parts and their order, Add more videos, and Bring these in. There is no second "Bring in a video" heading inside it, and no direction box or Remove switches in it. A line in the pop-up says direction is set on the editing page.
+3. Direction on the page: click Bring these in on a lone video. The pop-up closes and the direction card is on the page itself: Requests for your editor, the Remove retakes, Word gaps, and Remove filler words switches with their Options, "How involved do you want to be?", Your usual way, and Make the edit. Nothing is squeezed into a narrow column and nothing overlaps; on a wide window the Remove choices sit beside the Requests box.
+4. The first edit still runs from there: write a request (or leave it empty), set the switches, and click Make the edit. The run, the progress, and the landing on the editing page work the same as before.
+
+### 0.4 New in 0.20.0, chunk A: a name and a face on the first page, and text-only chat
+
+From your Nov 1 run of 0.19. Work through these on the start screen first, then on a job.
+
+1. A face and a name before any video: the ask-the-editor chat at the top of the first page now starts with the Editor's round 🎬 avatar and its name, not a bare "Ask the editor" heading. If you renamed the Editor before, that name is the one showing here.
+2. Ask its name: type "whats your name" in that chat. The answer is the Editor's name, not a list of what it can do. The other starter questions answer the same as before.
+3. Rename it here too: double-click the name on the first page, type a new one, press Enter. Reload the page: the new name sticks, and the Editor panel on a job uses the same name.
+4. No voice anywhere: when the Editor replies, nothing is read out loud, and there is no speaker button in the Editor's header anymore. Flip the clean-up switches (Remove retakes, Word gaps, Remove filler words) and nothing talks. The conversation is text bubbles only, yours on the right and the Editor's on the left, like a text conversation. Dictating with the microphone still works; only the talking back is gone.
+
+### 0.3 New in 0.19.0: take the edit to your other editor
+
+Under Revised edit, three new buttons each download the current edit as a timeline file: Final Cut or DaVinci (timeline file), Premiere (timeline file), and Any editor (EDL). Open the file in the program it names and the edit should be there as a timeline you can keep changing: same pieces, same order, same trims. The sound crossfades ride along in the Final Cut and Premiere files; an EDL cannot carry them. The other program may ask where the original recording is; point it at the file and the pieces line up. The rendered video is still built here, same as before.
+
+### 0.2 New in 0.18.0: the Editor is a conversation
+
+This version is the one you asked for on Nov 1: the Editor panel is a real back-and-forth conversation, not a stack of boxes. Work through these on the built-in sample or a real job.
+
+1. A face and a name: the Editor wears a round clapper board avatar, 🎬, with its name beside it. The name starts as Editor. Double-click the name, type a new one, and press Enter: the new name sticks after you reload the page, and the whole app uses it.
+2. It talks back: spoken replies are on. When the Editor answers, it says the answer out loud in the computer's voice. The speaker button in the Editor's header turns that off and on. Typing works the same as always, and the microphone still lets you talk instead of type.
+3. Your words sit on the right, the Editor's on the left, like messages. When you open a job, the Editor greets you first.
+4. Reply to one exact thing: every Editor message has a small three-dot button beside it. The same menu opens if you press and hold on a message, or right-click it. The menu is Copy, Reply, Undo, in that order. Reply puts a small bar above the typing box naming the message you are answering, so the Editor answers about that one thing. Copy copies the message.
+5. Undo one action, not everything: when a message reports an action the Editor took, its menu has Undo. Undoing turns that message gray with a line through it and marks it Undone, and the change itself is reversed from the saved state, with no new run and no cost. After that, the same menu offers Redo, which puts the action back. If one action cannot be reversed on its own without disturbing later work, the Editor says so in plain words instead of quietly undoing everything.
+6. Coach mode: ask the Editor, "What would you do to make this better?" It answers in the conversation, in plain words and in priority order: first what it found in this video's own words and editing record, then story ideas for keeping people watching. You can ask about one part, like the opening, and it answers that first, then adds anything else it noticed that you did not ask about. Say "do it" or "do the first one" and it runs that suggestion the normal way. Ask how to record better and it adds tips marked for next time. Asking the coach costs nothing.
+
+### 0.1 New in 0.17.1: the stronger way of working is called Proactive
+
+One change, a name: the pill, the row summaries, and the recap line now say Proactive where they said Strictest (your word for what the mode does). "Leave more in" is unchanged, and the edit itself is untouched, so the checks in section 0 below work exactly as written; wherever they or the screen said Strictest, read Proactive. Before this shipped, the Day 30 test was run again in both ways of working: the app agreed with your finished Day 30 edit on 716 of 825 words, and none of the retakes you cut was left in unflagged.
+
+### 0. New in 0.17: your Oct 31 walkthrough, fixed
+
+This version is built from your recorded walkthrough of 0.15 on Oct 31, all 31 items on that list. (Item 15, the Settings page density, is the one thing not in here: you said in the recording we can mess with that later.) Work through these on a new video or IMG_2516.
+
+1. Progress you can trust: while an edit runs, a card sits in the middle of the screen with a spinner, the step name, and the time so far. There is no percentage and no time-remaining anywhere, because the app cannot know those honestly. The page also scrolls again: opening Edit settings no longer traps the bottom of the page off screen.
+2. Your own YouTube video by link: in Train the editor, paste a YouTube link to a public video (yours or anyone's) and the app fetches the video itself. A private video gets a plain message and the YouTube Studio download route instead.
+3. Downloads where you look for them: as soon as a finished video exists, "Download the finished edit" sits beside Make the edit. Before that, the same spot says the download appears once the finished video is built.
+4. Retakes are cut, not recommended: a detected retake is cut in both ways of working, Proactive and Leave more in, and listed under Review suggestions with a Bring back button. The only time the app asks is when the copies genuinely say different things (one includes a "not"), and then it tells you the default: the copy that includes more stays. "Recommended to remove" is gone; held spots are titled "Your call".
+5. The chat is a conversation again: cuts no longer pour into the Editor chat line by line. They collect in the Review suggestions card under the editor. The chat panel itself is smaller and calmer, and the editor wears a small beta tag.
+6. "Put them back in" works: saying or typing "put them back in", "put the retakes back", "bring them back" restores what was cut. Before, the app heard "go back 5 seconds" and just moved the playhead.
+7. Onboarding, rebuilt: the first page says "Bring in a video" (never "a job"), carries a Train the editor row (training no longer hides inside the bring-in pop-up), and a small "Ask the editor" chat that answers what the editor can do at no cost. The editor page itself opens blank until a video drops in. The training card is one clear path: whose editing, the finished edit as a file or a link, more only if you have it.
+8. Multi-video bring-in: each video shows a small picture of itself, and "Add more videos" adds more files to the same bring-in. Drag to reorder, as before. The pop-up is wider, and the direction box is titled "Requests for your editor".
+9. Controls that say what they do: the top bar's Video, Transcript, and Editor buttons say On or Off in words. Follow names itself in words and wears a playhead mark, not a funnel. Reading width Wide now fills the pane, so the change is obvious. Edit settings states plainly that changing choices costs nothing; only running an edit costs.
+10. Dictation stays calm: no giant red takeover. The microphone keeps its size, gains a small red dot, and a thin level meter beside it moves with your voice. The status line says you can keep talking and keep typing, and dictated words land at your cursor.
+11. Highlighting and speed: dragging across the words paints smoothly now, and playing a video no longer scans every word on the page ten times a second, which was the slowdown you felt in your browser.
+
+One honest note: all of this was checked hard on this machine, including real drags and clicks in a browser against your IMG_2516 job, but the checking here is headless, so your run on your Mac is the real test, same as every round.
+
+### 0. New in 0.16: edit the timeline by hand
+
+This version adds the timeline editing you asked for: when the automatic edit is a little too short or a little too long somewhere, you can fix that spot yourself, the way you would in Descript. Work through these on the IMG_2516 video or a new one.
+
+1. Split a piece: play or pause where a piece should become two, then click Split at playhead (under the timeline) or press Cmd+Shift+S. The piece under the playhead becomes two pieces, and nothing you hear changes.
+2. Drag the edges: every piece has a grip at each edge. Drag the right edge right to pull back words or breath the edit cut; drag it left to trim more. Drag the left edge the same way. If the edge stops early, the line under the timeline says why: it reached the next piece, a word you protected, or the shortest a piece can be.
+3. Move pieces: drag a piece sideways to put it somewhere else in the order. It will not cross a special insert (like the signature breath); nothing can.
+4. Cut, copy, paste: click a piece, then Cmd+C to copy it or Cmd+X to cut it. Move the playhead and press Cmd+V: a copy lands there, splitting the piece under the playhead to make room when it has to. Picking words in the transcript and pressing Cmd+C copies those words' span instead, and Cmd+X there cuts the words the way it always has.
+5. Take a piece out: click it and press Delete or Backspace. The edit closes up; no hole is left. Undo (Cmd+Z) brings it back, like every other edit.
+6. Crossfade one cut: where two pieces meet there is a small diamond at the bottom of the seam. Click it and choose how long the sound blends there, from none to half a second. A cut with a blend set shows its diamond in blue. The blend is in videos this app builds; the runner's own render script is separate and does not read these hand edits, same as the 0.15 note about the joins.
+7. The watched video follows: after any of these, the edited video rebuilds from the new plan, the transcript's kept and cut words follow the pieces, and each change is one step in History.
+
+One honest note: all of this was checked hard on this machine, including real drags and keys in a browser against your IMG_2516 job, but the checking here is headless, so your run on your Mac is the real test, same as every round.
+
+### 0. New in 0.15: your whole Oct 30 list
+
+This version is built from your Oct 30 test of 0.14, all 39 items on your list, including the small ones. Work through these on the IMG_2516 video or a new one.
+
+1. Strictest strikes detected repeats itself: in Strictest, a repeat the app itself detects (an earlier take said again, or a held cut whose words are said again in what stays) is struck at once instead of waiting in Recommended to remove. The recap names how many were struck automatically, and any of them can be brought back the usual way. Leave more in still asks first, as before.
+2. The right side is a chat now: the Comments pane is your Editor, a conversation like the Muse app. Type or dictate an ask at the bottom and Send; the editor answers in the thread with what it did, line by line, and tapping a line picks those words. Things waiting on you are decided right in the thread with Cut it / Leave it. You can rename the editor by clicking its name. Questions about the record ("why did you cut that?") are answered in the thread and cost nothing.
+3. Carry words into the chat: pick words and choose Send to Editor (or Cmd+Shift+M); the words and their moment wait as chips above the input. Queue a few, add a message, and Send to edit runs them as one ask.
+4. Clean-up lives in the panel: Remove retakes, Word gaps, Remove filler words, and Hide ums and uhs are chips above the chat input, showing their state. The same choices also sit in a settings bar above the timeline and as quick buttons in the transport row after a first edit. One setting everywhere, so the faces cannot disagree.
+5. Clicking away works: the pick bar and the Recommended card close when you click anywhere else, every time. The card is slimmer too: one advice line, Cut it, Leave it, Close.
+6. Bringing in a job happens on the editor page: the first page is just the app name and one job. Drop files and the intake opens as a pop-up over the blank editor; drop several files and drag them into the right order first. While a job processes you get a progress bar, a loading video, and flashing dots where the words will be.
+7. Panes cannot vanish: the top bar has a named button for each pane (Video, Transcript, Editor). A saved layout that would hide the words is repaired when the app opens. You can also swap the transcript and Editor sides, make the Editor about twice as wide, and set the reading width of the transcript (Narrow or Wide) from the transcript heading.
+8. Keyboard editing: Cmd+Backspace strikes the picked words. Plain Backspace removes the whole line the pick is in. Double-click the dots of a quiet gap to pick that gap, then Erase trims the quiet where two pieces of the edit meet; where a gap sits inside one kept piece, the app says so instead of pretending.
+9. Clicking a word lands on the word: the video, the timeline cursor, and the transcript all agree on the word you clicked, on the edited clock, instead of jumping back to the start of the quiet before it.
+10. Word states you can tell apart: kept words are plain full-bright text; cut words are struck through and dimmer but still readable; held words (waiting on you) sit on the light red wash with a dotted underline; a corrected word keeps its blue wash. The timeline band uses the same scheme.
+11. Timeline: Fit is a reset now, not a lock: after Fit, drag and the view moves again; Fit again to reset. Zoom with the slider, the buttons, Cmd+scroll, or a pinch, all centered where you point. The joins in a rendered video are smoothed with a short audio crossfade (40 thousandths of a second) unless you turn "Smooth the joins" off in Edit choices. Note: that smoothing is in videos this app builds; the runner's own render script is separate and unchanged.
+12. Names and small things: Fix the words is Change words, and its box opens beside the words you picked. Hide is Erase. Every Dictate button is a microphone icon. How involved is a pill: Strictest / Leave more in. The round record-style button under the format row was the Talk button; it is a microphone now, in a row labeled "Say a direction". Format is a Vertical / Landscape pill. Teach the app has one graduation-cap icon everywhere, and the first time you bring in a video the intake offers to teach the app, skippable in one tap.
+
+Two honest notes. The crossfade and the strictest striking were checked hard on this machine (the crossfade by measuring a rendered video's sound track to the hundredth of a second), but all checking here is headless: your run on your Mac is the real test, same as every round. And if a pane layout from 0.14 was saved in a strange state, 0.15 repairs it on open (point 7), so the first open may look different from how you left 0.14.
+
+### 0. New in 0.14: one blue, one set of shapes, and the bar sits at your pick
+
+This version answers the two design reviews of 0.13: the screen used several blues, several button shapes, and spacing that did not line up, and the action bar opened at the top of the transcript instead of at your words.
+
+1. One blue: every blue button, link, badge, and marker is the same blue now. Orange means one thing only: a decision the app made. The Follow button, paused, reads as off in gray instead of borrowing the orange.
+2. One set of shapes: every icon button is the same size, including the zoom buttons; Fit is the same width as its zoom pair. Action buttons are one height, the small buttons inside cards are one height, and the timeline row is one height. The round Play button keeps its shape on purpose. Cards all use the same corner, and the two typing boxes match the other fields.
+3. Spacing lines up: the gaps between the columns match on both sides, the three panel headings start on the same line at the same height, and the zoom controls sit in the timeline's own row. Back 5 and Forward 5 are the same width.
+4. Comment cards fit: a card's chips wrap inside the card, Delete is no longer cut off at the edge, and the badges at the top of a card stay on one line.
+5. The bar sits at your pick: pick words low in the transcript and the bar opens just above them; pick words at the very top and it opens just below. It never covers the timeline.
+6. Cut and Bring back answer at once: the words change the moment you click, and the saving catches up behind it.
+7. Smaller finishes: picking words marked "Recommended to remove" shows that advice in the bar, with Cut first. Clicking the thin overview strip at the bottom of the timeline now jumps there, like the rest of the timeline. The "Why did you put that back?" question is now a short line under the transcript heading instead of a card parked at the bottom of your reading. The clock by the play button is labeled "Edited time". At the zoomed-out view the timeline no longer prints its words as a smear; the blocks stay as a map, and the words come back at reading zoom.
+
+### 0. New in 0.13: the app decides repeats itself, clicking means one thing, and the top of the screen is quiet
+
+This version answers your evening review of 0.12 on October 29, the IMG_2516 test: too many boxes stacked over the transcript, a single click doing too many jobs, and the app asking you to decide repeats it should have decided itself.
+
+1. Decide the repeats for me: run the edit on IMG_2516 again (or any video where you started a line over). A try that stops mid-word (your "But the f-" at 1:36) is taken out on its own now. A line you started again and again (the prayer at 2:48, "God, shut the doors...") keeps only the last full try; every earlier try is out. Each of those cuts is marked orange as a cut the app was not sure about, and any of them comes back the same way as always: pick its words and choose Bring back. A repeat where the copies really say different things still comes to you to decide, exactly as before.
+2. One click, one job: a single click on a word now only moves the video there. It never picks the word and never leaves a highlight behind, and clicking a second word no longer leaves both lit. Double-click a word to pick it and open its actions. Drag across words to pick a phrase; the actions open when you let go. One change to know: the old one-tap restore is retired, because the click has one job now. To bring a cut word back, double-click it (or drag across it) and choose Bring back.
+3. One small bar at the pick: picking words opens one compact bar right at the words, in the style of the Descript toolbar from your recording. It shows a tiny word count, icon buttons (Comment, Cut, and Bring back or Keep the cut when one of those fits), and a "..." button. The "..." menu lists every action for the pick with its shortcut printed next to it; Fix the words and Hide live in that menu now. The wide picked-words card under the transcript is gone, the old pop-up on the orange flags is gone (clicking a flag picks its words and opens the same bar, showing what the app decided, like "Kept the fuller take. This copy is out."), and the bar never covers the timeline. Click the video, the timeline, or the comments and the bar closes.
+4. The timeline and the words move together: click anywhere on the timeline band, the ruler, or the overview strip and the transcript jumps to that word and marks it, and the word's block lights up on the band. It works the other way too, and while the video plays.
+5. A quiet top: the transcript header is one small row. The orange Follow banner is now a small icon (a playhead mark); when you scroll away while the video plays it shows its off state, and tapping it takes you back to the playhead. The word count headline is gone from the header; the count sits quietly inside More for this video. The top bar is icons now: hover any of them to see its name, and the speech-bubble icon opens and closes the comments column. The Leave a comment button sits in the transport row instead of floating over the band.
+6. Shrink the window: make the window narrow and the header buttons stay the same small size (no giant stretched Make wider button), the transcript keeps a usable width, and the comments tuck behind their top-bar icon instead of crushing everything.
+7. Keys: Space plays and pauses. J rewinds in growing steps, L plays forward (press it again to go faster, up to 4x), K stops, and holding K while tapping J or L steps one frame. Up and Down arrows (or ; and ') jump to the previous or next change. Plain + and - zoom the timeline. Cmd+Z undoes and Cmd+Shift+Z redoes. The full list lives in How this works and is printed from the same table the keys themselves use, so the list cannot drift from what the keys do.
+8. Coming next, not in this build: manual editing (split a segment at the playhead, drag a segment's edges to trim it, and a short smoothing fade at cuts) is researched and planned, and lands as 0.15, after the 0.14 finish pass, so these fixes could ship checked instead of rushed.
+
+### 0. New in 0.12: the timeline zooms, the video starts bigger, and picking words does the work
+
+This version answers your review of 0.11.1 on October 29: the timeline was too small to read, the right side had too much going on, and there was too much text under the video.
+
+1. Zoom the timeline: load a job and look at the bottom band. Next to the clock there is a zoom slider, plus and minus buttons, a Zoom readout, and a Fit button. Drag the slider and the words on the band get big enough to read: nothing is ever cut off with dots, words that cannot fit whole join into small blocks instead. Scroll sideways with the wheel, or hold Ctrl (Cmd on the Mac) and scroll to zoom right where the pointer sits. The thin strip above the ruler always shows the whole edit: click it to jump, and the small box on it shows where you are. Fit shows the whole edit, and pressing Fit again (or Shift+Z) takes you back to the zoom you were at.
+2. Start with the video: it opens bigger than before, and it is the first thing that grows when you drag its column wider. Under it there are just two things: the Make the edit button and Edit choices. Everything that used to sit under the video (the settings, your direction box, the Talk button, the cost recap) is inside Edit choices now, closed until you open it. The app remembers whether you left it open.
+3. Read the right side: it is one column that scrolls in one place. Your comments are the list; a Done button marks one finished, and the Done (n) button at the top chooses whether finished ones show. Overall feedback, Your style, Revised edit, Finished edit, and History live together in one closed card at the bottom called More for this video. Click any comment and the video jumps to its words and lights them up.
+4. Pick some words: drag across words in the transcript and a small bubble appears right above them with the actions that fit those words: Comment, Restore (when a picked word is cut), Keep the cut (on an orange unsure cut), Remove, and Hide. Hide tucks the picked words into one small line so you can read past them; Show hidden words at the top of the transcript brings them back. You can also press Cmd+Shift+M (Ctrl+Shift+M) to comment on the words you picked. Picking words never fights the one-tap restore: a plain click on a struck take still brings it back, and a drag is what opens the bubble.
+5. Shrink the window down small: everything still fits, and on a very small window the transport buttons wrap onto two lines instead of pushing the page sideways.
+
+
 ### 0. New in 0.11.1: the bars are gone, the timeline is a band, and retakes are strict
 
 This version answers your evening test of 0.11.0 on October 28.

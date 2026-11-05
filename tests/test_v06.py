@@ -668,10 +668,15 @@ class FirstEditHttpTests(unittest.TestCase):
             state["recap"],
         )
         # Fifty-five words went in; under first-take rules the
-        # second saying of the sentence (eight words) is cut and
-        # forty-seven stay.
+        # second saying of the sentence (eight words) is cut.
+        # Changed on purpose in v0.15 (Batch A, item 22): the held
+        # borderline pair inside "It took my time and it took my
+        # focus" narrowed to the repeated words "It took my"
+        # (three words), which used to wait in gold; in the
+        # Cleanest cut mode they are now struck at gold-record
+        # time, so forty-four words stay, not forty-seven.
         self.assertEqual(state["kept_before"], 55)
-        self.assertEqual(state["kept_after"], 47)
+        self.assertEqual(state["kept_after"], 44)
         # The job is live, with a transcript that keeps everything.
         _, summary = self.get_json("/api/job")
         self.assertEqual(summary["words_total"], 55)
@@ -694,7 +699,9 @@ class FirstEditHttpTests(unittest.TestCase):
         review = self.server.config.session_dir / "revised-review.mp4"
         self.assertTrue(review.is_file())
         info = speech.probe_media(review)
-        self.assertAlmostEqual(info["duration"], 13.4, delta=0.5)
+        # 12.6, not 13.4 as before v0.15: the three auto-struck
+        # words above ("It took my") are out of the splice too.
+        self.assertAlmostEqual(info["duration"], 12.6, delta=0.5)
 
     def test_no_words_is_a_plain_state_not_an_error(self):
         intake_id = self.drop_video()

@@ -206,13 +206,24 @@ class ExactRestoreTests(unittest.TestCase):
         for index in (8, 9, 13, 14, 15):
             self.assertEqual(word_status(self.config, index), "cut")
 
-    def test_struck_word_click_picks_exactly_that_word(self):
+    def test_struck_word_pick_is_exactly_that_word(self):
         html = page_html()
-        # The whole-struck-phrase expansion is gone from the click
-        # path, and the click path says what it does instead.
+        # The whole-struck-phrase expansion is gone from the pick
+        # path. v0.13, item 2 supersedes the click half of this
+        # test: a plain click only seeks now, so the exact pick
+        # lives on the double click, which picks exactly the
+        # word that was double-clicked, struck or not, and the
+        # range restore above still restores exactly the pick.
         self.assertNotIn("while (loPos > 0)", html)
         self.assertNotIn("picks its whole struck phrase", html)
-        self.assertIn("picks exactly the word that was clicked", html)
+        self.assertNotIn("picks exactly the word that was clicked", html)
+        # v0.15 Batch G (item 24): the first dblclick listener
+        # on the transcript is now the word-gap pick; the word
+        # pick is the last one.
+        dbl = html[html.rindex('addEventListener("dblclick"'):]
+        dbl = dbl[:dbl.index("});")]
+        self.assertIn("selStart = index;", dbl)
+        self.assertIn("selEnd = spanEnd;", dbl)
 
 
 # ---------------------------------------------------------------------------
@@ -232,14 +243,27 @@ class HeldColorAndCopyTests(IsolatedHomeCase):
         self.assertNotIn("227, 179, 65", html)
         self.assertNotIn("#e3b341", html)
 
-    def test_visible_copy_reads_recommended_to_remove(self):
+    def test_visible_copy_reads_your_call(self):
+        # v0.17 (feedback item 8): the held-spot language is
+        # "Your call" now; "Recommended to remove" is gone
+        # from the visible copy.
         html = page_html()
-        self.assertIn('"Recommended to remove"', html)
+        self.assertIn('"Your call"', html)
         self.assertIn(
-            'marker.setAttribute("aria-label", "Recommended to remove: "',
+            'marker.setAttribute("aria-label", "Your call: "',
             html,
         )
-        self.assertIn("marked in light red as recommended to remove", html)
+        # The phrase survives only in code comments recording
+        # the old name; never in a string the page shows.
+        self.assertNotIn('"Recommended to remove"', html)
+        self.assertNotIn('= "Recommended to remove: "', html)
+        # The old involvement summary carried this wording
+        # until v0.15 (Batch D, item 9) rewrote both summary
+        # lines; the plain "recommended to remove" name above
+        # is still what the held spots themselves read.
+        self.assertIn(
+            "More is left in, and the editor asks before taking "
+            "things out.", html)
         self.assertNotIn("wait in gold", html)
         self.assertNotIn("in gold, before it counts", html)
 
@@ -266,7 +290,11 @@ class HeldColorAndCopyTests(IsolatedHomeCase):
         webapp._record_gold_spans(config, [candidate])
         return candidate
 
-    def test_recap_lines_say_recommended_to_remove(self):
+    def test_recap_lines_say_waiting_for_your_call(self):
+        # Renamed in v0.17 with the copy it pins: the recap no
+        # longer says "marked as recommended to remove" (the
+        # phrase Justin struck); held spots are "waiting for
+        # your call" in both modes.
         write_job(self.job, timed_words([f"word{i}" for i in range(80)]))
         config = WebAppConfig(self.job)
         self.seed_held(config)
@@ -274,7 +302,10 @@ class HeldColorAndCopyTests(IsolatedHomeCase):
         settings["mode"] = "tailor"
         lines = webapp._mode_and_gold_lines(config, settings)
         self.assertTrue(
-            any("marked as recommended to remove" in line for line in lines)
+            any("waiting for your call" in line for line in lines)
+        )
+        self.assertFalse(
+            any("recommended to remove" in line for line in lines)
         )
         self.assertFalse(any("gold" in line for line in lines))
 
@@ -301,7 +332,7 @@ class HeldColorAndCopyTests(IsolatedHomeCase):
             entry["label"]
             for entry in checkpoints.state(config)["checkpoints"]
         ]
-        self.assertIn("Spot recommended to remove, left in", labels)
+        self.assertIn("Spot left for your call, left in", labels)
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +398,15 @@ class NarrowingTests(IsolatedHomeCase):
         spans = [(c["word_start"], c["word_end"]) for c in candidates]
         self.assertEqual(spans, [(23, 36)])
 
-    def test_retake_span_splits_around_words_the_keeper_does_not_repeat(self):
+    def test_retake_span_stays_whole_around_words_the_keeper_does_not_repeat(self):
+        # Superseded in 0.25.0: this test used to pin the v0.9.0
+        # narrowing (the span split into the exact repeated runs,
+        # [(2, 7), (8, 10)]). Justin's 0.24 Mac test showed what
+        # that does to a real reworded retake: the earlier take's
+        # unmatched words stay in the edit, spliced against the
+        # keeper. A pair's cut span is now offered whole; the
+        # narrowing survives only for direction holds (see
+        # test_held_span_narrows_around_protected_words).
         tokens = (
             "um well the quick brown fox jumps hmm again today "
             "filler words here now the quick brown fox jumps over "
@@ -385,11 +424,10 @@ class NarrowingTests(IsolatedHomeCase):
         }
         candidates = webapp._gold_candidates_from_retakes([pair], words)
         spans = [(c["word_start"], c["word_end"]) for c in candidates]
-        # "the quick brown fox jumps" and "again today" repeat;
-        # "um well" and "hmm" do not, and are never held.
-        self.assertEqual(spans, [(2, 7), (8, 10)])
-        self.assertEqual(candidates[0]["text"], "the quick brown fox jumps")
-        self.assertEqual(candidates[1]["text"], "again today")
+        self.assertEqual(spans, [(0, 10)])
+        self.assertEqual(
+            candidates[0]["text"], " ".join(tokens[0:10])
+        )
 
     def test_held_span_narrows_around_protected_words(self):
         tokens = [f"w{i}" for i in range(20)]
@@ -598,7 +636,7 @@ class ScrollAnchorWiringTests(unittest.TestCase):
     def test_anchor_is_restored_after_the_rebuild(self):
         body = self.render_body()
         self.assertLess(
-            body.index("updateTxActionStrip();"),
+            body.index("updateSelBar();"),
             body.index("scrollAnchorAdjustment("),
         )
 
@@ -615,15 +653,27 @@ class ScrollAnchorWiringTests(unittest.TestCase):
 class SelectionStripTests(unittest.TestCase):
     def test_selection_strip_names_its_actions_and_the_undo_shortcut(self):
         html = page_html()
-        strip = html[html.index('id="txActionStrip"'):
-                     html.index('id="transcriptStatus"')]
-        self.assertIn("Cut these words", strip)
-        self.assertIn("Bring these words back", strip)
-        self.assertIn('id="txUndoHint"', strip)
-        self.assertIn("Cmd+Z to undo", strip)
-        # The picked words say whether they are cut or in the edit.
-        self.assertIn('" — these words are cut"', html)
-        self.assertIn('" — these words are in the edit"', html)
+        bar = html[html.index('id="selBubble"'):
+                   html.index('id="transcriptStatus"')]
+        # v0.13, item 3 (Descript revision) supersedes the
+        # text-button half of this test: the one surface is the
+        # bar at the pick, its actions are icon buttons named
+        # in plain words by their title and aria-label, and the
+        # strip with its hint line is gone (shortcuts live in
+        # the shortcuts list and the bar's overflow). The full
+        # bar spec is pinned in tests/test_v12_bubble.py.
+        self.assertIn('title="Cut"', bar)
+        self.assertIn('aria-label="Cut"', bar)
+        self.assertIn('title="Bring back"', bar)
+        self.assertIn('aria-label="Bring back"', bar)
+        self.assertNotIn('id="txUndoHint"', html)
+        self.assertNotIn("Cmd+Z to undo", bar)
+        # The label no longer says whether the words are cut or
+        # in the edit; it is a tiny word count only.
+        self.assertNotIn('txActionStrip', html)
+        self.assertNotIn('" \u2014 these words are cut"', html)
+        self.assertNotIn('" \u2014 these words are in the edit"', html)
+        self.assertIn('count === 1 ? " word" : " words"', html)
 
 
 if __name__ == "__main__":

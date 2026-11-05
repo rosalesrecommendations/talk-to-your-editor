@@ -131,7 +131,8 @@ His reason: the finished edit keeps the later wording; he cuts the earlier attem
 Example B6, an assembly the judge must not touch (keep_both):
 Earlier: "To offer up to God"
 Much later, after other material: "my life"
-Verdict: keep_both. These are not two takes of one line. They are two pieces of one sentence the creator assembles across a gap; neither repeats the other, and cutting either breaks the sentence he built.
+Verdict: keep_both, for these two pieces only. These are not two takes of one line. They are two pieces of one sentence the creator assembles across a gap; neither repeats the other, and cutting either breaks the sentence he built.
+This does not protect a stopped try sitting between them. A take that stops mid-thought and trails off, like "I got if I ever get cancer, I would love my life", is a stopped take, and his finished edit cuts it, even though its last words are the same "my life" this assembly ends on. Assembly means the pieces as they stand in his finished edit, with nothing stopped in between.
 His reason: "I’m evaluating the grammar here, jumping to what makes the most sense." (walkthrough 25:18)
 """
 

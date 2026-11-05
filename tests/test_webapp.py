@@ -394,20 +394,25 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('tlTrack.addEventListener("pointermove"', page)
 
     def test_comment_timing_pins_on_typing_start(self):
+        # v0.15 Batch E1 supersedes the typing-pins behavior:
+        # typing never pins on its own. Pinning is the explicit
+        # moment attachment (the + button, the pick's Comment
+        # action, the timeline's comment button), and the
+        # attached moment shows as one line over the input.
         status, _, body = self.request("/")
         self.assertEqual(status, 200)
         page = body.decode("utf-8")
-        # The keep-playing switch is on the page, next to Save.
-        self.assertIn('id="keepPlaying"', page)
-        self.assertIn("Keep playing while I type", page)
-        # Typing into an empty draft pins the note to the playhead at
-        # that moment and pauses, unless the switch is on.
+        self.assertNotIn('id="keepPlaying"', page)
         self.assertIn('draft.addEventListener("input"', page)
-        self.assertIn("pinDraft(vid.currentTime || 0)", page)
-        self.assertIn("if (!keepPlayingEl.checked) { vid.pause(); }", page)
-        # The note shows where it is pinned.
-        self.assertIn('id="pinNote"', page)
-        self.assertIn("Pinned at ", page)
+        start = page.index('draft.addEventListener("input"')
+        handler = page[start:page.index("});", start)]
+        self.assertNotIn("pinDraft", handler)
+        self.assertIn("updateEditorSend();", handler)
+        # The attach button pins at the playhead.
+        self.assertIn("pinDraft(vid.currentTime || 0);", page)
+        # The moment shows where it is attached.
+        self.assertIn('id="editorMomentRow"', page)
+        self.assertIn("in the video", page)
 
     def test_comment_timing_never_inherits_a_stale_time(self):
         status, _, body = self.request("/")
@@ -417,21 +422,24 @@ class WebAppTests(unittest.TestCase):
         # silently becoming the next note's time) is gone.
         self.assertNotIn("? parseFloat(manual) :", page)
         self.assertNotIn("pendingTs", page)
-        # Save clears both the pin and the manual seconds field.
-        self.assertIn("pinnedTs = null;", page)
-        self.assertIn('manualEl.value = "";', page)
-        # Clearing the draft unpins, so the next note re-pins fresh.
+        # Sending clears the attached moment, so the next
+        # message never inherits a stale time; the manual
+        # seconds field is gone with the pin card.
+        self.assertIn("clearMoment();", page)
+        self.assertNotIn("manualEl", page)
         self.assertIn("draftWasEmpty", page)
 
     def test_index_has_keyboard_shortcuts(self):
         status, _, body = self.request("/")
         self.assertEqual(status, 200)
         page = body.decode("utf-8")
-        # One quiet line under the player lists the shared editor set,
-        # with the switch that turns the shortcuts off.
+        # The shortcut line keeps only the switch that turns
+        # the shortcuts off (v0.13, item 7): the hand-written
+        # prose summary of the keys is retired, and the list
+        # itself is generated from the SHORTCUTS table.
         self.assertIn('id="shortcutLine"', page)
-        self.assertIn("Shortcuts:", page)
-        self.assertIn("M pin a note here", page)
+        self.assertNotIn("Shortcuts: Space play or pause", page)
+        self.assertIn("var SHORTCUTS = [", page)
         self.assertIn('id="shortcutToggle"', page)
         # The switch choice is remembered for the browser session.
         self.assertIn('sessionStorage.setItem("tyeShortcuts"', page)
@@ -442,13 +450,15 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("typingInField(e.target)", page)
         self.assertIn("if (!shortcutsOn || tlDragging", page)
         # Space toggles play (and is default-prevented, so it never
-        # scrolls); J and L step five seconds; the arrows step one
+        # scrolls); J and L shuttle (v0.13: L forward at growing
+        # rates, J back in growing steps); the arrows step one
         # second, five with Shift; K pauses; M pins a note in the box.
         self.assertIn(
             "if (vid.paused) { vid.play(); } else { vid.pause(); }", page
         )
-        self.assertIn("stepBy(-5);", page)
-        self.assertIn("stepBy(5);", page)
+        self.assertIn("shuttleFwd();", page)
+        self.assertIn("shuttleBack();", page)
+        self.assertIn("stepBy(-5 * shuttleRate);", page)
         self.assertIn("stepBy(e.shiftKey ? -5 : -1)", page)
         self.assertIn("stepBy(e.shiftKey ? 5 : 1)", page)
         self.assertIn('case "m":', page)
@@ -684,7 +694,10 @@ class WordCorrectionTests(unittest.TestCase):
         status, _, body = self._raw_get("/")
         self.assertEqual(status, 200)
         page = body.decode("utf-8")
-        self.assertIn("Fix words", page)
+        # v0.15, item 27: the correction editor's menu name is
+        # "Change words" now; the old name is gone from the page.
+        self.assertIn("Change words", page)
+        self.assertNotIn("Fix words", page)
         self.assertIn("Save correction", page)
         self.assertIn("Remove correction", page)
         self.assertIn("tw-corrected", page)
@@ -1099,20 +1112,18 @@ class CommentScopeAndOverallTests(unittest.TestCase):
         by_id = {c["id"]: c for c in self.summary()["comments"]}
         self.assertEqual(by_id["v1"]["scope"], "vertical")
         self.assertEqual(by_id["l1"]["scope"], "landscape")
-        # The form lets the viewer pick, the list shows the pick, and
-        # the overall field and list are on the page too.
+        # The scope is still saved and carried by the data
+        # (the assertions above); the picker surface left the
+        # page in v0.15 Batch E1 with the pin card, and the
+        # overall field was absorbed by the Editor thread.
         req = urllib.request.Request(self.base + "/", method="GET")
         with urllib.request.urlopen(req, timeout=10) as resp:
             page = resp.read().decode("utf-8")
-        self.assertIn('id="scope"', page)
-        self.assertIn("Both formats", page)
-        self.assertIn("Vertical only", page)
-        self.assertIn("Landscape only", page)
+        self.assertNotIn('id="scope"', page)
         self.assertIn("SCOPE_LABELS", page)
-        self.assertIn("vertical only", page)
-        self.assertIn("<h2>Overall feedback</h2>", page)
-        self.assertIn('id="overallDraft"', page)
-        self.assertIn('id="overallList"', page)
+        self.assertNotIn("<h2>Overall feedback</h2>", page)
+        self.assertNotIn('id="overallDraft"', page)
+        self.assertIn('id="threadList"', page)
 
     def test_scoped_comment_only_reaches_its_format_run(self):
         comments = [
@@ -2365,7 +2376,7 @@ class PlainWordsTests(unittest.TestCase):
         # The applied note's text is the plain per-type sentence,
         # not the provider's internal reason.
         self.assertNotIn("mock", by_id["c1"]["plain_action"])
-        self.assertIn("Removed the words", by_id["c1"]["plain_action"])
+        self.assertIn("were removed from the finished edit", by_id["c1"]["plain_action"])
 
     def test_saved_audit_operations_are_plain_words(self):
         self.run_sample_direction()
