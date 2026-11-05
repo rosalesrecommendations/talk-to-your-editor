@@ -34,6 +34,7 @@ Wi-Fi, and drop a job folder on the page. ``tye serve --job-dir
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import html
 import json
@@ -42,6 +43,7 @@ import os
 import re
 import shutil
 import socket
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -57,8 +59,9 @@ from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import captions as clean_captions
+from . import coach
 from . import checkpoints, costs, creator_rules, retakes, session_log, skills, teaching, usual
-from . import direction_parse, intake_build, saved_transcripts, voice_commands
+from . import direction_parse, final_sweep, finish, framing, intake_build, manual_edits, opening, saved_transcripts, smooth, timeline_export, voice_commands
 from . import transcribe as speech
 from .after_review import generate_after_review
 from .applier import ApplyError, apply_verdicts
@@ -103,50 +106,72 @@ def _mp4_dimensions(path: Path) -> Optional[tuple]:
     its display width and height as the last two 32-bit fixed-point
     values. Anything unreadable or not really an MP4 returns None, and
     the caller falls back to the filename.
+
+    The walk reads box headers only and seeks past payloads: it
+    used to read the whole file into memory, which on a 4K
+    original meant gigabytes of RAM and seconds of wall time on
+    every summary the page asked for (found in the Message 3
+    proof, where it OOM-killed the proof server outright).
     """
     try:
-        data = path.read_bytes()
+        handle = path.open("rb")
     except OSError:
         return None
+    with handle:
+        try:
+            total = path.stat().st_size
+        except OSError:
+            return None
 
-    def boxes(start: int, end: int):
-        offset = start
-        while offset + 8 <= end:
-            size = int.from_bytes(data[offset:offset + 4], "big")
-            kind = data[offset + 4:offset + 8]
-            header = 8
-            if size == 1:
-                if offset + 16 > end:
+        def boxes(start: int, end: int):
+            offset = start
+            while offset + 8 <= end:
+                handle.seek(offset)
+                head = handle.read(8)
+                if len(head) < 8:
                     return
-                size = int.from_bytes(data[offset + 8:offset + 16], "big")
-                header = 16
-            elif size == 0:
-                size = end - offset
-            if size < header or offset + size > end:
-                return
-            yield kind, offset + header, offset + size
-            offset += size
+                size = int.from_bytes(head[0:4], "big")
+                kind = head[4:8]
+                header = 8
+                if size == 1:
+                    if offset + 16 > end:
+                        return
+                    ext = handle.read(8)
+                    if len(ext) < 8:
+                        return
+                    size = int.from_bytes(ext, "big")
+                    header = 16
+                elif size == 0:
+                    size = end - offset
+                if size < header or offset + size > end:
+                    return
+                yield kind, offset + header, offset + size
+                offset += size
 
-    def find(start: int, end: int, kind: bytes):
-        for k, payload_start, box_end in boxes(start, end):
-            if k == kind:
-                return payload_start, box_end
-        return None
+        def find(start: int, end: int, kind: bytes):
+            for k, payload_start, box_end in boxes(start, end):
+                if k == kind:
+                    return payload_start, box_end
+            return None
 
-    moov = find(0, len(data), b"moov")
-    if moov is None:
+        moov = find(0, total, b"moov")
+        if moov is None:
+            return None
+        for kind, trak_start, trak_end in boxes(*moov):
+            if kind != b"trak":
+                continue
+            tkhd = find(trak_start, trak_end, b"tkhd")
+            if tkhd is None or tkhd[1] - tkhd[0] < 8:
+                continue
+            handle.seek(tkhd[1] - 8)
+            tail = handle.read(8)
+            if len(tail) < 8:
+                continue
+            width = int.from_bytes(tail[0:4], "big") >> 16
+            height = int.from_bytes(tail[4:8], "big") >> 16
+            if width and height:
+                return width, height
         return None
-    for kind, trak_start, trak_end in boxes(*moov):
-        if kind != b"trak":
-            continue
-        tkhd = find(trak_start, trak_end, b"tkhd")
-        if tkhd is None or tkhd[1] - tkhd[0] < 8:
-            continue
-        width = int.from_bytes(data[tkhd[1] - 8:tkhd[1] - 4], "big") >> 16
-        height = int.from_bytes(data[tkhd[1] - 4:tkhd[1]], "big") >> 16
-        if width and height:
-            return width, height
-    return None
 
 
 VIDEO_NAMES = ("review.mp4", "final.mp4", "final-long.mp4")
@@ -856,12 +881,15 @@ SPLICE_STAMP_FILENAME = "splice_stamp.json"
 SPLICE_FAILED_FILENAME = "splice_failed.json"
 
 
+def _plan_stamp_of(plan: dict) -> str:
+    """A short hash of one plan dict."""
+    blob = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def _plan_stamp(config: WebAppConfig) -> str:
     """A short hash of the plan the editor would build from now."""
-    blob = json.dumps(
-        _effective_cuts(config), sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    return _plan_stamp_of(_effective_cuts(config))
 
 
 def _record_splice_built(config: WebAppConfig) -> None:
@@ -885,8 +913,587 @@ def _record_splice_failed(config: WebAppConfig, reason: str) -> None:
     )
 
 
+# -- Run video snapshots: the Done bubble's Undo (0.26) -------------------
+#
+# "Nothing is final until I say so": a chat run's Done bubble
+# carries an Undo that restores the video to before the run.
+# The plan side of that restore is the run's checkpoint (the
+# per-action machinery above the thread actions). The rendered
+# video is derived state and is never checkpointed, so each run
+# also keeps two plain copies of the session splice here: the
+# "before" copy, taken when the run's progress entry is first
+# written (the state the run started from), and the "after"
+# copy, taken when its Done payload is stored (the video the
+# run built). Undo and redo then restore the plan from the
+# checkpoint and the video from the matching copy: no model
+# run, no transcription, and no re-render.
+#
+# The store lives in the launch session: that folder means the
+# same thing before and after a job is adopted (a job-mode
+# server's launch home is the job folder itself), so a snapshot
+# taken when a run starts at the front door is still findable
+# when its Done entry is undone from the job's thread.
+
+RUN_VIDEOS_DIR_NAME = "run-videos"
+
+
+def _run_video_store_dir(config: WebAppConfig) -> Path:
+    launch = WebAppConfig(None, launch_home=config.launch_home)
+    return launch.session_dir / RUN_VIDEOS_DIR_NAME
+
+
+def _run_video_key(entry_id) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(entry_id))
+
+
+def _snapshot_run_video(
+    config: WebAppConfig, entry_id, side: str
+) -> None:
+    """Save the session splice as one side ("before"/"after")
+    of a run, or record that no edited video existed then."""
+    store = _run_video_store_dir(config)
+    store.mkdir(parents=True, exist_ok=True)
+    key = _run_video_key(entry_id)
+    record_path = store / f"{key}.json"
+    record: dict = {}
+    if record_path.is_file():
+        try:
+            loaded = json.loads(record_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                record = loaded
+        except (OSError, ValueError):
+            record = {}
+    saved = store / f"{key}-{side}.mp4"
+    source = config.session_dir / SESSION_VIDEO_NAME
+    if source.is_file():
+        shutil.copyfile(source, saved)
+        record[side] = {"exists": True}
+    else:
+        saved.unlink(missing_ok=True)
+        record[side] = {"exists": False}
+    _write_json(record_path, record)
+
+
+def _load_run_video_record(
+    config: WebAppConfig, entry_id
+) -> Optional[dict]:
+    path = (
+        _run_video_store_dir(config)
+        / f"{_run_video_key(entry_id)}.json"
+    )
+    if not path.is_file():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _drop_session_playback_copy(config: WebAppConfig) -> None:
+    """Forget any watchable copy of the session splice.
+
+    A playback copy is made from the file it stands in for;
+    after the splice is replaced or removed, a copy left behind
+    would keep serving the old video under the same name.
+    """
+    copy_path = _playback_copy_path(config, SESSION_VIDEO_NAME)
+    copy_path.unlink(missing_ok=True)
+    key = str(copy_path)
+    with _PLAYBACK_BUILD_LOCK:
+        _PLAYBACK_BUILDING.discard(key)
+        _PLAYBACK_FAILED.discard(key)
+
+
+def _restore_run_video(
+    config: WebAppConfig, entry_id, side: str
+) -> None:
+    """Put one side of a run's saved video back as the splice.
+
+    The checkpoint restore has already put the plan back; the
+    stamp is rewritten from that plan, so the splice reads as
+    the current video of the restored edit. A side that had no
+    edited video (a first edit's "before") removes the splice
+    instead: the app then serves the original, exactly as it
+    did before the run. A run with no snapshot record at all
+    (its Done entry predates these snapshots) falls back to
+    rebuilding the splice from the restored plan when this job
+    renders through the app's own splice, and to removing the
+    stale splice when it cannot, so the served video never
+    quietly shows an edit the plan no longer holds.
+    """
+    session = config.session_dir
+    target = session / SESSION_VIDEO_NAME
+    record = _load_run_video_record(config, entry_id)
+    if record is not None:
+        saved = (
+            _run_video_store_dir(config)
+            / f"{_run_video_key(entry_id)}-{side}.mp4"
+        )
+        slot = record.get(side) or {}
+        if slot.get("exists") and saved.is_file():
+            session.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(saved, target)
+            _record_splice_built(config)
+        else:
+            target.unlink(missing_ok=True)
+            (session / SPLICE_STAMP_FILENAME).unlink(missing_ok=True)
+            (session / SPLICE_FAILED_FILENAME).unlink(missing_ok=True)
+        _drop_session_playback_copy(config)
+        return
+    # No snapshot record: rebuild or remove, never leave stale.
+    rebuilt = False
+    if (session / "revised_cuts.json").is_file() and config.has_job:
+        try:
+            source_name = intake_build.intake_source_video(
+                config.job_dir
+            )
+        except Exception:
+            source_name = None
+        if source_name:
+            source = config.job_dir / source_name
+            try:
+                media = speech.probe_media(source)
+                has_audio = bool(media.get("has_audio", True))
+            except Exception:
+                has_audio = True
+            try:
+                rebuilt = (
+                    _render_session_splice(config, source, has_audio)
+                    is None
+                )
+            except Exception:
+                rebuilt = False
+    if not rebuilt:
+        target.unlink(missing_ok=True)
+        (session / SPLICE_STAMP_FILENAME).unlink(missing_ok=True)
+        (session / SPLICE_FAILED_FILENAME).unlink(missing_ok=True)
+        _drop_session_playback_copy(config)
+
+
+def _render_framing(
+    config: WebAppConfig, source: Path, aspect
+) -> tuple:
+    """The framing choice for one render, as (crop, note).
+
+    ``aspect`` is "9:16" or "16:9" when the creator picked a
+    shape, anything else when they kept the recorded framing:
+    then there is no crop and no note, and the render is exactly
+    what it has always been. With a shape, the crop window comes
+    from the session's saved teaching framing, so the face lands
+    where it sat in the reference; without one, the window is
+    centered and the note says so plainly.
+    """
+    if aspect not in framing.ASPECTS:
+        return None, None
+    try:
+        media = speech.probe_media(source)
+        width = media.get("width")
+        height = media.get("height")
+    except speech.TranscribeError:
+        width = height = None
+    if not width or not height:
+        return None, (
+            f"Framing: the {aspect} shape was not applied, "
+            "because this video's size could not be read."
+        )
+    _ensure_creator_store(config)
+    profile = teaching.load_framing_profile(
+        _creator_framing_dir(config), aspect
+    )
+    if profile is None:
+        # Until the Message 3 framing work, a profile saved from
+        # the other shape still serves, exactly as the single
+        # profile served before profiles were kept per shape.
+        profile = teaching.load_framing_profile(
+            _creator_framing_dir(config)
+        )
+    matched = bool(profile and profile.get("found"))
+    window = framing.crop_window(
+        profile if matched else None, width, height, aspect
+    )
+    x, y, w, h = framing.crop_pixels(window, width, height)
+    out_w, out_h = framing.output_size(w, h, aspect)
+    if matched:
+        note = (
+            f"Framing: cut to {aspect} around your face, the "
+            "way your teaching video is framed."
+        )
+    else:
+        note = (
+            f"Framing: cut to {aspect} with a center crop. No "
+            "teaching framing is saved yet, so the face "
+            "position could not be matched."
+        )
+    return (x, y, w, h, out_w, out_h), note
+
+
+# -- Finish (Message 3): versions, framing match, export, project --------
+#
+# One main edit; the versions are shapes of it. The framing for a
+# shape comes from the reference of that shape saved in the
+# creator store on Train (teaching.save_framing_profile), matched
+# against the face found in this job's own video
+# (framing.match_window). Nothing here touches the plan: a nudge
+# or a render changes only the shape's own state and file.
+
+FINISH_MEASURED_FILENAME = "finish_measured.json"
+FINISH_NEW_PROFILE_FILENAME = "finish_new_profile.json"
+
+_FINISH_NOTE_LINES = {
+    "no_reference": (
+        "No reference of this shape has been learned yet, so "
+        "this is a centered crop you can nudge. Teach me with a "
+        "finished video of this shape and I will match its "
+        "framing."
+    ),
+    "no_face_in_new": (
+        "I could not find your face in this video, so this is a "
+        "centered crop you can nudge."
+    ),
+    "too_tight": (
+        "Your face fills more of this video than it does in your "
+        "reference, so this is the widest crop that fits; your "
+        "face will sit a little larger than in the reference."
+    ),
+    "may_look_soft": (
+        "This crop is small, so the picture may look soft at "
+        "full size."
+    ),
+}
+
+
+def _finish_source(config: WebAppConfig) -> Optional[Path]:
+    """The video the Finish renders are cut from, or None."""
+    if not config.has_job:
+        return None
+    name = intake_build.intake_source_video(config.job_dir)
+    if name:
+        path = config.job_dir / name
+        if path.is_file():
+            return path
+    if config.source_video:
+        path = Path(config.source_video)
+        if path.is_file():
+            return path
+    return None
+
+
+def _finish_new_profile(config: WebAppConfig) -> Optional[dict]:
+    """The face profile of this job's own video, cached.
+
+    Sampled from the plan's KEPT footage only (brief 3: the same
+    face sampling, run on the footage the edit actually shows),
+    once per source and plan (the cache key carries both) and
+    read back afterwards: the Finish screen opens fast, and the
+    match it shows is the match the render uses.
+    """
+    source = _finish_source(config)
+    if source is None:
+        return None
+    try:
+        stat = source.stat()
+        key = f"{source.name}:{stat.st_size}:{int(stat.st_mtime)}"
+    except OSError:
+        key = source.name
+    if config.has_job and (config.session_dir / "revised_cuts.json").is_file():
+        key += ":" + _plan_stamp(config) + ":kept21"
+        cuts = _effective_cuts(config)
+        # The kept moments, spread by the one ruler's count:
+        # the same ruler Train reads the reference with and the
+        # render check reads the output with, so the three
+        # shares can honestly be compared.
+        times = framing.kept_range_times(
+            cuts.get("kept_ranges") or [],
+            sample_count=framing.RULER_SAMPLE_COUNT,
+        )
+    else:
+        times = []
+    cache_path = config.session_dir / FINISH_NEW_PROFILE_FILENAME
+    cached = _load_session_json(config, FINISH_NEW_PROFILE_FILENAME, {})
+    if isinstance(cached, dict) and cached.get("key") == key:
+        return cached.get("profile")
+    profile = framing.ruler_profile(source, times=times or None)
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(cache_path, {"key": key, "profile": profile})
+    return profile
+
+
+def _finish_window(config: WebAppConfig, aspect: str) -> tuple:
+    """(window, ref_profile, note_keys) for one shape.
+
+    The reference is the one saved for THIS shape; another
+    shape's profile never stands in, so the no-reference line is
+    honest. The window carries the shape's saved nudge.
+    """
+    source = _finish_source(config)
+    if source is None:
+        return None, None, ["no_reference"]
+    try:
+        media = speech.probe_media(source)
+        width = media.get("width")
+        height = media.get("height")
+    except speech.TranscribeError:
+        width = height = None
+    if not width or not height:
+        return None, None, ["no_reference"]
+    _ensure_creator_store(config)
+    ref = teaching.load_framing_profile(
+        _creator_framing_dir(config), aspect
+    )
+    if ref is not None and not ref.get("found"):
+        ref = None
+    new = _finish_new_profile(config)
+    state = finish.load_state(config.session_dir)
+    off = state["offsets"].get(aspect) or {"x": 0.0, "y": 0.0}
+    window = framing.match_window(
+        ref, new, int(width), int(height), aspect,
+        offset_x=float(off.get("x") or 0.0),
+        offset_y=float(off.get("y") or 0.0),
+    )
+    return window, ref, list(window.get("notes") or [])
+
+
+def _finish_shape_view(config: WebAppConfig, aspect: str) -> dict:
+    """Everything the Finish tab for one shape can honestly say."""
+    session = config.session_dir
+    state = finish.load_state(session)
+    view = {
+        "aspect": aspect,
+        "chosen": aspect in state["versions"],
+        "offset": state["offsets"].get(aspect) or {"x": 0.0, "y": 0.0},
+        "has_render": (session / finish.finish_filename(aspect)).is_file(),
+        "file": finish.finish_filename(aspect),
+        "reference": None,
+        "match_line": "",
+        "notes": [],
+        "measured": None,
+    }
+    if not config.has_job:
+        view["notes"] = [_FINISH_NOTE_LINES["no_reference"]]
+        return view
+    # One shape's framing read must never take the whole
+    # Finish screen down with it (0.27.1, P1b item 8): on his
+    # Mac the state call died on the real video and the page
+    # showed no shapes at all. A failed read degrades to the
+    # honest no-reference notes for this shape alone.
+    try:
+        _ensure_creator_store(config)
+        ref = teaching.load_framing_profile(
+            _creator_framing_dir(config), aspect
+        )
+        if ref is not None and ref.get("found"):
+            face = ref["face"]
+            view["reference"] = {
+                "center_x": face["center_x"],
+                "center_y": face["center_y"],
+                "width": face["width"],
+            }
+        window, _ref, note_keys = _finish_window(config, aspect)
+        view["notes"] = [
+            _FINISH_NOTE_LINES[key] for key in note_keys
+            if key in _FINISH_NOTE_LINES
+        ]
+        if window is not None and window.get("matched") and window.get("predicted"):
+            report = framing.match_report(
+                ref, {"found": True, "face": window["predicted"]}
+            )
+            if report.get("ok"):
+                view["match_line"] = "Framing plan: " + report["line"]
+    except Exception:
+        view["notes"] = [_FINISH_NOTE_LINES["no_reference"]]
+    measured = _load_session_json(config, FINISH_MEASURED_FILENAME, {})
+    if isinstance(measured, dict) and aspect in measured:
+        view["measured"] = measured[aspect]
+        if (measured[aspect] or {}).get("line"):
+            view["match_line"] = measured[aspect]["line"]
+    return view
+
+
+def _finish_cost_line(config: WebAppConfig) -> str:
+    """The cost of this run, in plain words, never invented.
+
+    The figure is the job session's own recorded cost entries
+    (the costs module's ledger). A run that spent nothing on
+    model calls (an offline mock run, or local passes only)
+    says so plainly instead of showing a made-up dollar figure.
+    """
+    if not config.has_job:
+        return "No run yet, so there is no cost to show."
+    entries = costs.load_session_entries(config.session_dir)
+    total = sum(float(e.get("usd") or 0.0) for e in entries)
+    if total >= 0.005:
+        return f"Cost of this run: {costs.format_usd(total)}."
+    if entries:
+        return (
+            "Cost of this run: nothing in model calls. It ran on "
+            "this computer (offline mock and local passes only)."
+        )
+    return (
+        "Cost of this run: nothing recorded. It ran on this "
+        "computer, with no model calls."
+    )
+
+
+def _finish_state_view(config: WebAppConfig) -> dict:
+    state = finish.load_state(config.session_dir)
+    return {
+        "versions": state["versions"],
+        "shapes": {
+            aspect: _finish_shape_view(config, aspect)
+            for aspect in finish.ASPECTS
+        },
+        "cost_line": _finish_cost_line(config),
+        "has_job": bool(config.has_job),
+        "has_plan": (
+            config.has_job
+            and (config.session_dir / "revised_cuts.json").is_file()
+        ),
+    }
+
+
+# -- The project file ------------------------------------------------------
+#
+# Export saves one alongside the video: the plan, the notes, the
+# style, the Finish choices, and the names of the source videos
+# it belongs to. Opening one puts all of that back into the
+# session, so he picks up where he left off. The recent list
+# lives in the launch home, so it survives across jobs.
+
+PROJECTS_DIR_NAME = "projects"
+
+
+def _projects_dir(config: WebAppConfig) -> Path:
+    return config.launch_home / PROJECTS_DIR_NAME
+
+
+def _project_payload(config: WebAppConfig) -> dict:
+    session = config.session_dir
+    plan = _load_session_json(config, "revised_cuts.json", None)
+    videos = []
+    if config.has_job:
+        videos = [
+            name for name in _job_videos(config.job_dir)
+            if name.lower().endswith((".mp4", ".mov", ".m4v", ".webm"))
+        ]
+    return {
+        "kind": "tye-project",
+        "version": 1,
+        "saved_at": _utc_now(),
+        "job_name": config.job_dir.name if config.has_job else "",
+        "source_videos": videos,
+        "plan": plan,
+        "edit_notes": _load_edit_notes(config),
+        "style": _current_style(config),
+        "finish_state": finish.load_state(session),
+    }
+
+
+def _save_project(config: WebAppConfig) -> dict:
+    """Save the project file and register it in Recent projects."""
+    payload = _project_payload(config)
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    _write_json(session / finish.PROJECT_FILENAME, payload)
+    stamp = payload["saved_at"].replace(":", "").replace("-", "")
+    project_id = f"project-{stamp}"
+    folder = _projects_dir(config)
+    folder.mkdir(parents=True, exist_ok=True)
+    _write_json(folder / f"{project_id}.json", payload)
+    index_path = folder / "index.json"
+    index = []
+    if index_path.is_file():
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            index = []
+    if not isinstance(index, list):
+        index = []
+    index = [e for e in index if e.get("id") != project_id]
+    index.insert(
+        0,
+        {
+            "id": project_id,
+            "job_name": payload["job_name"],
+            "saved_at": payload["saved_at"],
+        },
+    )
+    _write_json(index_path, index[:20])
+    return {"id": project_id, "saved_at": payload["saved_at"]}
+
+
+def _recent_projects(config: WebAppConfig) -> list:
+    index_path = _projects_dir(config) / "index.json"
+    if not index_path.is_file():
+        return []
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(index, list):
+        return []
+    return [
+        {
+            "id": str(e.get("id") or ""),
+            "job_name": str(e.get("job_name") or ""),
+            "saved_at": str(e.get("saved_at") or ""),
+        }
+        for e in index
+        if isinstance(e, dict) and e.get("id")
+    ]
+
+
+def _open_project(config: WebAppConfig, project_id: str) -> tuple:
+    """Restore a saved project into the current session.
+
+    Returns (ok, plain message). The project's plan, notes, and
+    Finish choices go back into the session; the splice stamp no
+    longer matches the restored plan, so the Edit view rebuilds
+    its video from the restored plan the same way it does after
+    any hand change. A project whose source videos are not the
+    ones in this job is refused in plain words: a plan cut for
+    one video must never land on another.
+    """
+    if not config.has_job:
+        return False, "Bring in a video first, then open the project."
+    path = _projects_dir(config) / f"{project_id}.json"
+    if not path.is_file():
+        session_copy = config.session_dir / finish.PROJECT_FILENAME
+        if project_id == "this-session" and session_copy.is_file():
+            path = session_copy
+        else:
+            return False, "That project file is not here anymore."
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, "That project file could not be read."
+    if not isinstance(payload, dict) or payload.get("kind") != "tye-project":
+        return False, "That file is not a project from this app."
+    wanted = set(payload.get("source_videos") or [])
+    current = set(_job_videos(config.job_dir))
+    if wanted and not (wanted & current):
+        return (
+            False,
+            "That project belongs to a different video ("
+            + ", ".join(sorted(wanted))
+            + "), which is not the video in this job, so it was "
+            "not opened.",
+        )
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    if isinstance(payload.get("plan"), dict):
+        _write_json(session / "revised_cuts.json", payload["plan"])
+    if isinstance(payload.get("edit_notes"), dict):
+        _save_edit_notes(config, payload["edit_notes"])
+    if isinstance(payload.get("finish_state"), dict):
+        finish.save_state(session, payload["finish_state"])
+    _write_json(session / finish.PROJECT_FILENAME, payload)
+    return True, "Project opened. Your edit is back the way you left it."
+
+
 def _render_session_splice(
-    config: WebAppConfig, source_video: Path, has_audio: bool
+    config: WebAppConfig, source_video: Path, has_audio: bool,
+    crop: tuple = None,
 ) -> Optional[str]:
     """Build the session splice from the current plan, and stamp it.
 
@@ -896,20 +1503,46 @@ def _render_session_splice(
     showing the original as if it were the edit.
     """
     session_log.log_stage(config.session_dir, "render", "start")
+    # Smooth the joins (v0.15, Batch I, item 30): the stored
+    # choice decides whether the built video's sound crossfades
+    # at the joins; the picture cuts either way.
+    crossfade_s = (
+        intake_build.CROSSFADE_S
+        if _front_door_settings(config).get("crossfade", True)
+        else 0.0
+    )
     try:
         intake_build.render_splice(
             source_video,
             _effective_cuts(config),
             config.session_dir / SESSION_VIDEO_NAME,
             has_audio=has_audio,
+            crossfade_s=crossfade_s,
+            crop=crop,
         )
     except speech.TranscribeError as exc:
         _record_splice_failed(config, str(exc))
+        detail = str(exc)
+        ffmpeg_tail = getattr(exc, "ffmpeg_stderr", "")
+        if ffmpeg_tail:
+            detail = f"{detail} | ffmpeg: {ffmpeg_tail[-250:]}"
         session_log.log_stage(
-            config.session_dir, "render", "fail", str(exc)
+            config.session_dir, "render", "fail", detail
         )
         return str(exc)
     _record_splice_built(config)
+    # Every export path renders at -14 (0.27.1, P2 item 10):
+    # the Done message's export IS this file, and it used to
+    # ship at the splice's own loudness (-17.9 on his Mac).
+    # A loudness failure never fails the render: the file is
+    # left exactly as built and the splice still counts.
+    if has_audio:
+        try:
+            finish.normalize_loudness_in_place(
+                config.session_dir / SESSION_VIDEO_NAME
+            )
+        except Exception:
+            pass
     session_log.log_stage(config.session_dir, "render", "finish")
     return None
 
@@ -1411,6 +2044,7 @@ FRONT_DOOR_DEFAULTS = {
     "mode": "cleanest",
     "spark_route": "meta",
     "style": "justins-way",
+    "crossfade": True,
 }
 # The editing styles (v0.10): which starter know-how packs the
 # direction and retake reads use. The ids and labels live with the
@@ -1424,8 +2058,8 @@ EDITING_STYLES = skills.STYLES
 # the creator's usual, and named in every recap.
 INVOLVEMENT_MODES = ("cleanest", "tailor")
 MODE_LABELS = {
-    "cleanest": "Cleanest cut",
-    "tailor": "Tailor it with me",
+    "cleanest": "Proactive",
+    "tailor": "Leave more in",
 }
 BUFFER_MIN_S = 0.05
 BUFFER_MAX_S = 0.50
@@ -1503,7 +2137,7 @@ def _front_door_settings(config: WebAppConfig) -> dict:
         profile = _load_optional_file(config.job_dir / "profile.json")
         settings["keep_mode"] = retakes.settings_from_profile(profile)["keep"]
     if isinstance(saved, dict):
-        for key in ("remove_retakes", "cut_silence", "remove_fillers"):
+        for key in ("remove_retakes", "cut_silence", "remove_fillers", "crossfade"):
             if isinstance(saved.get(key), bool):
                 settings[key] = saved[key]
         buffer = saved.get("buffer_s")
@@ -1690,6 +2324,70 @@ def _carry_launch_test_video(config: WebAppConfig) -> None:
     _set_test_video(config, _is_test_video(launch))
 
 
+def _carry_launch_thread(config: WebAppConfig) -> None:
+    """Carry the launch session's thread into a new job's thread.
+
+    The conversation starts at the front door, before any job
+    exists: the creator's first message and the editor's answer
+    live in the launch home's thread (0.25, finding 5: that first
+    message used to be lost, because no route would store it
+    before a job and the job's fresh thread then replaced it).
+    When a drop becomes the job, the launch entries move with
+    it, merged by entry id in the order they were said, so
+    nothing said before the drop is left behind. A spend
+    confirmation still waiting at the front door moves too.
+    Entries the job's thread already holds are left as they are.
+    """
+    launch = WebAppConfig(None, launch_home=config.launch_home)
+    if launch.session_dir == config.session_dir:
+        return
+    incoming = _load_thread(launch)
+    if incoming:
+        with _THREAD_LOCK:
+            entries = _load_thread(config)
+            known = {e.get("id") for e in entries}
+            merged = entries + [
+                e for e in incoming if e.get("id") not in known
+            ]
+            merged.sort(key=lambda e: str(e.get("created_at") or ""))
+            if len(merged) != len(entries):
+                _save_thread(config, merged)
+    launch_pending = (
+        config.launch_home / SESSION_DIR_NAME / THREAD_PENDING_FILENAME
+    )
+    job_pending = config.session_dir / THREAD_PENDING_FILENAME
+    if launch_pending.is_file() and not job_pending.is_file():
+        try:
+            config.session_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(launch_pending, job_pending)
+        except OSError:
+            pass
+
+
+# The server answers each request on its own thread
+# (ThreadingHTTPServer), and the grades and thread stores are
+# read-modify-write files: without a lock, two writers that load
+# the same starting store and save in turn silently lose the
+# first writer's record. That is how a restore grade could go
+# missing while its why entry stayed in the thread, unsettleable
+# (Batch J). Every load-merge-save cycle on these two stores
+# runs under its store's lock; the locks are re-entrant because
+# one writer can call another (a restore writes its grade, then
+# its why entry).
+_GRADES_LOCK = threading.RLock()
+_THREAD_LOCK = threading.RLock()
+
+
+def _merge_and_save_grades(config: WebAppConfig, incoming: list) -> list:
+    """Merge ``incoming`` into the grades store, under its lock."""
+    with _GRADES_LOCK:
+        entries = creator_rules.merge_grade_entries(
+            _load_grades(config), incoming
+        )
+        _save_grades(config, entries)
+        return entries
+
+
 def _load_grades(config: WebAppConfig) -> list:
     payload = _load_session_json(config, GRADES_FILENAME, {"entries": []})
     if isinstance(payload, dict) and isinstance(payload.get("entries"), list):
@@ -1713,7 +2411,11 @@ WHY_CHOICES = frozenset({"story", "sound", "say_it", "other"})
 
 
 def _record_restore_grade(
-    config: WebAppConfig, word_start: int, word_end: int, via: str
+    config: WebAppConfig,
+    word_start: int,
+    word_end: int,
+    via: str,
+    ask_why: bool = True,
 ) -> Optional[str]:
     """Write the grade record for words the creator brought back.
 
@@ -1768,23 +2470,490 @@ def _record_restore_grade(
         "source": via,
         "created_at": _utc_now(),
     }
-    entries = creator_rules.merge_grade_entries(
-        _load_grades(config), [entry]
-    )
-    _save_grades(config, entries)
+    _merge_and_save_grades(config, [entry])
+    if ask_why:
+        try:
+            _append_why_thread(
+                config, entry["record_id"], "Why did you put that back?"
+            )
+        except Exception:
+            pass
     return entry["record_id"]
 
 
+# ---------------------------------------------------------------------------
+# Creator-level rules and framing (Studio reset, approved 2026-11-01)
+#
+# Saved rules and the teaching framing profile are the creator's, not
+# one job's. They live in one place in the launch home, so a rule saved
+# on Train with no job loaded, or saved inside any job, is read by the
+# next job's runs. The first time the creator store is used, rules and
+# a framing profile already saved inside existing job folders (under
+# the launch home, under ~/.talk-to-your-editor, or in the current
+# job's own session) are merged in, so nothing saved before is lost.
+# Each legacy file is merged once: the merged list is kept in the
+# launch home, so removing a rule later never brings it back.
+# ---------------------------------------------------------------------------
+
+_CREATOR_MERGE_FILENAME = "creator_merge.json"
+_creator_merge_done: set = set()
+
+# The creator home (0.27.5): styles, rules, inspiration, and
+# framing live in ~/.talk-to-your-editor, never inside a kit
+# folder. The Mac launcher used to point the launch home at
+# the unzipped kit's own .launch-home, so unzipping 0.27.4
+# started Justin with an empty store and his saved style was
+# "lost" (it was sitting in the old kit's folder). The launch
+# home still holds the session and the staged drops; the
+# creator's own learning lives at the machine level, so
+# every update keeps it. First use copies any of the store
+# files the launch home holds and the creator home does
+# not, so nothing saved inside an old kit is stranded.
+_creator_home_migrated: set = set()
+
+
+def _creator_home(config: WebAppConfig) -> Path:
+    home = Path.home() / MAC_KEY_DIR_NAME
+    try:
+        key = str(home.resolve())
+    except OSError:
+        key = str(home)
+    if key not in _creator_home_migrated:
+        _creator_home_migrated.add(key)
+        try:
+            legacy = config.launch_home
+            if legacy.resolve() != home.resolve():
+                for name in (
+                    CREATOR_RULES_FILENAME,
+                    STYLES_FILENAME,
+                    INSPIRATION_FILENAME,
+                    teaching.FRAMING_FILENAME,
+                ):
+                    src = legacy / name
+                    dst = home / name
+                    if src.is_file() and not dst.is_file():
+                        home.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(src, dst)
+        except OSError:
+            pass
+    return home
+
+
+def _creator_rules_path(config: WebAppConfig) -> Path:
+    return _creator_home(config) / CREATOR_RULES_FILENAME
+
+
+INSPIRATION_FILENAME = "inspiration.json"
+
+
+def _creator_inspiration_path(config: WebAppConfig) -> Path:
+    return _creator_home(config) / INSPIRATION_FILENAME
+
+
+def _load_inspiration(config: WebAppConfig) -> list:
+    """The creator's saved Inspiration, at the creator level.
+
+    Style statements learned from other people's finished videos:
+    the surface only (pacing, cut rhythm, captions, framing),
+    never the creator's own retake judgment. They live apart from
+    the creator's rules on purpose, and each entry names the
+    teaching draft it came from.
+    """
+    try:
+        data = _load_json(str(_creator_inspiration_path(config)))
+    except (OSError, ValueError):
+        return []
+    entries = data.get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return []
+    return [
+        entry
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("statement")
+    ]
+
+
+def _save_inspiration(config: WebAppConfig, entries: list) -> None:
+    path = _creator_inspiration_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(path, {"entries": entries})
+
+
+def _inspiration_view(config: WebAppConfig) -> list:
+    return [
+        {
+            "pattern_key": entry.get("pattern_key"),
+            "statement": entry.get("statement"),
+            "style": entry.get("style") or DEFAULT_STYLE_NAME,
+        }
+        for entry in _load_inspiration(config)
+    ]
+
+
+STYLES_FILENAME = "styles.json"
+DEFAULT_STYLE_NAME = "My editing"
+
+# The plain line a social link gets (Message 2R, P4): downloading
+# other people's videos from those platforms breaks their terms,
+# so the app never tries; it says what works instead.
+SOCIAL_LINK_MESSAGE = (
+    "That link is from a platform whose videos I cannot download; "
+    "that would break its terms. What works: a direct video file "
+    "link, a Google Drive or Dropbox share link, a Vimeo link "
+    "where the owner allows download, or your own YouTube video "
+    "downloaded from YouTube Studio, dropped in as a file."
+)
+STYLE_YOUTUBE_MESSAGE = (
+    "For a style you like, I cannot download a YouTube video; "
+    "that would break its terms. What works: a direct video file "
+    "link, a Google Drive or Dropbox share link, or a Vimeo link "
+    "where the owner allows download."
+)
+_SOCIAL_HOSTS = (
+    "instagram.com", "tiktok.com", "facebook.com", "fb.watch",
+    "threads.net",
+)
+
+
+def _styles_path(config: WebAppConfig) -> Path:
+    return _creator_home(config) / STYLES_FILENAME
+
+
+def _load_styles(config: WebAppConfig) -> dict:
+    """The creator's named styles; the default always exists.
+
+    Rules saved before styles existed carry no style name; they
+    belong to the default style, so nothing saved in 0.21 or 0.22
+    is ever lost or moved.
+    """
+    names: list[str] = []
+    current = None
+    path = _styles_path(config)
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            for entry in payload.get("styles") or []:
+                if isinstance(entry, dict) and entry.get("name"):
+                    name = str(entry["name"]).strip()
+                    if name and name not in names:
+                        names.append(name)
+            if payload.get("current"):
+                current = str(payload["current"]).strip()
+    if DEFAULT_STYLE_NAME not in names:
+        names.insert(0, DEFAULT_STYLE_NAME)
+    if current not in names:
+        current = names[0]
+    return {"styles": [{"name": n} for n in names], "current": current}
+
+
+def _save_styles(config: WebAppConfig, data: dict) -> None:
+    _styles_path(config).parent.mkdir(parents=True, exist_ok=True)
+    _write_json(_styles_path(config), data)
+
+
+def _current_style(config: WebAppConfig) -> str:
+    return _load_styles(config)["current"]
+
+
+def _styles_view(config: WebAppConfig) -> dict:
+    data = _load_styles(config)
+    counts: dict[str, int] = {}
+    store = _rules_store(config)
+    for rule in store.get("rules", []):
+        if isinstance(rule, dict):
+            name = str(rule.get("style") or DEFAULT_STYLE_NAME)
+            counts[name] = counts.get(name, 0) + 1
+    inspiration = _load_inspiration(config)
+    return {
+        "current": data["current"],
+        "styles": [
+            {
+                "name": entry["name"],
+                "rules": counts.get(entry["name"], 0),
+                "inspiration": sum(
+                    1
+                    for item in inspiration
+                    if str(item.get("style") or DEFAULT_STYLE_NAME)
+                    == entry["name"]
+                ),
+            }
+            for entry in data["styles"]
+        ],
+    }
+
+
+def _smooth_view(config: WebAppConfig) -> dict:
+    """The last smooth pass's join check, for the chat's done line."""
+    payload = _load_session_json(config, "smooth_pass.json", {})
+    if not isinstance(payload, dict) or not payload.get("ran"):
+        return {}
+    return {
+        "joins_checked": payload.get("joins_checked", 0),
+        "joins_smooth": payload.get("joins_smooth", 0),
+        "your_call": payload.get("your_call", []),
+        "edges_set": payload.get("edges_set", 0),
+    }
+
+
+def _empty_edit_counts() -> dict:
+    return {
+        "retakes_removed": 0,
+        "retakes_set_aside": 0,
+        "joins_checked": 0,
+        "joins_failed": 0,
+        "spots_to_review": 0,
+        "words_cut": 0,
+        "words_kept": 0,
+    }
+
+
+def _edit_counts(
+    config: WebAppConfig,
+    *,
+    timeline=None,
+    edit_spans=None,
+    gold=None,
+    smooth=None,
+) -> dict:
+    """The one count every surface reads (0.25, finding 6).
+
+    Computed once, from the session's final plan and its pass
+    records: retake copies removed (distinct pairs whose earlier
+    take the final plan has out, whether the pass cut them, the
+    verifier held and settled them, or the detected-repeat
+    settlement struck them), retake copies set aside as your
+    call (the open gold retake spans, by pair), joins checked
+    and joins still failing (the smooth pass's final join
+    check), spots to review (open gold spans plus failing
+    joins), and the plan's word counts. The Done bubble, its
+    review link, the transcript header, and the persisted Done
+    payload all read this dict; no surface recounts on its own
+    (the 0.24 run showed "18 retakes cut" in one place against
+    "2 removed, 7 set aside" in another because each surface
+    counted a different thing in a different unit).
+    """
+    counts = _empty_edit_counts()
+    if not config.has_job:
+        return counts
+    if timeline is None:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        timeline = Timeline(transcript, _effective_cuts(config))
+    kept = timeline.kept_word_indices()
+    counts["words_kept"] = len(kept)
+    counts["words_cut"] = len(timeline.words) - len(kept)
+    if edit_spans is None:
+        edit_spans = _edit_spans(config)
+    removed: set = set()
+    for span in edit_spans:
+        meta = span.get("retake")
+        if isinstance(meta, dict):
+            removed.add(
+                str(
+                    meta.get("pair_id")
+                    or f"span:{span.get('word_start')}-{span.get('word_end')}"
+                )
+            )
+    # Detected repeats the settlement struck sit in the gold
+    # store as auto_cut records; their cuts are in the plan but
+    # no audit operation names them, so they are counted here
+    # from the store, by pair.
+    for record in _load_gold(config):
+        if (
+            record.get("status") == "auto_cut"
+            and record.get("source") == "retakes"
+        ):
+            removed.add(
+                str(
+                    record.get("pair_id")
+                    or f"span:{record.get('word_start')}-{record.get('word_end')}"
+                )
+            )
+    # And any recorded pair the final plan itself settles: the
+    # earlier take's words all out, the kept take's words in.
+    try:
+        retake_record = _load_retake_record(config)
+    except Exception:
+        retake_record = {}
+    kept_set = set(kept)
+    for pair in retake_record.get("pairs") or []:
+        if not isinstance(pair, dict):
+            continue
+        cut = pair.get("cut") or {}
+        keep = pair.get("keep") or {}
+        cs, ce = cut.get("word_start"), cut.get("word_end")
+        ks, ke = keep.get("word_start"), keep.get("word_end")
+        if not all(
+            isinstance(v, int) for v in (cs, ce, ks, ke)
+        ):
+            continue
+        if not (0 <= cs < ce <= len(timeline.words)):
+            continue
+        if any(i in kept_set for i in range(cs, ce)):
+            continue
+        if not any(i in kept_set for i in range(ks, ke)):
+            continue
+        removed.add(str(pair.get("pair_id") or retakes.pair_key(pair)))
+    counts["retakes_removed"] = len(removed)
+    open_gold = gold if gold is not None else _open_gold_spans(config)
+    aside: set = set()
+    for view in open_gold:
+        if view.get("kind") == "retake" or view.get("source") == "retakes":
+            aside.add(
+                str(
+                    view.get("pair_id")
+                    or view.get("gold_id")
+                    or f"span:{view.get('word_start')}-{view.get('word_end')}"
+                )
+            )
+    counts["retakes_set_aside"] = len(aside)
+    smooth_view = smooth if smooth is not None else _smooth_view(config)
+    counts["joins_checked"] = int(smooth_view.get("joins_checked") or 0)
+    counts["joins_failed"] = len(smooth_view.get("your_call") or [])
+    counts["spots_to_review"] = len(open_gold) + counts["joins_failed"]
+    return counts
+
+
+def _creator_framing_dir(config: WebAppConfig) -> Path:
+    return _creator_home(config)
+
+
+def _legacy_store_candidates(config: WebAppConfig) -> list:
+    """Per-job store files that predate the creator-level store."""
+    roots = []
+    for root in (config.launch_home, Path.home() / ".talk-to-your-editor"):
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root
+        if resolved not in roots:
+            roots.append(resolved)
+    candidates = []
+    seen = set()
+    creator_path = _creator_rules_path(config).resolve()
+    framing_name = teaching.FRAMING_FILENAME
+    for root in roots:
+        if not root.is_dir():
+            continue
+        found = list(root.rglob(f"tye-session/{CREATOR_RULES_FILENAME}"))
+        found += list(root.rglob(f"tye-session/{framing_name}"))
+        found += list(root.rglob("tye-session/framing_profile_*.json"))
+        for path in found:
+            if path.resolve() == creator_path or path in seen:
+                continue
+            seen.add(path)
+            candidates.append(path)
+    session_rules = config.session_dir / CREATOR_RULES_FILENAME
+    if session_rules.is_file() and session_rules not in seen:
+        candidates.append(session_rules)
+    session_framing = config.session_dir / framing_name
+    if session_framing.is_file() and session_framing not in seen:
+        candidates.append(session_framing)
+    if config.job_dir is not None:
+        job_rules = config.job_dir / CREATOR_RULES_FILENAME
+        if job_rules.is_file() and job_rules not in seen:
+            candidates.append(job_rules)
+    return candidates
+
+
+def _ensure_creator_store(config: WebAppConfig) -> None:
+    """Merge legacy per-job rules and framing into the creator store.
+
+    Runs once per launch home per process, plus once per newly seen
+    legacy file (recorded in the merge marker), so a job folder the
+    creator opens later still gives up the rules it saved before.
+    """
+    try:
+        launch_home = config.launch_home
+        marker_path = launch_home / _CREATOR_MERGE_FILENAME
+        merged_paths = []
+        if marker_path.is_file():
+            try:
+                payload = json.loads(marker_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    merged_paths = [
+                        str(p) for p in payload.get("merged", []) if p
+                    ]
+            except (OSError, ValueError):
+                merged_paths = []
+        creator_path = _creator_rules_path(config)
+        candidates = _legacy_store_candidates(config)
+        fresh = [
+            path
+            for path in candidates
+            if path.name == CREATOR_RULES_FILENAME
+            and str(path) not in merged_paths
+        ]
+        if not fresh and str(launch_home) in _creator_merge_done:
+            return
+        _creator_merge_done.add(str(launch_home))
+        store = creator_rules.load_rules_store(creator_path)
+        known_keys = {
+            rule.get("pattern_key")
+            for rule in store.get("rules", [])
+            if isinstance(rule, dict)
+        }
+        framing_candidates = []
+        changed = False
+        for path in candidates:
+            if path.name.startswith("framing_profile"):
+                framing_candidates.append(path)
+                continue
+            if str(path) in merged_paths:
+                continue
+            legacy = creator_rules.load_rules_store(path)
+            for rule in legacy.get("rules", []):
+                key = rule.get("pattern_key")
+                if key and key not in known_keys:
+                    store["rules"].append(rule)
+                    known_keys.add(key)
+                    changed = True
+            for key, count in (legacy.get("dismissed") or {}).items():
+                if key not in store.get("dismissed", {}):
+                    store.setdefault("dismissed", {})[key] = count
+                    changed = True
+            merged_paths.append(str(path))
+        if changed or (store["rules"] and not creator_path.is_file()):
+            creator_rules.save_rules_store(creator_path, store)
+        # Framing merges per shape: a legacy 9:16 profile fills the
+        # 9:16 slot and a 16:9 one fills the 16:9 slot, and neither
+        # overwrites a profile the creator store already holds.
+        for path in framing_candidates:
+            payload = _load_json(str(path))
+            profile = (
+                payload.get("profile") if isinstance(payload, dict)
+                else None
+            )
+            if not isinstance(profile, dict):
+                continue
+            shape = teaching.shape_for_profile(profile)
+            if shape is None:
+                continue
+            if teaching.load_framing_profile(
+                _creator_framing_dir(config), shape
+            ) is None:
+                teaching.save_framing_profile(
+                    _creator_framing_dir(config), profile
+                )
+        launch_home.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(
+            json.dumps({"merged": merged_paths}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except Exception as exc:  # the merge never blocks a run
+        _log_raw_error("creator store merge", exc)
+
+
 def _rules_store(config: WebAppConfig) -> dict:
-    return creator_rules.load_rules_store(
-        config.session_dir / CREATOR_RULES_FILENAME
-    )
+    _ensure_creator_store(config)
+    return creator_rules.load_rules_store(_creator_rules_path(config))
 
 
 def _save_rules_store(config: WebAppConfig, store: dict) -> None:
-    creator_rules.save_rules_store(
-        config.session_dir / CREATOR_RULES_FILENAME, store
-    )
+    _ensure_creator_store(config)
+    creator_rules.save_rules_store(_creator_rules_path(config), store)
 
 
 def _rule_class_for(pattern, entries: list) -> str:
@@ -1842,9 +3011,12 @@ def _rule_suggestions(config: WebAppConfig) -> list:
         for rule in store.get("rules", [])
         if isinstance(rule, dict)
     }
+    inspiration_keys = {
+        entry.get("pattern_key") for entry in _load_inspiration(config)
+    }
     for draft in teaching.load_drafts(config.session_dir):
         key = draft.get("pattern_key")
-        if not key or key in saved_keys:
+        if not key or key in saved_keys or key in inspiration_keys:
             continue
         basis = draft.get("basis")
         if basis == "recording" and not draft.get("proof"):
@@ -1865,6 +3037,33 @@ def _rule_suggestions(config: WebAppConfig) -> list:
                 "kind": draft.get("kind"),
             }
         )
+    # An open decision proposal (source (c)) rides the same
+    # list while it is open, so its Save and Not now go through
+    # the rule endpoints unchanged; the proposal's own statement
+    # is the one offered, never a re-derived one.
+    offered = {s.get("pattern_key") for s in suggestions}
+    for entry in _load_thread(config):
+        if entry.get("kind") != "rule_proposal":
+            continue
+        if entry.get("status") != "open":
+            continue
+        key = entry.get("pattern_key")
+        if not key or key in saved_keys or key in offered:
+            continue
+        suggestions.append(
+            {
+                "pattern_key": key,
+                "statement": entry.get("statement"),
+                "support_count": 1,
+                "explicit": True,
+                "rule_class": _rule_class_for(
+                    {"pattern_key": key}, entries
+                ),
+                "source": "decision",
+                "source_note": "From your call on a spot in this edit.",
+            }
+        )
+        offered.add(key)
     return suggestions
 
 
@@ -2036,11 +3235,46 @@ def _run_teaching(config: WebAppConfig, record: dict) -> dict:
             "drafts": [],
             "message": TEACH_NO_SPEECH_MESSAGE,
         }
+    if finished is not None:
+        # The picture teaches too (v0.19, chunk 4): when a
+        # finished video was studied, read its framing and add
+        # the one plain line, saving the profile with the
+        # session for the render's shape choices. When no face
+        # can be read, nothing is added and nothing is claimed.
+        framing_draft = teaching.framing_draft_for(
+            _creator_framing_dir(config),
+            finished,
+            kind=kind,
+            basis="pair" if diff is not None else "finished_only",
+            source_note=(
+                teaching.PAIR_SOURCE_NOTE
+                if diff is not None
+                else teaching.FINISHED_SOURCE_NOTE
+            ),
+        )
+        if framing_draft is not None:
+            drafts.append(framing_draft)
     teaching.add_drafts(config.session_dir, drafts)
     count = len(drafts)
+    # The summary in the chat leads with what was measured
+    # (0.27.1, P2 item 11): the opening line, the sentence
+    # pauses, the breaths kept, each with its number. A
+    # measurement that cannot be made is simply absent.
+    measured: list = []
+    if finished is not None:
+        try:
+            if not finished_words:
+                finished_words = _teach_words(config, finished)
+            if finished_words:
+                measured = teaching.measured_summary(
+                    raw_words, finished_words, finished
+                )
+        except Exception:
+            measured = []
     return {
         "ok": True,
         "drafts": drafts,
+        "measured": measured,
         "message": (
             f"Made {count} draft rule{'s' if count != 1 else ''}. "
             "Find them with your other rule suggestions. Nothing "
@@ -2080,21 +3314,170 @@ def _audit_operations(config: WebAppConfig) -> list:
     return operations
 
 
+def _span_record_cause(
+    start: int,
+    end: int,
+    retake_pairs: list,
+    gold_records: list,
+    opening_record: dict,
+):
+    """A cut span's cause from the pass records, or None.
+
+    The fallback half of the explainer (0.26, fix 5): when no
+    applied audit operation covers a span, the pass records
+    still name most cuts: the retake record's pairs, the
+    detected-repeat settlements in the gold store, and the
+    opening rule's record. Returns (source, reason,
+    retake_meta) or None when no record names this span.
+    """
+    for pair in retake_pairs:
+        if not isinstance(pair, dict):
+            continue
+        cut = pair.get("cut") or {}
+        keep = pair.get("keep") or {}
+        cs, ce = cut.get("word_start"), cut.get("word_end")
+        if not (isinstance(cs, int) and isinstance(ce, int)):
+            continue
+        if not (cs < end and start < ce):
+            continue
+        keep_text = str(keep.get("text") or "").strip()
+        reason = "The retake pass cut this earlier take."
+        if keep_text:
+            reason += f" The take that stayed: \"{keep_text}\""
+        return (
+            "retakes",
+            reason,
+            {
+                "pair_id": pair.get("pair_id"),
+                "band": pair.get("band"),
+                "retake_class": pair.get("retake_class"),
+                "keep_text": keep.get("text"),
+                "keep_word_start": keep.get("word_start"),
+                "keep_word_end": keep.get("word_end"),
+                "shadow": pair.get("shadow"),
+                "unsure": False,
+                "unsure_note": None,
+            },
+        )
+    for record in gold_records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("status") != "auto_cut":
+            continue
+        cs, ce = record.get("word_start"), record.get("word_end")
+        if not (isinstance(cs, int) and isinstance(ce, int)):
+            continue
+        if not (cs < end and start < ce):
+            continue
+        keep_text = str(record.get("keep_text") or "").strip()
+        reason = (
+            "The editor detected this as a repeat of the take "
+            "that stayed and cut it: detected retakes are cut, "
+            "last take kept."
+        )
+        if keep_text:
+            reason += f" The take that stayed: \"{keep_text}\""
+        return (
+            str(record.get("source") or "retakes"),
+            reason,
+            {
+                "pair_id": record.get("pair_id"),
+                "band": None,
+                "retake_class": None,
+                "keep_text": record.get("keep_text"),
+                "keep_word_start": record.get("keep_word_start"),
+                "keep_word_end": record.get("keep_word_end"),
+                "shadow": None,
+                "unsure": False,
+                "unsure_note": None,
+            },
+        )
+    if opening_record.get("fired"):
+        cut_words = opening_record.get("cut_words") or []
+        first_line = opening_record.get("first_line_word")
+        named = set()
+        for wi in cut_words:
+            if isinstance(wi, int):
+                named.add(wi)
+        if (named and all(i in named for i in range(start, end))) or (
+            isinstance(first_line, int) and end <= first_line
+        ):
+            return (
+                "opening",
+                "The opening rule cut this: the edit starts on "
+                "its first real line, so the setup talk and "
+                "abandoned takes before it are out.",
+                None,
+            )
+    return None
+
+
+# Action wording stored in audits by runs before 0.27 (fix 11):
+# the bare fragments ("Removed the words this note pointed at
+# from the finished edit.") read as if the assistant had
+# performed the cut, so a stored value is re-voiced as what the
+# record shows before it can reach an answer. New runs store
+# the new wording already (verifier.PLAIN_ACTION_BY_TYPE).
+_LEGACY_ACTION_WORDING = {
+    "Removed the words this note pointed at from the finished edit.":
+        "The record shows the words this note pointed at were "
+        "removed from the finished edit.",
+    "Swapped the take used here for the other take, as this note asked.":
+        "The record shows the take used here was swapped for the "
+        "other take, as this note asked.",
+}
+
+
+def _record_voiced_action(text: str) -> str:
+    """One stored plain action, in the record's voice."""
+    text = str(text or "").strip()
+    return _LEGACY_ACTION_WORDING.get(text, text)
+
+
 def _edit_spans(config: WebAppConfig) -> list:
     """The spans this app has taken out of the edit, with their reasons.
 
     A span is a run of words the job's own plan kept and the
-    session's current plan has cut. Each span is matched to the
-    recorded change that removed it (a direction run's applied cut,
-    with the note that asked for it when there is one); a span no
-    recorded change explains was cut by clicking in the transcript.
-    Notes left on an edit ride along with its span.
+    session's current plan has cut. Both Timelines read the same
+    ruler: the current plan's sound bounds (0.26, fix 1) are
+    lent to the base plan too, so a word is never counted cut
+    on one side by its sound and kept on the other by its stamp.
+
+    Each span's reason comes from the editor's own record, and
+    only from it (0.26, fix 5): the applied change that removed
+    it when the audit names one (a direction run's cut, the
+    retake pass, the filler pass, or a transcript click the
+    audit recorded), the retake record's pair whose earlier
+    take it is, the detected-repeat settlement that struck it,
+    or the opening rule's record. A span no record names gets
+    an honest sentence: the edit's own passes took it out and
+    the record does not say which one. No span is ever
+    explained as something the creator did by hand unless his
+    own recorded action says so. Notes left on an edit ride
+    along with its span.
     """
     transcript = _load_json(str(config.job_dir / "transcript.json"))
     words = transcript.get("words", [])
-    base = Timeline(transcript, _load_json(str(config.job_dir / "cuts.json")))
-    current = Timeline(transcript, _effective_cuts(config))
+    effective = _effective_cuts(config)
+    base_cuts = _load_json(str(config.job_dir / "cuts.json"))
+    if isinstance(effective, dict) and isinstance(base_cuts, dict):
+        bounds = effective.get("word_sound_bounds")
+        if bounds and not base_cuts.get("word_sound_bounds"):
+            base_cuts = {**base_cuts, "word_sound_bounds": bounds}
+    base = Timeline(transcript, base_cuts)
+    current = Timeline(transcript, effective)
     operations = _audit_operations(config)
+    try:
+        retake_pairs = _load_retake_record(config).get("pairs") or []
+    except Exception:
+        retake_pairs = []
+    try:
+        gold_records = _load_gold(config)
+    except Exception:
+        gold_records = []
+    opening_record = _load_session_json(config, "opening_pass.json", {})
+    if not isinstance(opening_record, dict):
+        opening_record = {}
     comments_by_id: dict = {}
     feedback_path = _feedback_path(config)
     if feedback_path is not None:
@@ -2146,20 +3529,66 @@ def _edit_spans(config: WebAppConfig) -> list:
         end = index
         edit_id = f"edit-{start}-{end}"
         op = covering_op(start, end)
-        if op is not None:
-            source = "direction"
+        retake_meta = None
+        if op is not None and op.get("comment_id") == "transcript-toggle":
+            # The one cut that is the creator's own click, and
+            # the audit itself is the record of it: the reason
+            # the click's operation carried is what is said.
+            source = "transcript"
             reason = str(
-                op.get("plain_action")
-                or "These words were removed by a direction run."
+                op.get("reason")
+                or "You clicked these words in the transcript to cut them."
+            )
+            comment_id = op.get("comment_id")
+            comment_text = None
+        elif op is not None and op.get("comment_id") == FILLER_COMMENT_ID:
+            source = "filler"
+            reason = (
+                "The filler pass took these words out: they are "
+                "ums and uhs, and the choice to remove fillers "
+                "was on."
+            )
+            comment_id = op.get("comment_id")
+            comment_text = None
+        elif op is not None:
+            source = "direction"
+            reason = _record_voiced_action(
+                str(
+                    op.get("plain_action")
+                    or "These words were removed by a direction run."
+                )
             )
             comment_id = op.get("comment_id")
             comment = comments_by_id.get(str(comment_id)) if comment_id else None
             comment_text = (
                 str(comment.get("text")) if comment and comment.get("text") else None
             )
+            if isinstance(op.get("retake"), dict):
+                meta = op["retake"]
+                retake_meta = {
+                    "pair_id": meta.get("pair_id"),
+                    "band": meta.get("band"),
+                    "retake_class": meta.get("retake_class"),
+                    "keep_text": meta.get("keep_text"),
+                    "keep_word_start": meta.get("keep_word_start"),
+                    "keep_word_end": meta.get("keep_word_end"),
+                    "shadow": meta.get("shadow"),
+                    "unsure": bool(meta.get("unsure")),
+                    "unsure_note": meta.get("unsure_note"),
+                }
         else:
-            source = "transcript"
-            reason = "You cut these words by clicking in the transcript."
+            found = _span_record_cause(
+                start, end, retake_pairs, gold_records, opening_record
+            )
+            if found is not None:
+                source, reason, retake_meta = found
+            else:
+                source = "passes"
+                reason = (
+                    "The edit's own passes took these words out, "
+                    "and the record does not name which pass. "
+                    "It was not a change you made by hand."
+                )
             comment_id = None
             comment_text = None
         record = notes_by_edit.get(edit_id)
@@ -2172,20 +3601,6 @@ def _edit_spans(config: WebAppConfig) -> list:
                 for n in record.get("notes", [])
                 if isinstance(n, dict) and n.get("text")
             ]
-        retake_meta = None
-        if op is not None and isinstance(op.get("retake"), dict):
-            meta = op["retake"]
-            retake_meta = {
-                "pair_id": meta.get("pair_id"),
-                "band": meta.get("band"),
-                "retake_class": meta.get("retake_class"),
-                "keep_text": meta.get("keep_text"),
-                "keep_word_start": meta.get("keep_word_start"),
-                "keep_word_end": meta.get("keep_word_end"),
-                "shadow": meta.get("shadow"),
-                "unsure": bool(meta.get("unsure")),
-                "unsure_note": meta.get("unsure_note"),
-            }
         spans.append(
             {
                 "edit_id": edit_id,
@@ -2656,6 +4071,55 @@ def _save_captions_hide_fillers(config: WebAppConfig, on: bool) -> None:
     )
 
 
+def _set_captions_hide_fillers(config: WebAppConfig, on: bool) -> bool:
+    """Apply the captions choice wherever it is flipped from.
+
+    The one path behind the captions switches (the Revised edit
+    card and the finish card, through /api/captions-pref) and the
+    Editor panel's clean-up chip (Batch E2): the choice is saved
+    in the session; for a job the app took in itself it also
+    updates the job's marker, and the caption file is rebuilt
+    (on) or removed (off) right away, so what downloads always
+    matches the choice. For a runner job the choice is recorded
+    and a caption file that exists is removed when it is off;
+    building captions stays the intake's own work. Returns
+    whether a caption file is available afterwards.
+    """
+    _save_captions_hide_fillers(config, on)
+    session = config.session_dir
+    captions_path = session / clean_captions.CAPTIONS_FILENAME
+    available = captions_path.is_file()
+    if config.is_intake_job:
+        marker_path = config.job_dir / intake_build.INTAKE_MARKER
+        try:
+            marker = _load_json(str(marker_path))
+        except (OSError, ValueError):
+            marker = {}
+        marker["captions"] = on
+        try:
+            _write_json(marker_path, marker)
+        except OSError:
+            _log_raw_error("captions marker", OSError("write failed"))
+        if on:
+            try:
+                clean_captions.build_captions(
+                    config.job_dir,
+                    _effective_cuts(config),
+                    captions_path,
+                )
+                available = captions_path.is_file()
+            except Exception as exc:
+                _log_raw_error("clean captions", exc)
+                available = captions_path.is_file()
+        else:
+            captions_path.unlink(missing_ok=True)
+            available = False
+    elif not on:
+        captions_path.unlink(missing_ok=True)
+        available = False
+    return available
+
+
 def _finish_state(config: WebAppConfig) -> dict:
     """What the finish card can honestly say (v0.6.1).
 
@@ -2721,6 +4185,7 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "words_total": 0,
         "words_kept": 0,
         "words_cut": 0,
+        "counts": _empty_edit_counts(),
         "transcript_words": [],
         "timeline_pieces": [],
         "waveform_peaks": [],
@@ -2742,6 +4207,8 @@ def _no_job_summary(config: WebAppConfig) -> dict:
         "front_door": _front_door_settings(config),
         "flags": [],
         "gold": [],
+        "editor_name": usual.load_editor_name(),
+        "waiting_count": 0,
         "beta": {
             "flips": 0,
             "settled": 0,
@@ -2749,8 +4216,11 @@ def _no_job_summary(config: WebAppConfig) -> dict:
             "recent_calls": 0,
             "line": None,
         },
-        "saved_rules": [],
-        "rule_suggestions": [],
+        "saved_rules": _saved_rules_view(config),
+        "inspiration": _inspiration_view(config),
+        "smooth": _smooth_view(config),
+        "styles": _styles_view(config),
+        "rule_suggestions": _rule_suggestions(config),
         "meta_available": bool(config.signin_key()),
         "render_missing": ["render_py", "source_video", "cleaned_wav"],
         "render_ready": False,
@@ -3109,6 +4579,7 @@ def _job_summary(config: WebAppConfig) -> dict:
         if segment["duration"] <= 0:
             continue
         piece_words = timeline.words_in_range(segment["range"])
+        fade_in = segment["range"].get("fade_in_s")
         timeline_pieces.append(
             {
                 "output_start": round(segment["output_start"], 4),
@@ -3116,6 +4587,21 @@ def _job_summary(config: WebAppConfig) -> dict:
                 "word_start": piece_words[0] if piece_words else None,
                 "word_end": (
                     piece_words[-1] + 1 if piece_words else None
+                ),
+                # v0.16: what the timeline's hand edits need to know
+                # about each piece: where it sits in the plan, where
+                # it came from in the recording, whether it is a
+                # special insert (never hand-edited), and the
+                # crossfade set at the join that plays into it.
+                "range_index": segment["range_index"],
+                "source_start": round(float(segment["range"]["start"]), 4),
+                "source_end": round(float(segment["range"]["end"]), 4),
+                "special": bool(segment["special"]),
+                "fade_in_s": (
+                    round(float(fade_in), 4)
+                    if isinstance(fade_in, (int, float))
+                    and not isinstance(fade_in, bool)
+                    else None
                 ),
             }
         )
@@ -3135,6 +4621,18 @@ def _job_summary(config: WebAppConfig) -> dict:
         playback_progress[SESSION_VIDEO_NAME] = _playback_progress_for(
             splice_path, splice_copy
         )
+    gold_views = _open_gold_spans(config)
+    smooth_view = _smooth_view(config)
+    # The one count (0.25, finding 6): computed once here, from
+    # the final plan this summary describes, and carried on the
+    # summary so every surface reads the same numbers.
+    counts = _edit_counts(
+        config,
+        timeline=timeline,
+        edit_spans=edit_spans,
+        gold=gold_views,
+        smooth=smooth_view,
+    )
     return {
         "has_job": True,
         "test_video": _is_test_video(config),
@@ -3150,6 +4648,7 @@ def _job_summary(config: WebAppConfig) -> dict:
         "words_total": len(timeline.words),
         "words_kept": len(kept),
         "words_cut": len(timeline.words) - len(kept),
+        "counts": counts,
         "transcript_words": transcript_entries,
         "timeline_pieces": timeline_pieces,
         "waveform_peaks": _waveform_peaks(config, timeline),
@@ -3164,11 +4663,24 @@ def _job_summary(config: WebAppConfig) -> dict:
         "comments": comments,
         "overall_feedback": overall_feedback,
         "edit_spans": edit_spans,
+        "decision_rules_used": len(
+            {
+                record.get("decision_rule")
+                for record in _load_gold(config)
+                if record.get("settled_by_rule")
+                and record.get("decision_rule")
+            }
+        ),
         "front_door": _front_door_settings(config),
         "flags": _session_flags(config),
-        "gold": _open_gold_spans(config),
+        "gold": gold_views,
+        "editor_name": usual.load_editor_name(),
+        "waiting_count": _waiting_count(config),
         "beta": _beta_score(config),
         "saved_rules": _saved_rules_view(config),
+        "inspiration": _inspiration_view(config),
+        "smooth": smooth_view,
+        "styles": _styles_view(config),
         "rule_suggestions": _rule_suggestions(config),
         "meta_available": bool(config.signin_key()),
         "render_missing": config.render_missing(),
@@ -3580,6 +5092,243 @@ def _live_provider(
     )
 
 
+# ---------------------------------------------------------------------------
+# The direction pass holds its own proposals (0.27.2)
+#
+# A keyed front-door run hands the model the retakes guidance and
+# no direction from the creator, and the model's proposals are
+# applied through the verifier like any other edit. On Justin's
+# 0.27.1 Mac run that read removed two things no local pass had
+# touched: a whole sentence said nowhere else in the video (the
+# first statement of the thyroid measurement, read as if it were
+# the later restatement of it) and one side of a parallel line
+# the retake pass had already set aside for his call. A model
+# proposal is a suggestion, not a decision: in the direction
+# paths, a proposed cut that removes unique content, or that
+# touches a span already waiting open for the creator's call,
+# is held for review instead of applied. The guard used to
+# stand down for any run carrying the creator's own words; on
+# the keyed 0.27.3 run the same two cuts went through under a
+# typed direction, and Justin's filming-day ruling ends the
+# stand-down: a sentence with no retake partner is never cut
+# by a proposal, whatever the direction says.
+# ---------------------------------------------------------------------------
+
+_PROVIDER_HOLD_YOUR_CALL = "your_call_span"
+_PROVIDER_HOLD_UNIQUE = "unique_content"
+_PROVIDER_HOLD_FINAL_SAYING = "final_saying"
+_UNIQUE_CONTENT_MIN_TOKENS = 3
+_UNIQUE_CONTENT_MIN_SHARE = 0.25
+
+
+def _named_content_tokens(text) -> set:
+    """The content tokens in a person's own words."""
+    tokens = set()
+    for raw in str(text or "").split():
+        token = retakes.normalize_word(raw)
+        if len(token) >= 3 and token not in _SPOT_STOPWORDS:
+            tokens.add(token)
+    return tokens
+
+
+def _feedback_comment_tokens(feedback: dict) -> set:
+    """Content tokens from the run's actual comments (the
+    creator's own notes), never from overall guidance the app
+    composed for the run."""
+    tokens: set = set()
+    comments = (
+        feedback.get("comments") if isinstance(feedback, dict) else None
+    )
+    for comment in comments or []:
+        if isinstance(comment, dict):
+            tokens |= _named_content_tokens(comment.get("text"))
+    return tokens
+
+
+def _sentence_spans(words) -> list:
+    """(start, end) word ranges of the transcript's sentences,
+    by punctuation alone (the final sweep's sentence ends)."""
+    ends = sorted(final_sweep.punctuation_sentence_ends(words))
+    spans = []
+    start = 0
+    for end in ends:
+        spans.append((start, end + 1))
+        start = end + 1
+    if start < len(words):
+        spans.append((start, len(words)))
+    return spans
+
+
+def _sentence_has_partner(words, timeline, sent, in_spans) -> bool:
+    """True when another kept sentence outside the cut says
+    this sentence's thought again: at least half of its content
+    words covered by that one other sentence. A first statement
+    later corrected ("2.18" then "actually it was 2.16") shares
+    too little to count; a retake partner is the same thought
+    said again."""
+    tokens, raw = final_sweep._content_tokens(words, sent[0], sent[1])
+    if not tokens:
+        return True
+    for other in _sentence_spans(words):
+        if other[0] < sent[1] and sent[0] < other[1]:
+            continue
+        if any(i in in_spans for i in range(other[0], other[1])):
+            continue
+        kept = sum(
+            1
+            for i in range(other[0], other[1])
+            if timeline.word_status(i) == "kept"
+        )
+        if kept < (other[1] - other[0]) // 2:
+            continue
+        pool, _ = final_sweep._content_tokens(words, other[0], other[1])
+        if final_sweep._coverage(tokens, raw, pool) >= 0.5:
+            return True
+    return False
+
+
+def _provider_cut_guard(config: WebAppConfig, named_tokens=frozenset()):
+    """An ``adjust_verdicts`` callback for the direction paths.
+
+    A model proposal is a suggestion, not a decision. The guard
+    flips an applying provider-proposed cut to a hold when the
+    cut touches an open your-call span or the video's final
+    saying, or when it would remove unique content. Since
+    0.27.3's keyed run cut the July measurement passage and the
+    parallel "my wife" line AGAIN on a run carrying the
+    creator's own typed direction, the guard no longer stands
+    down for any of its holds: a sentence with no retake partner
+    elsewhere in the transcript is never cut by a proposal,
+    whatever the direction says (Justin's ruling, filming day).
+    Unique content is read two ways: the span's own tokens (at
+    least three said nowhere else in the kept speech, at least
+    a quarter of its content), and sentence by sentence (a cut
+    removing most of a sentence whose thought no other kept
+    sentence says again). The retake, filler, and silence
+    passes and the gold verdict path do not use it; their cuts
+    are local decisions or the creator's own verdicts.
+    """
+    from collections import Counter
+
+    def adjust(verdicts, timeline, profile):
+        open_spans = [
+            (view["word_start"], view["word_end"])
+            for view in _open_gold_spans(config)
+            if isinstance(view.get("word_start"), int)
+            and isinstance(view.get("word_end"), int)
+        ]
+        words = timeline.words
+        # The video's final saying, on the plan as it stands:
+        # a proposed cut that touches it is held like the rest
+        # (0.27.3). The final sweep is the backstop that puts
+        # it back if any other pass cut it; this guard keeps a
+        # model proposal from taking it in the first place.
+        final_span = None
+        try:
+            sweep_bounds = final_sweep.word_bounds(words, timeline.cuts)
+            sweep_ends = final_sweep.punctuation_sentence_ends(words)
+            final_span = final_sweep.final_saying_of_video(
+                words, sweep_bounds, sweep_ends
+            )
+        except Exception:
+            final_span = None
+        for verdict in verdicts:
+            op = verdict.operation
+            if (
+                verdict.status != "apply"
+                or op.type != "cut_words"
+                or getattr(op, "decided", False)
+            ):
+                continue
+            spans = [
+                (start, end)
+                for start, end, role in op.word_spans()
+                if role == "cut"
+            ]
+            if not spans:
+                continue
+            reasons = []
+            if final_span is not None and any(
+                start < final_span[1] and final_span[0] < end
+                for start, end in spans
+            ):
+                reasons.append(_PROVIDER_HOLD_FINAL_SAYING)
+            if any(
+                start < g_end and g_start < end
+                for start, end in spans
+                for g_start, g_end in open_spans
+            ):
+                reasons.append(_PROVIDER_HOLD_YOUR_CALL)
+            span_tokens = []
+            in_spans: set = set()
+            for start, end in spans:
+                in_spans.update(range(start, end))
+                for i in range(start, end):
+                    token = retakes.normalize_word(
+                        words[i].get("word", "")
+                    )
+                    if (
+                        len(token) >= 3
+                        and token not in _SPOT_STOPWORDS
+                    ):
+                        span_tokens.append(token)
+            distinct = set(span_tokens)
+            unique_held = False
+            if distinct:
+                outside_counts: Counter = Counter()
+                for i, word in enumerate(words):
+                    if i in in_spans:
+                        continue
+                    if timeline.word_status(i) != "kept":
+                        continue
+                    token = retakes.normalize_word(
+                        word.get("word", "")
+                    )
+                    if (
+                        len(token) >= 3
+                        and token not in _SPOT_STOPWORDS
+                    ):
+                        outside_counts[token] += 1
+                unique = {
+                    token
+                    for token in distinct
+                    if outside_counts.get(token, 0) == 0
+                }
+                if (
+                    len(unique) >= _UNIQUE_CONTENT_MIN_TOKENS
+                    and len(unique) / len(distinct)
+                    >= _UNIQUE_CONTENT_MIN_SHARE
+                ):
+                    unique_held = True
+            if not unique_held:
+                # Sentence by sentence: a cut removing most of a
+                # sentence no other kept sentence says again has
+                # no retake partner to justify it, whatever the
+                # run carries.
+                for sent in _sentence_spans(words):
+                    removed = sum(
+                        1 for i in range(sent[0], sent[1])
+                        if i in in_spans
+                    )
+                    if removed * 2 < (sent[1] - sent[0]):
+                        continue
+                    if not _sentence_has_partner(
+                        words, timeline, sent, in_spans
+                    ):
+                        unique_held = True
+                        break
+            if unique_held:
+                reasons.append(_PROVIDER_HOLD_UNIQUE)
+            if reasons:
+                verdict.status = "flag"
+                verdict.reasons.extend(reasons)
+                verdict.risk_tier = 3
+                verdict.required_tier = max(verdict.required_tier, 3)
+        return verdicts
+
+    return adjust
+
+
 def _run_direction(
     config: WebAppConfig,
     provider_name: str,
@@ -3661,7 +5410,14 @@ def _run_direction(
         cuts=str(base_cuts_path),
         profile=str(profile_path) if profile is not None else None,
     )
-    audit = _verify_and_apply(args, {"operations": operations}, session)
+    audit = _verify_and_apply(
+        args,
+        {"operations": operations},
+        session,
+        adjust_verdicts=_provider_cut_guard(
+            config, named_tokens=_feedback_comment_tokens(run_feedback)
+        ),
+    )
     audit_with_routing = dict(audit)
     audit_with_routing["routing"] = routing
     # Record what the run was handed, so the saved audit shows the
@@ -4056,6 +5812,427 @@ def _record_silence_pass(config: WebAppConfig, summary: dict) -> None:
     _write_json(path, {"runs": runs})
 
 
+def _run_smooth_pass(config: WebAppConfig) -> dict:
+    """SMOOTH, NEVER CHOPPY (Message 2R, P0): set the plan's join
+    edges on the measured quiet, then run the join check.
+
+    Runs after the silence pass on the session's current plan.
+    The edges move only inside the gap between two words' real
+    sounds (measured from the extracted WAV against the room's
+    own background level), breaths stay whole, and any join that
+    cannot be made smooth without a judgment call is left alone
+    and recorded as a "your call" spot in the session's
+    smooth_pass.json. The revised plan is written back to the
+    session exactly where the silence pass writes it.
+    """
+    summary = {"ran": False}
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        words = transcript.get("words") or []
+        if not words:
+            return summary
+        cuts = _effective_cuts(config)
+        ranges = cuts.get("kept_ranges") or []
+        if len(ranges) < 2:
+            return summary
+        wav_path = config.job_dir / FIRST_EDIT_WORK_NAME / "audio.wav"
+        if not wav_path.is_file():
+            source_name = intake_build.intake_source_video(config.job_dir)
+            if not source_name:
+                return summary
+            config.session_dir.mkdir(parents=True, exist_ok=True)
+            wav_path = config.session_dir / ".smooth-audio.wav"
+            speech.extract_audio(config.job_dir / source_name, wav_path)
+        env = smooth.envelope_db(wav_path)
+        if not env:
+            return summary
+        timeline = Timeline(transcript, cuts)
+        protected = _protected_join_indices(config, timeline)
+        segments = transcript.get("segments")
+        fps = timeline.fps
+        # Silence from the audio, inside kept pieces (0.24.0,
+        # Justin's 0.23 Mac test): transcript word times stretch
+        # over pauses, so the join-only silence pass left long
+        # silences sitting inside pieces (66 of 0.5 s or more in
+        # his measured output against 1 in his finished edit).
+        # Split the pieces at the silences the sound itself
+        # measures, before the join edges are set, so the plan,
+        # the transcript dots, and the counts all see the real
+        # trimmed gaps.
+        protected_words: set = set()
+        profile_path = config.job_dir / "profile.json"
+        if profile_path.is_file():
+            try:
+                profile = _load_json(str(profile_path))
+            except Exception:
+                profile = None
+            if isinstance(profile, dict):
+                for span in timeline.protected_spans(profile):
+                    protected_words.update(
+                        range(
+                            int(span["word_start"]), int(span["word_end"])
+                        )
+                    )
+        # A your-call span is never cut without the creator's
+        # yes (0.27, fix 8): words waiting open in gold are
+        # protected through every stage of this pass (the span
+        # trim, the sentence guard's fragment rule, and the
+        # sound truth remove step all read this set), so no
+        # later pass can take a piece out of a span the creator
+        # has not decided.
+        for view in _open_gold_spans(config):
+            gold_start = view.get("word_start")
+            gold_end = view.get("word_end")
+            if isinstance(gold_start, int) and isinstance(gold_end, int):
+                protected_words.update(range(gold_start, gold_end))
+        ranges_before = ranges
+        spans = speech.measure_speech_spans(wav_path)
+        ranges, internal = smooth.trim_internal_silences(
+            words, ranges, env,
+            segments=segments, protected_words=protected_words, fps=fps,
+            spans=spans,
+        )
+        new_ranges, report = smooth.smooth_plan(
+            words, ranges, env,
+            segments=segments, protected_joins=protected, fps=fps,
+        )
+        # The edge setters work from word sound bounds, which run
+        # wide in ambient noise, and can hand a piece back a long
+        # quiet head or tail the span trim just removed. Run the
+        # span trim once more on the shaped plan so the plan that
+        # ships is the trimmed one; the join check then measures
+        # the final edges.
+        new_ranges, internal2 = smooth.trim_internal_silences(
+            words, new_ranges, env,
+            segments=segments, protected_words=protected_words, fps=fps,
+            spans=spans,
+        )
+        internal = {
+            "trimmed": internal["trimmed"] + internal2["trimmed"],
+            "seconds_removed": round(
+                internal["seconds_removed"]
+                + internal2["seconds_removed"],
+                4,
+            ),
+            "details": internal["details"] + internal2["details"],
+        }
+        # The settled retake record, read before the guard and
+        # the final check below: words a settled retake cut took
+        # out are blocked, so backing a start up never revives a
+        # take, and a kept take's first word is a line start for
+        # the final check (a flagged pair's words stay in the
+        # plan awaiting review, so they do not block). The first
+        # join check keeps its original form on purpose: the
+        # zero push proved this exact sequence (check, guard,
+        # guard) on the Day 30 pair, and the final check is the
+        # only new measurement.
+        blocked_words: set[int] = set()
+        applied_cut_words: set[int] = set()
+        take_start_words: set[int] = set()
+        try:
+            retake_record = json.loads(
+                (config.session_dir / "retake_pass.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except Exception:
+            retake_record = {}
+        if isinstance(retake_record, dict):
+            for pair in retake_record.get("pairs") or []:
+                if not isinstance(pair, dict):
+                    continue
+                if pair.get("outcome") not in ("applied", "held"):
+                    continue
+                cut_side = pair.get("cut") or {}
+                cs = cut_side.get("word_start")
+                ce = cut_side.get("word_end")
+                if isinstance(cs, int) and isinstance(ce, int):
+                    blocked_words.update(range(cs, ce))
+                    if pair.get("outcome") == "applied":
+                        # Settled cuts only: the sound-truth pass
+                        # below treats these as words the plan
+                        # means to keep out. A held pair is still
+                        # the creator's call, so its words are
+                        # never its targets.
+                        applied_cut_words.update(range(cs, ce))
+                keep_side = pair.get("keep") or {}
+                ks = keep_side.get("word_start")
+                if isinstance(ks, int):
+                    # The kept take's first word is a line start:
+                    # when a settled cut took the sentence head,
+                    # the edited sentence begins there (0.25.0,
+                    # the zero push).
+                    take_start_words.add(ks)
+        new_ranges, check = smooth.join_check(
+            words, new_ranges, env, segments=segments, fps=fps,
+        )
+        # Edge setting on a sliver piece can leave its start a
+        # hair past its end; a piece with no length carries no
+        # words and must not reach the plan or the renderer. A
+        # short piece holding measured speech sound is content,
+        # not a sliver, and stays (0.27, fix 7).
+        sound_bounds = smooth.sound_word_bounds(words, env, spans)
+        kept_sound_mids = [
+            (float(sound_bounds[i][0]) + float(sound_bounds[i][1])) / 2.0
+            for i in range(len(words))
+            if timeline.word_status(i) == "kept"
+        ]
+        new_ranges = smooth.drop_soundless_pieces(
+            words, new_ranges, sound_bounds, kept_mids=kept_sound_mids,
+        )
+        # Sentence starts (0.25.0): a kept piece never starts
+        # mid-sentence. This runs after the join check, whose own
+        # edge fixes can shift a start past a head word, and the
+        # span trim runs once more after it, because a restored
+        # head can carry dead air the earlier trims never saw;
+        # a second guard pass then repairs anything the trim's
+        # splits separated.
+        new_ranges, guard_report = smooth.enforce_sentence_starts(
+            words, new_ranges, env,
+            segments=segments, protected_words=protected_words,
+            blocked_words=blocked_words,
+            take_start_words=take_start_words, fps=fps, spans=spans,
+        )
+        new_ranges, internal3 = smooth.trim_internal_silences(
+            words, new_ranges, env,
+            segments=segments, protected_words=protected_words, fps=fps,
+            spans=spans,
+        )
+        internal = {
+            "trimmed": internal["trimmed"] + internal3["trimmed"],
+            "seconds_removed": round(
+                internal["seconds_removed"]
+                + internal3["seconds_removed"],
+                4,
+            ),
+            "details": internal["details"] + internal3["details"],
+        }
+        new_ranges, guard_report2 = smooth.enforce_sentence_starts(
+            words, new_ranges, env,
+            segments=segments, protected_words=protected_words,
+            blocked_words=blocked_words,
+            take_start_words=take_start_words, fps=fps, spans=spans,
+        )
+        guard_report = {
+            "fixed": guard_report["fixed"] + guard_report2["fixed"],
+            "left": guard_report2["left"],
+            "details": guard_report["details"] + guard_report2["details"],
+        }
+        # Sound is the source of truth (0.26, fix 1): reconcile
+        # the settled plan with the sound it will render. A cut
+        # word whose sound sits inside a kept piece loses that
+        # sound; a kept word whose sound fell outside its piece
+        # gets the piece extended over it; no edge stays inside
+        # a word's sound. The measured bounds ride into the
+        # written plan, so the word list everywhere (score,
+        # transcript, counts) is read from the sound from here
+        # on, never the stamps. The truth pass can split a piece
+        # where it takes a cut word's sound out, so the sentence
+        # guard and the span trim run once more after it, in the
+        # same guard, trim, guard order the stages above use,
+        # to settle the new starts the way they settle any other.
+        # Words any pass deliberately cut by operation (0.27,
+        # fix 7): the sound truth bridge must never revive one.
+        # The settled retake cuts are in applied_cut_words; gold
+        # records marked auto_cut are settlements too (the
+        # detected-repeat settlement stores its pair as held in
+        # the retake record, so the record alone misses them);
+        # the session audit carries every other pass's applied
+        # word cuts.
+        deliberate_words = set(applied_cut_words)
+        for gold_record in _load_gold(config):
+            if gold_record.get("status") != "auto_cut":
+                continue
+            g_start = gold_record.get("word_start")
+            g_end = gold_record.get("word_end")
+            if isinstance(g_start, int) and isinstance(g_end, int):
+                deliberate_words.update(range(g_start, g_end))
+        audit_path = config.session_dir / "operations_audit.json"
+        if audit_path.is_file():
+            try:
+                audit_doc = json.loads(
+                    audit_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                audit_doc = {}
+            for operation in audit_doc.get("operations", []):
+                if operation.get("status") not in (None, "applied"):
+                    continue
+                if operation.get("type") != "cut_words":
+                    continue
+                o_start = operation.get("word_start")
+                o_end = operation.get("word_end")
+                if isinstance(o_start, int) and isinstance(o_end, int):
+                    deliberate_words.update(range(o_start, o_end))
+        new_ranges, truth = smooth.sound_truth_pass(
+            words, new_ranges, env,
+            segments=segments, protected_words=protected_words,
+            blocked_words=deliberate_words,
+            deliberate_words=deliberate_words, fps=fps, spans=spans,
+        )
+        new_ranges, guard_report3 = smooth.enforce_sentence_starts(
+            words, new_ranges, env,
+            segments=segments, protected_words=protected_words,
+            blocked_words=blocked_words,
+            take_start_words=take_start_words, fps=fps, spans=spans,
+        )
+        new_ranges, internal4 = smooth.trim_internal_silences(
+            words, new_ranges, env,
+            segments=segments, protected_words=protected_words, fps=fps,
+            spans=spans,
+        )
+        internal = {
+            "trimmed": internal["trimmed"] + internal4["trimmed"],
+            "seconds_removed": round(
+                internal["seconds_removed"]
+                + internal4["seconds_removed"],
+                4,
+            ),
+            "details": internal["details"] + internal4["details"],
+        }
+        new_ranges, guard_report4 = smooth.enforce_sentence_starts(
+            words, new_ranges, env,
+            segments=segments, protected_words=protected_words,
+            blocked_words=blocked_words,
+            take_start_words=take_start_words, fps=fps, spans=spans,
+        )
+        guard_report = {
+            "fixed": guard_report["fixed"] + guard_report3["fixed"]
+            + guard_report4["fixed"],
+            "left": guard_report4["left"],
+            "details": guard_report["details"] + guard_report3["details"]
+            + guard_report4["details"],
+        }
+        # The final join check (0.25, finding 6): the guard and
+        # the last span trim moved edges after the first check
+        # ran, so its spots can be stale in both directions (a
+        # join it flagged has since been repaired; a join it
+        # passed may have been split by the trim). The review
+        # spots are read from THIS check, run on the finished
+        # plan: a join is offered for review only when it still
+        # fails a measured check here. The smooth plan's own
+        # judgment flags (a dangling start it left alone) are
+        # not join failures and are no longer review spots.
+        new_ranges = smooth.drop_soundless_pieces(
+            words, new_ranges, sound_bounds, kept_mids=kept_sound_mids,
+        )
+        new_ranges, final_check = smooth.join_check(
+            words, new_ranges, env, segments=segments, fps=fps,
+            spans=spans, take_start_words=take_start_words,
+            measure_only=True,
+        )
+        changed = new_ranges != ranges_before
+        bounds_changed = cuts.get("word_sound_bounds") != truth["bounds"]
+        if changed or bounds_changed:
+            new_cuts = copy.deepcopy(cuts)
+            new_cuts["kept_ranges"] = new_ranges
+            if truth["bounds"]:
+                new_cuts["word_sound_bounds"] = truth["bounds"]
+            config.session_dir.mkdir(parents=True, exist_ok=True)
+            _write_json(config.session_dir / "revised_cuts.json", new_cuts)
+        # Output times for the spots that need the creator, so the
+        # chat can offer chips that jump to the exact moment.
+        after = Timeline(transcript, {"kept_ranges": new_ranges,
+                                      "source_duration_s": timeline.source_duration})
+        spots = []
+        for entry in final_check["your_call"]:
+            join_index = entry["join_index"]
+            if 0 <= join_index < len(after.segments):
+                out_t = after.segments[join_index]["output_end"]
+            else:
+                out_t = entry.get("time_s", 0.0)
+            spots.append({
+                "join_index": join_index,
+                "kind": entry["kind"] if "kind" in entry else ",".join(entry["kinds"]),
+                "output_time_s": round(float(out_t), 3),
+                "source_time_s": entry.get("time_s"),
+                "text": entry.get("text", ""),
+            })
+        summary = {
+            "ran": True,
+            "internal_silences_trimmed": internal["trimmed"],
+            "internal_silence_seconds_removed": internal["seconds_removed"],
+            "edges_set": report["edges_set"],
+            "sentence_starts_fixed": guard_report["fixed"],
+            "sentence_starts_left": guard_report["left"],
+            "breaths_cut_whole": report["breaths_cut_whole"],
+            "breaths_kept_whole": report["breaths_kept_whole"],
+            "joins_checked": final_check["joins_checked"],
+            "joins_smooth": final_check["joins_smooth"],
+            "issues_fixed": check["fixed"] + final_check["fixed"],
+            "sound_truth": {
+                "edges_moved": truth["edges_moved"],
+                "cut_sounds_removed": truth["cut_sounds_removed"],
+                "kept_sounds_restored": truth["kept_sounds_restored"],
+                "orphan_sounds_bridged": truth["orphan_sounds_bridged"],
+                "slivers_dropped": truth["slivers_dropped"],
+                "status_changes": truth["status_changes"],
+                "unresolved": truth["unresolved"],
+            },
+            "your_call": spots,
+            "pauses": final_check["pauses"],
+            "changed": changed,
+        }
+        config.session_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(
+            config.session_dir / "smooth_pass.json",
+            {"at": _utc_now(), **summary},
+        )
+    except Exception as exc:  # The plan stays as it was; say so in the log.
+        _log_raw_error("smooth pass", exc)
+        summary = {"ran": False, "error": str(exc)}
+    return summary
+
+
+def _run_opening_pass(config: WebAppConfig) -> dict:
+    """The opening rule (0.24.0): the edit starts on the first
+    real line. Setup talk and abandoned first takes before it are
+    cut; the one breath right before it stays. Runs after the
+    retake pass and before the silence and smooth passes, on the
+    session's current plan, in both edit paths.
+    """
+    summary = {"ran": False}
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        words = transcript.get("words") or []
+        if not words:
+            return summary
+        cuts = _effective_cuts(config)
+        ranges = cuts.get("kept_ranges") or []
+        if not ranges:
+            return summary
+        wav_path = config.job_dir / FIRST_EDIT_WORK_NAME / "audio.wav"
+        if not wav_path.is_file():
+            source_name = intake_build.intake_source_video(config.job_dir)
+            if not source_name:
+                return summary
+            config.session_dir.mkdir(parents=True, exist_ok=True)
+            wav_path = config.session_dir / ".smooth-audio.wav"
+            if not wav_path.is_file():
+                speech.extract_audio(config.job_dir / source_name, wav_path)
+        env = smooth.envelope_db(wav_path)
+        if not env:
+            return summary
+        new_ranges, report = opening.opening_plan(
+            words, ranges, env, segments=transcript.get("segments"),
+        )
+        if report["fired"] and new_ranges != ranges:
+            new_cuts = copy.deepcopy(cuts)
+            new_cuts["kept_ranges"] = new_ranges
+            config.session_dir.mkdir(parents=True, exist_ok=True)
+            _write_json(config.session_dir / "revised_cuts.json", new_cuts)
+        summary = {"ran": True, **report}
+        config.session_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(
+            config.session_dir / "opening_pass.json",
+            {"at": _utc_now(), **summary},
+        )
+    except Exception as exc:  # The plan stays as it was; say so in the log.
+        _log_raw_error("opening pass", exc)
+        summary = {"ran": False, "error": str(exc)}
+    return summary
+
+
 def _merge_page_operations(config: WebAppConfig, audit: dict, tmp: Path) -> list:
     """Merge one pass's verified result into the session.
 
@@ -4419,6 +6596,8 @@ def _run_direction_pass(
         "route_events": [],
         "mode": settings.get("mode", "cleanest"),
         "negation_applied": 0,
+        "auto_struck": [],
+        "auto_struck_count": 0,
         "gold": 0,
         "skills": skills.builtin_versions(_picked_style(config, settings)),
     }
@@ -4514,13 +6693,21 @@ def _run_direction_pass(
             profile=str(profile_path) if profile_path.is_file() else None,
         )
         flipped: list = []
+        negation_adjust = _negation_policy(settings, remainder, flipped)
+        cut_guard = _provider_cut_guard(
+            config, named_tokens=_named_content_tokens(remainder)
+        )
         try:
             audit = _verify_and_apply(
                 args,
                 {"operations": operations},
                 tmp,
-                adjust_verdicts=_negation_policy(
-                    settings, remainder, flipped
+                adjust_verdicts=lambda verdicts, timeline, profile: (
+                    cut_guard(
+                        negation_adjust(verdicts, timeline, profile),
+                        timeline,
+                        profile,
+                    )
                 ),
             )
         except (SchemaError, ApplyError) as exc:
@@ -4571,20 +6758,28 @@ def _run_direction_pass(
             if op.get("status") in ("flagged", "rejected")
         )
         # What the pass could not settle waits in gold, recorded
-        # from the same audit the page operations came from.
+        # from the same audit the page operations came from. A
+        # candidate that is a detected repeat (its narrowed span
+        # duplicates words that stay) settles as an applied cut
+        # at this same record point instead, in every mode
+        # (v0.17, feedback items 7 and 8).
         summary["negation_applied"] = len(flipped)
-        _record_gold_spans(
+        protected_ranges = [
+            (span["word_start"], span["word_end"])
+            for span in timeline.protected_spans(profile)
+        ]
+        summary["auto_struck"] = _record_gold_detected_repeats(
             config,
             _gold_candidates_from_direction(
                 page_operations,
                 audit.get("verdicts") or [],
                 words,
-                protected_ranges=[
-                    (span["word_start"], span["word_end"])
-                    for span in timeline.protected_spans(profile)
-                ],
+                protected_ranges=protected_ranges,
             ),
+            settings.get("mode", "cleanest"),
+            protected_ranges=protected_ranges,
         )
+        summary["auto_struck_count"] = len(summary["auto_struck"])
         summary["gold"] = len(_open_gold_spans(config))
     drain = getattr(provider, "drain_usage", None)
     if callable(drain):
@@ -4614,6 +6809,8 @@ def _run_direction_pass(
             "feedback": feedback,
             "mode": summary["mode"],
             "negation_applied": summary["negation_applied"],
+            "auto_struck": summary["auto_struck"],
+            "auto_struck_count": summary["auto_struck_count"],
             "gold": summary["gold"],
             "skills": summary["skills"],
         },
@@ -4623,6 +6820,14 @@ def _run_direction_pass(
         lines.append(
             f"Read your direction and made {summary['applied']} "
             f"change{'s' if summary['applied'] != 1 else ''}."
+        )
+    if summary["auto_struck_count"] > 0:
+        struck = summary["auto_struck_count"]
+        lines.append(
+            f"{struck} detected repeat"
+            f"{'s' if struck != 1 else ''} "
+            f"{'were' if struck != 1 else 'was'} struck "
+            "automatically. You can bring any of them back."
         )
     if summary["flagged_ops"] > 0:
         lines.append(
@@ -4663,12 +6868,16 @@ def _run_direction_pass(
 #
 # The mode also settles the standing negation question as product
 # policy. A negation-bearing cut is never applied on a model's say
-# alone; but in the Cleanest cut mode, a directed cut that Muse
-# Wonder has reviewed applies when the words it removes are a
-# repeat of words that stay (a cut of a copy cannot change what the
-# kept copy says), or when the creator's own direction named that
-# span. Every other held negation cut, and every one of them in
-# Tailor it mode, waits in gold for the creator's call. When in
+# alone; but a directed cut that Muse Wonder has reviewed applies
+# when the words it removes are a repeat of words that stay (a cut
+# of a copy cannot change what the kept copy says), or when the
+# creator's own direction named that span. v0.17 (feedback items
+# 7 and 8): the repeat settlement runs in Tailor it mode too, on
+# Justin's direct instruction that detected retakes are cut
+# proactively in every way of working; a negation pair whose
+# copies say different things still waits in gold, because there
+# the choice of copy is the meaning. Every other held negation
+# cut waits in gold for the creator's call. When in
 # doubt, gold: the duplicate and naming checks are exact on
 # purpose, and a miss only means the creator sees the spot.
 # ---------------------------------------------------------------------------
@@ -4695,6 +6904,25 @@ _GOLD_REASON_RETAKE_HELD = (
     "This earlier take is said again right after, so the editor "
     "recommends cutting it and leaves the call to you."
 )
+# v0.17 (feedback item 8): the one retake case that still asks.
+# The copies say different things, so which copy survives can
+# flip the meaning; the card asks, and states the default first
+# (Justin's settled rule: the copy that includes more stays).
+_GOLD_REASON_RETAKE_DIFFER = (
+    "This line is said again right after, and the copies say "
+    "different things (one copy includes a 'not'), so this one "
+    "is your call. The default is the copy that includes more: "
+    "it stays. Cut this try, or leave both copies in."
+)
+# 0.25, finding 7: the other copies-differ case the detector
+# can prove locally. The copies name different numbers, so
+# which one stays changes what the video says.
+_GOLD_REASON_RETAKE_NUMBERS = (
+    "This line is said again right after, and the copies name "
+    "different numbers, so this one is your call. The default "
+    "is the last copy: it stays. Cut this try, or leave both "
+    "copies in."
+)
 
 _GOLD_PATTERN_DESCRIPTIONS = {
     ("negation", "cut"): (
@@ -4713,6 +6941,14 @@ _GOLD_PATTERN_DESCRIPTIONS = {
         "Keeping both takes of a repeated line the editor was "
         "not sure about, once you have seen them"
     ),
+    ("same_point", "cut"): (
+        "Taking out a passage whose point is made again later, "
+        "once you have seen both sayings"
+    ),
+    ("same_point", "leave"): (
+        "Keeping a passage whose point is made again later, as "
+        "a restatement you want in the video"
+    ),
     ("held", "cut"): (
         "Making a change the editor held back for your decision, "
         "once you have seen it"
@@ -4722,6 +6958,56 @@ _GOLD_PATTERN_DESCRIPTIONS = {
         "unmade, once you have seen it"
     ),
 }
+
+
+_GOLD_RULE_STATEMENTS = {
+    ("negation", "cut"): (
+        "Cut a passage with a negative statement once you have "
+        "seen it and said to cut it."
+    ),
+    ("negation", "leave"): (
+        "Keep a passage with a negative statement once you have "
+        "seen it and said to leave it."
+    ),
+    ("retake", "cut"): (
+        "Take out the earlier take of a repeated line once you "
+        "have seen both takes."
+    ),
+    ("retake", "leave"): (
+        "Keep both takes of a repeated line once you have seen "
+        "them."
+    ),
+    ("same_point", "cut"): (
+        "Take out a passage whose point is made again later."
+    ),
+    ("same_point", "leave"): (
+        "Keep a passage whose point is made again later, as a "
+        "restatement you want in the video."
+    ),
+    ("held", "cut"): (
+        "Make a change the editor held back for your decision, "
+        "once you have seen it."
+    ),
+    ("held", "leave"): (
+        "Leave a change the editor held back for your decision "
+        "unmade, once you have seen it."
+    ),
+}
+
+
+def _note_rule_statement(note: str) -> Optional[str]:
+    """A verdict's own words as a rule statement, or None.
+
+    His note, cleaned to one sentence: one line, first letter
+    up, a period at the end when it has no closing punctuation.
+    """
+    text = " ".join(str(note or "").split()).strip()
+    if not text:
+        return None
+    text = text[0].upper() + text[1:]
+    if text[-1] not in ".!?":
+        text += "."
+    return text
 
 
 def _gold_id(word_start: int, word_end: int, kind: str) -> str:
@@ -4753,17 +7039,1842 @@ def _record_gold_spans(config: WebAppConfig, candidates: list) -> None:
     records = _load_gold(config)
     known = {record.get("gold_id") for record in records}
     changed = False
+    fresh = []
     for candidate in candidates:
         if candidate.get("gold_id") in known:
             continue
         records.append(candidate)
         known.add(candidate.get("gold_id"))
+        fresh.append(candidate)
         changed = True
+    if fresh:
+        # A rule he saved from one of his own verdicts settles a
+        # new spot of the same kind on sight (source (c)): the
+        # decision he already made is the decision, so the spot
+        # never waits for a call he has already given.
+        _settle_gold_by_decision_rules(config, fresh)
     if changed:
         records.sort(
             key=lambda r: (r.get("word_start", 0), r.get("word_end", 0))
         )
         _save_gold(config, records)
+
+
+def _decision_rules_by_kind(config: WebAppConfig) -> dict:
+    """Saved decision rules by gold kind: {kind: "cut"|"leave"}.
+
+    A decision rule is a saved rule whose pattern key a gold
+    verdict wrote (``gold:{kind}:{decision}``): it exists only
+    because he tapped Save on the proposal that verdict made.
+    """
+    by_kind = {}
+    for rule in _rules_store(config).get("rules", []):
+        if not isinstance(rule, dict) or not rule.get("active", True):
+            continue
+        parts = str(rule.get("pattern_key") or "").split(":")
+        if (
+            len(parts) == 3
+            and parts[0] == "gold"
+            and parts[2] in ("cut", "leave")
+        ):
+            by_kind[parts[1]] = parts[2]
+    return by_kind
+
+
+def _settle_gold_by_decision_rules(
+    config: WebAppConfig, fresh: list
+) -> None:
+    """Settle newly recorded spots a saved decision rule covers.
+
+    A keep rule settles the spot as left; a cut rule runs the
+    same detected-repeat cut a verdict runs, and a cut the
+    safety rules refuse leaves the spot open, waiting for him
+    as it always has. A performed parallel repeat still waits:
+    it is emphasis said on purpose, and no saved verdict on
+    another video's spot turns it into a cut here.
+    """
+    by_kind = _decision_rules_by_kind(config)
+    if not by_kind:
+        return
+    for record in fresh:
+        if record.get("status") != "open":
+            continue
+        kind = str(record.get("kind") or "held")
+        move = by_kind.get(kind)
+        if not move:
+            continue
+        if record.get("reason") == retakes._FLAG_PARALLEL_REASON:
+            continue
+        if move == "leave":
+            record["status"] = "left"
+        else:
+            if not _apply_detected_repeat_cut(config, record):
+                continue
+            record["status"] = "cut"
+        record["settled_by_rule"] = True
+        record["decision_rule"] = f"gold:{kind}:{move}"
+        record["decided_at"] = _utc_now()
+
+
+# ---------------------------------------------------------------------------
+# The same point, said twice: a review spot, never an auto-cut
+# (0.27, Justin's length call)
+#
+# A passage whose point is made again later is an editorial
+# call, not a retake: it may be a deliberate restatement (the
+# closing prayer restates the video's point on purpose), so the
+# app never cuts it on its own. What it does is offer ONE spot
+# in the review walk, next to the your-call spans: "This makes
+# the same point as M:SS. Cut it?", with the time where the
+# point is made again in the edit. Approve runs the same cut a
+# gold verdict runs; Reject settles the spot and it is not
+# offered again.
+#
+# The detector stays tight. A candidate is a kept passage of 15
+# to 40 words whose wording substantially repeats in a later
+# kept passage (the shorter side's words largely contained in
+# the longer, most of its clauses carried over, and at least
+# four of its content words said again), the two passages at
+# least 10 words apart so an adjacent retake pair (which
+# settles as a retake) never lands here. Neither passage may
+# touch a protected span, an open your-call span, or a special
+# insert; the earlier passage may not be part of the video's
+# opening; and neither passage may be one side of a recorded
+# retake pair whose other side touches the other passage (the
+# prayer and the declaration it restates are linked by a pair,
+# and stay out). Spots already in the store are never re-found.
+# ---------------------------------------------------------------------------
+
+_SPOT_STOPWORDS = frozenset(
+    "the a an and or but if of to in on for with that this it is "
+    "was are be been am do does did have has had will would can "
+    "could should my your his her our their me him us them i you "
+    "he she we they so as at by from not no yes just like going "
+    "get got go see say said one really know even also now then "
+    "there here what when all any about into over after before "
+    "up down out off again once more most very too".split()
+)
+
+
+def _record_same_point_spots(config: WebAppConfig) -> list:
+    """Spot kept passages whose point is made again later, and
+    record each as an open gold spot for the review walk.
+
+    Returns the records added (empty when none qualify). A
+    failure inside the detector never fails the edit: the spots
+    are an offer, not a step the edit depends on.
+    """
+    if not config.has_job:
+        return []
+    try:
+        return _same_point_spots(config)
+    except Exception as exc:  # the spots never fail the edit
+        _log_raw_error("same-point spot pass", exc)
+        return []
+
+
+def _spot_output_time(timeline, words, sound_bounds, word_index: int) -> float:
+    """The word's moment in the edit, read from its measured
+    sound (the plan's own truth since fix 1): a word's stamp
+    can drift outside the piece that holds its sound, and a
+    stamp reading then names the wrong moment, or none."""
+    target = word_index
+    while target < len(words) and timeline.word_status(
+        target
+    ) not in ("kept", "special"):
+        target += 1
+    if target >= len(words):
+        return round(timeline.output_duration, 3)
+    if len(sound_bounds) == len(words):
+        mid = (
+            float(sound_bounds[target][0])
+            + float(sound_bounds[target][1])
+        ) / 2.0
+    else:
+        word = words[target]
+        mid = (float(word["start"]) + float(word["end"])) / 2.0
+    for segment in timeline.segments:
+        rng = segment["range"]
+        if float(rng["start"]) - 1e-6 <= mid <= float(
+            rng["end"]
+        ) + 1e-6:
+            return round(
+                segment["output_start"] + (mid - float(rng["start"])),
+                3,
+            )
+    return round(timeline.output_duration, 3)
+
+
+def _same_point_spots(config: WebAppConfig) -> list:
+    from bisect import bisect_left
+    from collections import Counter
+
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    words = transcript.get("words") or []
+    if not words:
+        return []
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    plan = _effective_cuts(config)
+    timeline = Timeline(transcript, plan)
+    ends = smooth.sentence_end_indices(words, transcript.get("segments"))
+    sound_bounds = plan.get("word_sound_bounds") or []
+
+    # The closing section (0.27.2): the final stretch of the
+    # edit, the last fifth of its running time on the settled
+    # plan. A passage restated there is the video landing its
+    # point on purpose (the closing prayer restates the premise
+    # he opened with), so a spot whose later saying starts
+    # inside the closing section is never recorded.
+    closing_start_s = 0.8 * float(timeline.output_duration or 0.0)
+
+    def output_time(word_index: int) -> float:
+        return _spot_output_time(timeline, words, sound_bounds, word_index)
+
+    def tokens(start: int, end: int) -> list:
+        return [
+            retakes.normalize_word(words[i].get("word", ""))
+            for i in range(start, end)
+        ]
+
+    # Kept speech, clause by clause: a kept run breaks where
+    # the transcript's sentences end (punctuation or segment
+    # boundaries, the app's canonical ends).
+    clauses: list = []
+    i = 0
+    while i < len(words):
+        if timeline.word_status(i) != "kept":
+            i += 1
+            continue
+        j = i
+        while j < len(words) and timeline.word_status(j) == "kept":
+            j += 1
+        start = i
+        for k in range(i, j):
+            if k in ends:
+                clauses.append((start, k + 1))
+                start = k + 1
+        if start < j:
+            clauses.append((start, j))
+        i = j
+    if len(clauses) < 2:
+        return []
+    clause_tokens = [tokens(s, e) for s, e in clauses]
+
+    def make_windows(min_words: int, max_words: int) -> list:
+        found = []
+        for ci in range(len(clauses)):
+            total = 0
+            for cj in range(ci, min(ci + 4, len(clauses))):
+                total += clauses[cj][1] - clauses[cj][0]
+                if total > max_words:
+                    break
+                if total >= min_words:
+                    found.append(
+                        (clauses[ci][0], clauses[cj][1], ci, cj)
+                    )
+        return found
+
+    def window_tokens(window: tuple) -> list:
+        _, _, ci, cj = window
+        out: list = []
+        for k in range(ci, cj + 1):
+            out.extend(clause_tokens[k])
+        return out
+
+    def overlaps(a: tuple, b: tuple) -> bool:
+        return a[0] < b[1] and b[0] < a[1]
+
+    protected_words: set = set()
+    for span in timeline.protected_spans(profile):
+        protected_words.update(
+            range(int(span["word_start"]), int(span["word_end"]))
+        )
+
+    def touches_protected(start: int, end: int) -> bool:
+        return any(wi in protected_words for wi in range(start, end))
+
+    gold_records = _load_gold(config)
+    open_spans = [
+        (r["word_start"], r["word_end"])
+        for r in gold_records
+        if r.get("status") == "open"
+        and isinstance(r.get("word_start"), int)
+        and isinstance(r.get("word_end"), int)
+    ]
+    known_spot_spans = [
+        (r["word_start"], r["word_end"])
+        for r in gold_records
+        if r.get("kind") == "same_point"
+        and isinstance(r.get("word_start"), int)
+        and isinstance(r.get("word_end"), int)
+    ]
+    pair_spans = []
+    for pair in _load_retake_record(config).get("pairs") or []:
+        cut = pair.get("cut") or {}
+        keep = pair.get("keep") or {}
+        if all(
+            isinstance(span.get(key), int)
+            for span in (cut, keep)
+            for key in ("word_start", "word_end")
+        ):
+            pair_spans.append(
+                (
+                    (cut["word_start"], cut["word_end"]),
+                    (keep["word_start"], keep["word_end"]),
+                )
+            )
+
+    # The opening is the video's first real line, which the
+    # opening pass already settled: a spot never opens there.
+    opening_end = clauses[0][1]
+    opening_record = _load_session_json(config, "opening_pass.json", {})
+    if isinstance(opening_record, dict):
+        first_word = opening_record.get("first_line_word")
+        if isinstance(first_word, int):
+            later = [e for e in ends if e >= first_word]
+            opening_end = (min(later) + 1) if later else first_word + 1
+
+    a_windows = make_windows(15, 40)
+    b_windows = make_windows(8, 40)
+    b_starts = [w[0] for w in b_windows]
+    b_data = [
+        (w, window_tokens(w)) for w in b_windows
+    ]
+    candidates = []
+    for a_window in a_windows:
+        a_start, a_end = a_window[0], a_window[1]
+        if a_start < opening_end:
+            continue
+        if touches_protected(a_start, a_end):
+            continue
+        if any(overlaps((a_start, a_end), span) for span in open_spans):
+            continue
+        if any(
+            overlaps((a_start, a_end), span) for span in known_spot_spans
+        ):
+            continue
+        a_tokens = window_tokens(a_window)
+        a_content = {
+            token
+            for token in a_tokens
+            if len(token) >= 3 and token not in _SPOT_STOPWORDS
+        }
+        if len(a_content) < 4:
+            continue
+        a_clauses = [
+            clause_tokens[k]
+            for k in range(a_window[2], a_window[3] + 1)
+        ]
+        first_b = bisect_left(b_starts, a_end + 10)
+        for b_window, b_tokens in b_data[first_b:]:
+            b_start, b_end = b_window[0], b_window[1]
+            if (
+                closing_start_s > 0
+                and output_time(b_start) >= closing_start_s
+            ):
+                continue
+            if touches_protected(b_start, b_end):
+                continue
+            if any(
+                overlaps((b_start, b_end), span) for span in open_spans
+            ):
+                continue
+            if len(a_content & set(b_tokens)) < 4:
+                continue
+            b_counter = Counter(b_tokens)
+            covered = 0
+            for clause in a_clauses:
+                if not clause:
+                    continue
+                shared = sum((Counter(clause) & b_counter).values())
+                if shared / len(clause) >= 0.5:
+                    covered += 1
+            coverage = covered / max(1, len(a_clauses))
+            if coverage < 0.6:
+                continue
+            shorter, longer = (
+                (a_tokens, b_tokens)
+                if len(a_tokens) <= len(b_tokens)
+                else (b_tokens, a_tokens)
+            )
+            containment = retakes._fuzzy_shared(shorter, longer) / max(
+                1, len(shorter)
+            )
+            if containment < 0.5:
+                continue
+            crossed = False
+            for cut_span, keep_span in pair_spans:
+                if (
+                    overlaps((a_start, a_end), cut_span)
+                    and overlaps((b_start, b_end), keep_span)
+                ) or (
+                    overlaps((a_start, a_end), keep_span)
+                    and overlaps((b_start, b_end), cut_span)
+                ):
+                    crossed = True
+                    break
+            if crossed:
+                continue
+            candidates.append(
+                {
+                    "word_start": a_start,
+                    "word_end": a_end,
+                    "again_word_start": b_start,
+                    "again_word_end": b_end,
+                    "containment": round(containment, 3),
+                    "coverage": round(coverage, 3),
+                }
+            )
+    candidates.sort(
+        key=lambda c: (-c["containment"], -c["coverage"], c["word_start"])
+    )
+    accepted = []
+    for candidate in candidates:
+        span = (candidate["word_start"], candidate["word_end"])
+        if any(
+            overlaps(span, (a["word_start"], a["word_end"]))
+            and min(span[1], a["word_end"]) - max(span[0], a["word_start"])
+            > 0.5 * (span[1] - span[0])
+            for a in accepted
+        ):
+            continue
+        accepted.append(candidate)
+    records = []
+    for candidate in accepted:
+        a_start, a_end = candidate["word_start"], candidate["word_end"]
+        b_start = candidate["again_word_start"]
+        b_end = candidate["again_word_end"]
+        again_s = output_time(b_start)
+        records.append(
+            {
+                "gold_id": _gold_id(a_start, a_end, "same_point"),
+                "kind": "same_point",
+                "source": "same_point",
+                "word_start": a_start,
+                "word_end": a_end,
+                "text": " ".join(
+                    str(words[i].get("word") or "")
+                    for i in range(a_start, a_end)
+                ),
+                "keep_text": " ".join(
+                    str(words[i].get("word") or "")
+                    for i in range(b_start, b_end)
+                ),
+                "keep_word_start": b_start,
+                "keep_word_end": b_end,
+                "again_word_start": b_start,
+                "again_word_end": b_end,
+                "again_output_s": again_s,
+                "reason": (
+                    "This makes the same point as "
+                    f"{_format_flag_time(again_s)}. Cut it?"
+                ),
+                "copies_differ": False,
+                "operation": None,
+                "pair_id": None,
+                "pair_key": None,
+                "status": "open",
+            }
+        )
+    _record_gold_spans(config, records)
+    return records
+
+
+# ---------------------------------------------------------------------------
+# The final sweep: one last look at the settled plan (0.27.3)
+#
+# Every pass decides from its own evidence, and a stopped take
+# can slip through the seams between them: on Justin's keyed
+# 0.27.2 run the prayer try at "offer up to God" survived
+# because the one local pair that cuts it owes its decision to
+# exact conditions over one transcript segmentation, and the
+# keyed path's judge calibration points the same shape at
+# keep-both. The sweep runs on the settled plan in every path
+# that settles one, just before the render and inside the same
+# checkpoint, and asks two questions of the plan itself (the
+# shape logic lives in final_sweep.py):
+#
+# - a kept span that trails off mid-sentence into a second or
+#   more of dead space, whose thought is said again complete
+#   later, is a stopped try: cut, with its dead space, through
+#   the same checked path as any pass; when a hard safety rule
+#   holds the cut, the span becomes a your-call spot instead;
+# - the video's final saying is never cut by a pass: if the
+#   settled plan has it cut, it is restored, and a your-call
+#   spot records that it stays unless the creator cuts it.
+#
+# The run's decisions land in final_sweep.json (counts, undo:
+# the file rides the checkpoint like the other pass records),
+# and the cuts themselves change the one plan, so the Done
+# bubble's counts include them like any pass.
+# ---------------------------------------------------------------------------
+
+_FINAL_SWEEP_CUT_REASON = (
+    "A stopped try: it trails off before the thought lands, "
+    "and the thought is said again in full right after. The "
+    "final check took it out, the same call the retake pass "
+    "makes; bring the words back if you want this try in."
+)
+_FINAL_SWEEP_HELD_REASON = (
+    "This looks like a stopped try: it trails off, and the "
+    "thought is said again in full right after. A safety check "
+    "held the cut, so the call is yours."
+)
+_FINAL_SWEEP_FINAL_REASON = (
+    "This is the last line of the video. A pass had taken it "
+    "out; the final check put it back, because the last line "
+    "only goes when you say so."
+)
+_FINAL_SWEEP_CHAIN_REASON = (
+    "A restart: this saying stops and the same thought is "
+    "said again right after, in full. The final check kept "
+    "the saying that lands and took the tries before it; "
+    "bring the words back if you want a try in."
+)
+_FINAL_SWEEP_CHAIN_HELD_REASON = (
+    "This looks like a restart: the same thought is said "
+    "again right after, in full. A safety check held the "
+    "cut, so the call is yours."
+)
+_FINAL_SWEEP_TRAILING_REASON = (
+    "This comes after the sign-off and the subscribe lines, "
+    "where the video ends. The final check took it out; "
+    "bring the words back if you want it in."
+)
+_FINAL_SWEEP_UNIQUE_REASON = (
+    "A pass took this sentence out, and nothing else in the "
+    "video says it again. The final check put it back; a "
+    "sentence said only once only goes when you say so."
+)
+_FINAL_SWEEP_UNIQUE_OP_REASON = (
+    "This sentence is said once and nothing kept says it "
+    "again. A pass had taken it out, so the final check put "
+    "it back; cut it yourself if you want it gone."
+)
+
+
+def _apply_final_saying_restore(config: WebAppConfig, start: int, end: int) -> bool:
+    """Put a cut final saying back, through the checked path.
+
+    Mirrors _apply_detected_repeat_cut: the same validate,
+    verify, and apply every edit runs, with the soft holds
+    waived (the restore is this pass's own decision) and every
+    hard rule holding exactly as written.
+    """
+    operation = {
+        "type": "restore_words",
+        "comment_id": "final-sweep",
+        "word_start": start,
+        "word_end": end,
+        "reason": (
+            "The last line of the video stays in. A pass had "
+            "taken it out, so the final check put it back; cut "
+            "it yourself if you want it gone."
+        ),
+        "confidence": 1.0,
+        "model": "mock",
+        "risk_tier": 3,
+        "wonder_reviewed": False,
+    }
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        base_cuts = _effective_cuts(config)
+        timeline = Timeline(transcript, base_cuts)
+        ops = validate_operations([operation])
+        profile = _load_optional_file(config.job_dir / "profile.json")
+        verdict = verify_operations(ops, timeline, profile)[0]
+    except (SchemaError, ApplyError, OSError, ValueError):
+        return False
+    if verdict.status == "flag" and set(verdict.reasons) <= GOLD_SOFT_HOLDS:
+        verdict.status = "apply"
+    if verdict.status != "apply":
+        return False
+    try:
+        revised, _audit = apply_verdicts(base_cuts, timeline, [verdict])
+    except (SchemaError, ApplyError):
+        return False
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    _write_json(session / "revised_cuts.json", revised)
+    return True
+
+
+def _apply_unique_sentence_restore(
+    config: WebAppConfig, start: int, end: int
+) -> bool:
+    """Put a removed once-said sentence back, through the
+    checked path. Same shape as _apply_final_saying_restore:
+    the soft holds are waived (the restore is this pass's own
+    decision), every hard rule holds exactly as written. The
+    verifier only accepts a restore over a wholly cut span,
+    and a removed sentence is usually spliced (a few words
+    kept), so the restore goes run by run over the cut
+    stretches inside the sentence."""
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+    except (OSError, ValueError):
+        return False
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    runs = []
+    plan = _effective_cuts(config)
+    timeline = Timeline(transcript, plan)
+    for i in range(start, end):
+        if timeline.word_status(i) == "kept":
+            continue
+        if runs and i == runs[-1][1]:
+            runs[-1][1] = i + 1
+        else:
+            runs.append([i, i + 1])
+    if not runs:
+        return False
+    for run_start, run_end in runs:
+        operation = {
+            "type": "restore_words",
+            "comment_id": "final-sweep",
+            "word_start": run_start,
+            "word_end": run_end,
+            "reason": _FINAL_SWEEP_UNIQUE_OP_REASON,
+            "confidence": 1.0,
+            "model": "mock",
+            "risk_tier": 3,
+            "wonder_reviewed": False,
+        }
+        try:
+            base_cuts = _effective_cuts(config)
+            timeline = Timeline(transcript, base_cuts)
+            ops = validate_operations([operation])
+            verdict = verify_operations(ops, timeline, profile)[0]
+        except (SchemaError, ApplyError, OSError, ValueError):
+            return False
+        if (
+            verdict.status == "flag"
+            and set(verdict.reasons) <= GOLD_SOFT_HOLDS
+        ):
+            verdict.status = "apply"
+        if verdict.status != "apply":
+            return False
+        try:
+            revised, _audit = apply_verdicts(
+                base_cuts, timeline, [verdict]
+            )
+        except (SchemaError, ApplyError):
+            return False
+        session = config.session_dir
+        session.mkdir(parents=True, exist_ok=True)
+        _write_json(session / "revised_cuts.json", revised)
+    return True
+
+
+def _final_sweep_spot(
+    words: list, span: dict, reason: str, operation: Optional[dict]
+) -> dict:
+    """A your-call record in the established gold shape."""
+    start, end = span["word_start"], span["word_end"]
+    again_start = span.get("completer_word_start")
+    again_end = span.get("completer_word_end")
+    return {
+        "gold_id": _gold_id(start, end, "held"),
+        "kind": "held",
+        "source": "final_sweep",
+        "word_start": start,
+        "word_end": end,
+        "text": " ".join(
+            str(words[i].get("word") or "") for i in range(start, end)
+        ),
+        "keep_text": (
+            " ".join(
+                str(words[i].get("word") or "")
+                for i in range(again_start, again_end)
+            )
+            if isinstance(again_start, int) and isinstance(again_end, int)
+            else None
+        ),
+        "keep_word_start": again_start,
+        "keep_word_end": again_end,
+        "again_word_start": again_start,
+        "again_word_end": again_end,
+        "reason": reason,
+        "copies_differ": False,
+        "operation": operation,
+        "pair_id": None,
+        "pair_key": None,
+        "status": "open",
+        "note": None,
+        "created_at": _utc_now(),
+        "decided_at": None,
+    }
+
+
+def _run_final_sweep(config: WebAppConfig) -> dict:
+    """The final sweep over the session's settled plan.
+
+    Runs inside the caller's checkpoint (the callers place it
+    between checkpoints.begin and commit), so Undo covers its
+    cuts and its restore like any pass's. Never raises: a sweep
+    failure leaves the settled plan exactly as it was.
+    """
+    summary = {
+        "ran": False,
+        "cuts": [],
+        "chains": [],
+        "trailing_cut": None,
+        "silence_ceiling": {
+            "ran": False,
+            "trimmed": 0,
+            "seconds_removed": 0.0,
+        },
+        "restored_final_saying": False,
+        "restored_sentences": [],
+        "recording_chains": [],
+        "recording_spans": [],
+        "lead_in_chains": [],
+        "spots": [],
+        "left": [],
+    }
+    if not config.has_job:
+        return summary
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        words = transcript.get("words") or []
+        if not words:
+            return summary
+        profile = _load_optional_file(config.job_dir / "profile.json")
+        plan0 = _effective_cuts(config)
+        timeline0 = Timeline(transcript, plan0)
+        profile_words: set = set()
+        for span in timeline0.protected_spans(profile):
+            try:
+                profile_words.update(
+                    range(int(span["word_start"]), int(span["word_end"]))
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        # The closing block settles where the video ends
+        # (Chunk R): the sign-off and subscribe lines complete
+        # the template, and kept speech after them is
+        # off-script. It goes through the same checked cut as
+        # any sweep cut; when it lands, the final saying below
+        # is read only up to the block's end, so the trailing
+        # speech is never mistaken for the last line.
+        fin_cap = None
+        statuses0 = [
+            timeline0.word_status(i) for i in range(len(words))
+        ]
+        bounds0 = final_sweep.word_bounds(words, plan0)
+        ends0 = final_sweep.punctuation_sentence_ends(words)
+        closing_end = final_sweep.closing_block_end(
+            words, statuses0, bounds0, ends0
+        )
+        if closing_end is not None:
+            trailing = [
+                i
+                for i in range(closing_end, len(words))
+                if statuses0[i] == "kept"
+            ]
+            if not trailing:
+                fin_cap = closing_end
+            else:
+                decided_words: set = set()
+                for record in _load_gold(config):
+                    if record.get("status") in (None, "open", "auto_cut"):
+                        continue
+                    try:
+                        decided_words.update(
+                            range(
+                                int(record["word_start"]),
+                                int(record["word_end"]),
+                            )
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                open_gold = [
+                    view
+                    for view in _open_gold_spans(config)
+                    if isinstance(view.get("word_start"), int)
+                    and isinstance(view.get("word_end"), int)
+                ]
+                held = any(
+                    i in profile_words
+                    or i in decided_words
+                    or any(
+                        view["word_start"] <= i < view["word_end"]
+                        for view in open_gold
+                    )
+                    for i in trailing
+                )
+                if held:
+                    summary["left"].append(
+                        {
+                            "word_start": trailing[0],
+                            "word_end": trailing[-1] + 1,
+                            "blocked": "protected",
+                        }
+                    )
+                else:
+                    # Cut exactly the kept trailing words, in
+                    # their contiguous runs: the checked path
+                    # rejects a span that is not fully kept, and
+                    # words after the block that an earlier pass
+                    # already cut stay cut on their own record.
+                    runs = []
+                    for i in trailing:
+                        if runs and i == runs[-1][1]:
+                            runs[-1][1] = i + 1
+                        else:
+                            runs.append([i, i + 1])
+                    landed = True
+                    for run_start, run_end in runs:
+                        operation = {
+                            "type": "cut_words",
+                            "comment_id": "final-sweep",
+                            "word_start": run_start,
+                            "word_end": run_end,
+                            "reason": _FINAL_SWEEP_TRAILING_REASON,
+                            "confidence": 1.0,
+                            "model": "mock",
+                            "risk_tier": 3,
+                            "wonder_reviewed": False,
+                        }
+                        candidate = {
+                            "word_start": run_start,
+                            "word_end": run_end,
+                            "operation": operation,
+                        }
+                        if not _apply_detected_repeat_cut(
+                            config, candidate
+                        ):
+                            landed = False
+                    if landed:
+                        summary["trailing_cut"] = {
+                            "word_start": trailing[0],
+                            "word_end": trailing[-1] + 1,
+                        }
+                        fin_cap = closing_end
+                    else:
+                        summary["left"].append(
+                            {
+                                "word_start": trailing[0],
+                                "word_end": trailing[-1] + 1,
+                                "blocked": "trailing_cut_failed",
+                            }
+                        )
+
+        def settled():
+            plan = _effective_cuts(config)
+            timeline = Timeline(transcript, plan)
+            statuses = [
+                timeline.word_status(i) for i in range(len(words))
+            ]
+            bounds = final_sweep.word_bounds(words, plan)
+            ends = final_sweep.punctuation_sentence_ends(words)
+            fin = final_sweep.final_saying_of_video(
+                words, bounds, ends, end_word=fin_cap
+            )
+            return timeline, statuses, bounds, ends, fin
+
+        timeline, statuses, bounds, ends, fin = settled()
+        summary["ran"] = True
+
+        # The final saying first: restoring it can change the
+        # units the stopped-span scan reads.
+        if fin is not None:
+            fin_start, fin_end = fin
+            decided = any(
+                record.get("gold_id")
+                == _gold_id(fin_start, fin_end, "held")
+                and record.get("status") != "open"
+                for record in _load_gold(config)
+            )
+            if not decided and any(
+                statuses[i] == "cut" for i in range(fin_start, fin_end)
+            ):
+                if _apply_final_saying_restore(config, fin_start, fin_end):
+                    summary["restored_final_saying"] = True
+                    spot = _final_sweep_spot(
+                        words,
+                        {"word_start": fin_start, "word_end": fin_end},
+                        _FINAL_SWEEP_FINAL_REASON,
+                        {
+                            "type": "cut_words",
+                            "comment_id": "final-sweep",
+                            "word_start": fin_start,
+                            "word_end": fin_end,
+                            "reason": (
+                                "You looked at the last line of the "
+                                "video and said to cut it."
+                            ),
+                            "confidence": 1.0,
+                            "model": "mock",
+                            "risk_tier": 3,
+                            "wonder_reviewed": False,
+                        },
+                    )
+                    _record_gold_spans(config, [spot])
+                    summary["spots"].append(spot["gold_id"])
+                    timeline, statuses, bounds, ends, fin = settled()
+                else:
+                    summary["left"].append(
+                        {
+                            "word_start": fin_start,
+                            "word_end": fin_end,
+                            "blocked": "restore_failed",
+                        }
+                    )
+
+        protected_words: set = set()
+        for span in timeline.protected_spans(profile):
+            try:
+                protected_words.update(
+                    range(int(span["word_start"]), int(span["word_end"]))
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        for view in _open_gold_spans(config):
+            if isinstance(view.get("word_start"), int) and isinstance(
+                view.get("word_end"), int
+            ):
+                protected_words.update(
+                    range(view["word_start"], view["word_end"])
+                )
+
+        # The post-model gate, part one (the keyed path,
+        # filming day): a sentence the settled plan removed,
+        # whose thought no kept sentence says again, comes
+        # back. The direction guard holds proposals at apply
+        # time, but the keyed path's retake judge and the
+        # restrictive auto-strike settle cuts no proposal ever
+        # carries, so on Justin's keyed Day 48 run whole
+        # once-said sentences (a verse quote, a prayer line)
+        # left the edit with no guard ever seeing them go.
+        # The gate asks the question of the settled plan
+        # itself, in every path, just before the render: a
+        # sentence counts as removed when half or fewer of
+        # its words are kept, and it stays removed only when
+        # a kept partner sentence says its thought again
+        # (the guard's own _sentence_has_partner test).
+        # Sentences are visited last-first, so when a thought
+        # was said more than once and every saying was
+        # removed, the LAST saying is the one restored and
+        # the earlier ones then have their kept partner:
+        # last take wins, the standing law. Decided spans and
+        # protected words are his calls and are never
+        # restored over; speech after the closing block
+        # belongs to the trailing rule above, not this one.
+        decided_words: set = set()
+        for record in _load_gold(config):
+            if record.get("status") in (None, "open", "auto_cut"):
+                continue
+            try:
+                decided_words.update(
+                    range(
+                        int(record["word_start"]),
+                        int(record["word_end"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        for sent in reversed(_sentence_spans(words)):
+            s0, s1 = sent
+            if s1 - s0 < 3:
+                continue
+            if closing_end is not None and s0 >= closing_end:
+                continue
+            kept_n = sum(
+                1 for i in range(s0, s1) if statuses[i] == "kept"
+            )
+            if kept_n * 2 > (s1 - s0):
+                continue
+            if any(
+                i in decided_words or i in protected_words
+                for i in range(s0, s1)
+            ):
+                continue
+            if _sentence_has_partner(
+                words, timeline, sent, set(range(s0, s1))
+            ):
+                continue
+            if _apply_unique_sentence_restore(config, s0, s1):
+                summary["restored_sentences"].append(
+                    {"word_start": s0, "word_end": s1}
+                )
+                spot = _final_sweep_spot(
+                    words,
+                    {"word_start": s0, "word_end": s1},
+                    _FINAL_SWEEP_UNIQUE_REASON,
+                    {
+                        "type": "cut_words",
+                        "comment_id": "final-sweep",
+                        "word_start": s0,
+                        "word_end": s1,
+                        "reason": (
+                            "You looked at this sentence and "
+                            "said to cut it."
+                        ),
+                        "confidence": 1.0,
+                        "model": "mock",
+                        "risk_tier": 3,
+                        "wonder_reviewed": False,
+                    },
+                )
+                _record_gold_spans(config, [spot])
+                summary["spots"].append(spot["gold_id"])
+                timeline, statuses, bounds, ends, fin = settled()
+            else:
+                summary["left"].append(
+                    {
+                        "word_start": s0,
+                        "word_end": s1,
+                        "blocked": "unique_restore_failed",
+                    }
+                )
+
+        spans = final_sweep.find_stopped_spans(
+            words,
+            statuses,
+            bounds,
+            ends,
+            protected_words=protected_words,
+            final_span=fin,
+        )
+        for span in spans:
+            entry = {
+                "word_start": span["word_start"],
+                "word_end": span["word_end"],
+                "completer_word_start": span["completer_word_start"],
+                "completer_word_end": span["completer_word_end"],
+                "gap_s": span["gap_s"],
+                "coverage": span["coverage"],
+            }
+            if span["blocked"]:
+                entry["blocked"] = span["blocked"]
+                summary["left"].append(entry)
+                continue
+            operation = {
+                "type": "cut_words",
+                "comment_id": "final-sweep",
+                "word_start": span["word_start"],
+                "word_end": span["word_end"],
+                "reason": _FINAL_SWEEP_CUT_REASON,
+                "confidence": 1.0,
+                "model": "mock",
+                "risk_tier": 3,
+                "wonder_reviewed": False,
+            }
+            candidate = {
+                "word_start": span["word_start"],
+                "word_end": span["word_end"],
+                "operation": operation,
+            }
+            if _apply_detected_repeat_cut(config, candidate):
+                summary["cuts"].append(entry)
+            else:
+                spot = _final_sweep_spot(
+                    words, span, _FINAL_SWEEP_HELD_REASON, operation
+                )
+                _record_gold_spans(config, [spot])
+                summary["spots"].append(spot["gold_id"])
+
+        # Restart chains (Chunk R): sayings that keep returning
+        # to the same opening, reduced to the saying that
+        # lands. The settled plan is re-read first: the stopped
+        # cuts above changed it. Undecided gold flags do not
+        # block these cuts (a retake flag over the same words
+        # is the same call, still unsettled, and waiting on it
+        # is how the chains survived); the creator's protected
+        # words, decided spans, and the final saying do.
+        timeline, statuses, bounds, ends, fin = settled()
+        chain_protected = set(profile_words)
+        for record in _load_gold(config):
+            if record.get("status") in (None, "open", "auto_cut"):
+                continue
+            try:
+                chain_protected.update(
+                    range(
+                        int(record["word_start"]),
+                        int(record["word_end"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        chains = final_sweep.find_restart_chains(
+            words,
+            statuses,
+            bounds,
+            ends,
+            protected_words=chain_protected,
+            final_span=fin,
+        )
+        for record in chains:
+            entry = {
+                "word_start": record["word_start"],
+                "word_end": record["word_end"],
+                "keeper_word_start": record["keeper_word_start"],
+                "keeper_word_end": record["keeper_word_end"],
+                "coverage": record["coverage"],
+                "kind": record["kind"],
+            }
+            if record["blocked"]:
+                entry["blocked"] = record["blocked"]
+                summary["left"].append(entry)
+                continue
+            operation = {
+                "type": "cut_words",
+                "comment_id": "final-sweep",
+                "word_start": record["word_start"],
+                "word_end": record["word_end"],
+                "reason": _FINAL_SWEEP_CHAIN_REASON,
+                "confidence": 1.0,
+                "model": "mock",
+                "risk_tier": 3,
+                "wonder_reviewed": False,
+            }
+            candidate = {
+                "word_start": record["word_start"],
+                "word_end": record["word_end"],
+                "operation": operation,
+            }
+            if _apply_detected_repeat_cut(config, candidate):
+                summary["chains"].append(entry)
+            else:
+                spot = _final_sweep_spot(
+                    words,
+                    record,
+                    _FINAL_SWEEP_CHAIN_HELD_REASON,
+                    operation,
+                )
+                _record_gold_spans(config, [spot])
+                summary["spots"].append(spot["gold_id"])
+
+        # The post-model gate, part two: the chain and
+        # stopped-try detections read off the recording
+        # itself. The scans above read the settled plan's
+        # units; on the keyed path the model's passes splice
+        # the tries apart first (a few words of each try cut,
+        # a few kept), so the settled units are fragments and
+        # the scans find nothing: Justin's keyed Day 48 edit
+        # kept four "And then later on I learned" tries in a
+        # row that no scan ever saw as a chain. Read off the
+        # recording's own segmentation (every word kept), the
+        # chains and tries stand whole. What they mark is
+        # enforced on the words the plan still keeps, in
+        # their contiguous runs, through the same checked
+        # path the trailing cut uses. A detection whose
+        # landing saying did not itself survive is left
+        # alone, and the hard protections hold as above.
+        timeline, statuses, bounds, ends, fin = settled()
+        all_kept = ["kept"] * len(words)
+        handled_spans = {
+            (c["word_start"], c["word_end"])
+            for c in summary["chains"] + summary["cuts"]
+        }
+
+        def cut_kept_runs(start, end, reason):
+            runs = []
+            for i in range(start, end):
+                if statuses[i] != "kept":
+                    continue
+                if runs and i == runs[-1][1]:
+                    runs[-1][1] = i + 1
+                else:
+                    runs.append([i, i + 1])
+            landed_all = True
+            for run_start, run_end in runs:
+                operation = {
+                    "type": "cut_words",
+                    "comment_id": "final-sweep",
+                    "word_start": run_start,
+                    "word_end": run_end,
+                    "reason": reason,
+                    "confidence": 1.0,
+                    "model": "mock",
+                    "risk_tier": 3,
+                    "wonder_reviewed": False,
+                }
+                candidate = {
+                    "word_start": run_start,
+                    "word_end": run_end,
+                    "operation": operation,
+                }
+                if _apply_detected_repeat_cut(config, candidate):
+                    for i in range(run_start, run_end):
+                        statuses[i] = "cut"
+                else:
+                    landed_all = False
+            return bool(runs) and landed_all
+
+        rec_chains = final_sweep.find_restart_chains(
+            words,
+            all_kept,
+            bounds,
+            ends,
+            protected_words=chain_protected,
+            final_span=fin,
+        )
+        # A keeper survives when most of it is still in the
+        # plan, or when it is itself a middle try whose own
+        # record lands on a surviving saying: the records
+        # form a ladder (try, try, landing), and the middle
+        # rungs are cut precisely because the top one lands.
+        rec_try_spans = {
+            (r["word_start"], r["word_end"])
+            for r in rec_chains
+            if not r["blocked"]
+        }
+        covered_cache: dict = {}
+
+        def keeper_survives(k0, k1):
+            if k1 <= k0:
+                return False
+            key = (k0, k1)
+            if key in covered_cache:
+                return covered_cache[key]
+            covered_cache[key] = False
+            kept_k = sum(
+                1 for i in range(k0, k1) if statuses[i] == "kept"
+            )
+            if kept_k * 2 > (k1 - k0):
+                covered_cache[key] = True
+            elif key in rec_try_spans:
+                for r in rec_chains:
+                    if (r["word_start"], r["word_end"]) == key and (
+                        keeper_survives(
+                            r["keeper_word_start"],
+                            r["keeper_word_end"],
+                        )
+                    ):
+                        covered_cache[key] = True
+                        break
+            return covered_cache[key]
+
+
+        for record in rec_chains:
+            key = (record["word_start"], record["word_end"])
+            if record["blocked"] or key in handled_spans:
+                continue
+            if not keeper_survives(
+                record["keeper_word_start"], record["keeper_word_end"]
+            ):
+                continue
+            entry = {
+                "word_start": record["word_start"],
+                "word_end": record["word_end"],
+                "keeper_word_start": record["keeper_word_start"],
+                "keeper_word_end": record["keeper_word_end"],
+                "coverage": record["coverage"],
+                "kind": record["kind"],
+            }
+            if cut_kept_runs(
+                record["word_start"],
+                record["word_end"],
+                _FINAL_SWEEP_CHAIN_REASON,
+            ):
+                summary["recording_chains"].append(entry)
+            else:
+                operation = {
+                    "type": "cut_words",
+                    "comment_id": "final-sweep",
+                    "word_start": record["word_start"],
+                    "word_end": record["word_end"],
+                    "reason": _FINAL_SWEEP_CHAIN_REASON,
+                    "confidence": 1.0,
+                    "model": "mock",
+                    "risk_tier": 3,
+                    "wonder_reviewed": False,
+                }
+                spot = _final_sweep_spot(
+                    words,
+                    record,
+                    _FINAL_SWEEP_CHAIN_HELD_REASON,
+                    operation,
+                )
+                _record_gold_spans(config, [spot])
+                summary["spots"].append(spot["gold_id"])
+
+        rec_spans = final_sweep.find_stopped_spans(
+            words,
+            all_kept,
+            bounds,
+            ends,
+            protected_words=protected_words,
+            final_span=fin,
+        )
+        for span in rec_spans:
+            key = (span["word_start"], span["word_end"])
+            if span["blocked"] or key in handled_spans:
+                continue
+            if not keeper_survives(
+                span["completer_word_start"],
+                span["completer_word_end"],
+            ):
+                continue
+            entry = {
+                "word_start": span["word_start"],
+                "word_end": span["word_end"],
+                "completer_word_start": span["completer_word_start"],
+                "completer_word_end": span["completer_word_end"],
+                "gap_s": span["gap_s"],
+                "coverage": span["coverage"],
+            }
+            if cut_kept_runs(
+                span["word_start"],
+                span["word_end"],
+                _FINAL_SWEEP_CUT_REASON,
+            ):
+                summary["recording_spans"].append(entry)
+            else:
+                operation = {
+                    "type": "cut_words",
+                    "comment_id": "final-sweep",
+                    "word_start": span["word_start"],
+                    "word_end": span["word_end"],
+                    "reason": _FINAL_SWEEP_CUT_REASON,
+                    "confidence": 1.0,
+                    "model": "mock",
+                    "risk_tier": 3,
+                    "wonder_reviewed": False,
+                }
+                spot = _final_sweep_spot(
+                    words, span, _FINAL_SWEEP_HELD_REASON, operation
+                )
+                _record_gold_spans(config, [spot])
+                summary["spots"].append(spot["gold_id"])
+
+        # Lead-in chains (his ruling, Nov 4): sayings that
+        # start the same way, close together, are the creator
+        # searching for the line, not separate points. Keep
+        # only the last complete saying, even when the earlier
+        # ones end differently: the earlier tries are cut, and
+        # the review shows ONE spot for the whole chain. A try
+        # carrying a negation the keeper does not carry, or a
+        # number the keeper does not say, is his call: it waits
+        # as a your-call spot, and its presence does not protect
+        # the other tries. A negation on both sides is no
+        # exception: the try is cut with the rest. Read
+        # off the recording like the chains above, enforced on
+        # the words the plan still keeps.
+        lead_clusters = final_sweep.find_lead_in_chains(
+            words,
+            all_kept,
+            bounds,
+            ends,
+            protected_words=chain_protected,
+            final_span=fin,
+        )
+        for cluster in lead_clusters:
+            if not keeper_survives(
+                cluster["keeper_word_start"],
+                cluster["keeper_word_end"],
+            ):
+                continue
+            landed: list = []
+            for try_ in cluster["tries"]:
+                key = (try_["word_start"], try_["word_end"])
+                if key in handled_spans:
+                    continue
+                if try_["waits"]:
+                    operation = {
+                        "type": "cut_words",
+                        "comment_id": "final-sweep",
+                        "word_start": try_["word_start"],
+                        "word_end": try_["word_end"],
+                        "reason": _FINAL_SWEEP_CHAIN_HELD_REASON,
+                        "confidence": 1.0,
+                        "model": "mock",
+                        "risk_tier": 3,
+                        "wonder_reviewed": False,
+                    }
+                    spot = _final_sweep_spot(
+                        words,
+                        {
+                            "word_start": try_["word_start"],
+                            "word_end": try_["word_end"],
+                            "completer_word_start":
+                                cluster["keeper_word_start"],
+                            "completer_word_end":
+                                cluster["keeper_word_end"],
+                        },
+                        _FINAL_SWEEP_CHAIN_HELD_REASON,
+                        operation,
+                    )
+                    _record_gold_spans(config, [spot])
+                    summary["spots"].append(spot["gold_id"])
+                    continue
+                if cut_kept_runs(
+                    try_["word_start"],
+                    try_["word_end"],
+                    _FINAL_SWEEP_CHAIN_REASON,
+                ):
+                    landed.append(try_)
+            if not landed:
+                continue
+            # The spot counts every try at the line that is
+            # cut in the final plan, including the ones an
+            # earlier pass already took: from the chair they
+            # are one chain with one keeper.
+            cut_tries = sum(
+                1
+                for try_ in cluster["tries"]
+                if not try_["waits"]
+                and all(
+                    statuses[i] == "cut"
+                    for i in range(
+                        try_["word_start"], try_["word_end"]
+                    )
+                )
+            )
+            entry = {
+                "word_start": landed[0]["word_start"],
+                "word_end": landed[-1]["word_end"],
+                "keeper_word_start": cluster["keeper_word_start"],
+                "keeper_word_end": cluster["keeper_word_end"],
+                "tries": cut_tries,
+                "kind": "lead_in_chain",
+            }
+            # ONE spot for the whole chain, in his shape:
+            # the count of tries, kept the last, bring back
+            # restores the tries (an auto_cut record over the
+            # landed try block, like every settled repeat).
+            block_start = landed[0]["word_start"]
+            block_end = landed[-1]["word_end"]
+            contiguous = all(
+                landed[i + 1]["word_start"]
+                <= landed[i]["word_end"]
+                for i in range(len(landed) - 1)
+            )
+            if contiguous:
+                record = {
+                    "gold_id": _gold_id(block_start, block_end, "auto"),
+                    "kind": "chain",
+                    "source": "final_sweep",
+                    "word_start": block_start,
+                    "word_end": block_end,
+                    "text": " ".join(
+                        str(words[i].get("word") or "")
+                        for i in range(block_start, block_end)
+                    ),
+                    "keep_text": " ".join(
+                        str(words[i].get("word") or "")
+                        for i in range(
+                            cluster["keeper_word_start"],
+                            cluster["keeper_word_end"],
+                        )
+                    ),
+                    "keep_word_start": cluster["keeper_word_start"],
+                    "keep_word_end": cluster["keeper_word_end"],
+                    "again_word_start": cluster["keeper_word_start"],
+                    "again_word_end": cluster["keeper_word_end"],
+                    "reason": (
+                        f"{cut_tries} "
+                        f"{'try' if cut_tries == 1 else 'tries'} "
+                        "at this line, kept the last. The final "
+                        "check took the earlier tries out; bring "
+                        "them back if you want one in."
+                    ),
+                    "copies_differ": False,
+                    "operation": {
+                        "type": "cut_words",
+                        "comment_id": "final-sweep",
+                        "word_start": block_start,
+                        "word_end": block_end,
+                        "reason": _FINAL_SWEEP_CHAIN_REASON,
+                        "confidence": 1.0,
+                        "model": "mock",
+                        "risk_tier": 3,
+                        "wonder_reviewed": False,
+                    },
+                    "pair_id": None,
+                    "pair_key": None,
+                    "status": "auto_cut",
+                    "auto_struck": True,
+                    "basis": "lead_in_chain",
+                    "note": None,
+                    "created_at": _utc_now(),
+                    "decided_at": _utc_now(),
+                }
+                _record_gold_spans(config, [record])
+                entry["spot"] = record["gold_id"]
+                summary["spots"].append(record["gold_id"])
+            summary["lead_in_chains"].append(entry)
+
+        # The silence ceiling (Chunk R): no silence of half a
+        # second or more survives inside a kept piece, whatever
+        # path built the plan. The smooth pass trims these gaps
+        # too, but it may not touch the quiet beside an
+        # undecided your-call span's words, and flagged spans
+        # sit exactly where the long pauses live. The sweep
+        # trims the quiet and never the words: Keep-marked
+        # words still shield the pauses beside them, and a
+        # flagged span's piece is tightened, never dropped.
+        ceiling = {"ran": False, "trimmed": 0, "seconds_removed": 0.0}
+        try:
+            wav_path = config.job_dir / FIRST_EDIT_WORK_NAME / "audio.wav"
+            if not wav_path.is_file():
+                source_name = intake_build.intake_source_video(
+                    config.job_dir
+                )
+                if source_name:
+                    config.session_dir.mkdir(parents=True, exist_ok=True)
+                    candidate_wav = (
+                        config.session_dir / ".sweep-audio.wav"
+                    )
+                    speech.extract_audio(
+                        config.job_dir / source_name, candidate_wav
+                    )
+                    if candidate_wav.is_file():
+                        wav_path = candidate_wav
+            if wav_path.is_file():
+                plan = _effective_cuts(config)
+                ranges = plan.get("kept_ranges") or []
+                if ranges:
+                    env = smooth.envelope_db(wav_path)
+                    spans = speech.measure_speech_spans(wav_path)
+                    gold_words: set = set()
+                    for view in _open_gold_spans(config):
+                        if isinstance(
+                            view.get("word_start"), int
+                        ) and isinstance(view.get("word_end"), int):
+                            gold_words.update(
+                                range(
+                                    view["word_start"],
+                                    view["word_end"],
+                                )
+                            )
+                    new_ranges, report = smooth.trim_internal_silences(
+                        words,
+                        ranges,
+                        env,
+                        segments=transcript.get("segments"),
+                        protected_words=profile_words,
+                        gold_words=gold_words,
+                        fps=timeline.fps,
+                        spans=spans,
+                    )
+                    ceiling = {
+                        "ran": True,
+                        "trimmed": report["trimmed"],
+                        "seconds_removed": report["seconds_removed"],
+                    }
+                    if new_ranges != ranges:
+                        new_cuts = copy.deepcopy(plan)
+                        new_cuts["kept_ranges"] = new_ranges
+                        config.session_dir.mkdir(
+                            parents=True, exist_ok=True
+                        )
+                        _write_json(
+                            config.session_dir / "revised_cuts.json",
+                            new_cuts,
+                        )
+        except Exception as exc:
+            _log_raw_error("final sweep silence ceiling", exc)
+        summary["silence_ceiling"] = ceiling
+
+        config.session_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(
+            config.session_dir / checkpoints.FINAL_SWEEP_FILENAME,
+            {"at": _utc_now(), **summary},
+        )
+        session_log.log_stage(
+            config.session_dir,
+            "final sweep",
+            "finish",
+            f"{len(summary['cuts'])} stopped tries cut, "
+            f"{len(summary['chains'])} restarts cut, "
+            f"trailing cut: {summary['trailing_cut'] is not None}, "
+            f"ceiling trims: {summary['silence_ceiling']['trimmed']}, "
+            f"{len(summary['spots'])} spots, "
+            f"final saying restored: {summary['restored_final_saying']}",
+        )
+    except Exception as exc:  # the sweep never breaks a run
+        _log_raw_error("final sweep", exc)
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Detected repeats settle as cuts, in every mode (v0.15 item 22,
+# extended by v0.17, feedback items 7 and 8)
+#
+# A span the app itself has detected as a repeat does not wait
+# in gold: it is struck by default, and leaving it in takes an
+# explicit ask (the creator brings the words back, like any
+# cut). The settlement happens here, at gold-record time, in
+# the two passes that produce gold candidates, so the decision
+# lands at the same point that used to park the span.
+#
+# v0.15 settled repeats only in the Cleanest cut mode. Justin's
+# 0.15 review (feedback items 7 and 8) rejected the other
+# mode's behavior outright: detected retakes were left in and
+# the app asked "recommend to remove?" instead of cutting.
+# His words: "Be proactive, cut the retakes, and let me know
+# if I need to bring them back." So the settlement now runs in
+# every way of working. The one case that still asks is a pair
+# whose copies genuinely say different things (a negation
+# pair: one copy includes a "not"); those wait in gold with
+# the default stated on the card (the copy that includes more
+# stays). Everything else that is not a detected repeat (a big
+# held change, a protected span) keeps the old behavior in
+# both modes.
+# ---------------------------------------------------------------------------
+
+
+def _auto_struck_records(config: WebAppConfig) -> list:
+    """The gold records this session settled automatically."""
+    return [
+        record
+        for record in _load_gold(config)
+        if record.get("status") == "auto_cut"
+    ]
+
+
+def _apply_detected_repeat_cut(config: WebAppConfig, candidate: dict) -> bool:
+    """Apply one detected-repeat candidate as a cut, in place.
+
+    The cut runs the same validate, verify, and apply path a gold
+    "cut" verdict runs. The soft holds that made the span gold (a
+    negation, a missing second review) are the decision this
+    settlement is making, so they do not hold it again; every other
+    safety rule (protected material, the 25 percent rule, a
+    structural problem) holds exactly as written, and when one
+    does, the cut does not land and the span stays gold.
+    """
+    start, end = candidate.get("word_start"), candidate.get("word_end")
+    if not isinstance(start, int) or not isinstance(end, int):
+        return False
+    operation = candidate.get("operation")
+    if not isinstance(operation, dict):
+        operation = {
+            "type": "cut_words",
+            "comment_id": "gold-auto-repeat",
+            "word_start": start,
+            "word_end": end,
+            "reason": (
+                "The editor detected this as a repeat and struck "
+                "it by default. Detected retakes are cut in every "
+                "way of working; bring the words back if you want "
+                "this copy in."
+            ),
+            "confidence": 1.0,
+            "model": "mock",
+            "risk_tier": 3,
+            "wonder_reviewed": False,
+        }
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        base_cuts = _effective_cuts(config)
+        timeline = Timeline(transcript, base_cuts)
+        ops = validate_operations([operation])
+        profile = _load_optional_file(config.job_dir / "profile.json")
+        verdict = verify_operations(ops, timeline, profile)[0]
+    except (SchemaError, ApplyError, OSError, ValueError):
+        return False
+    if verdict.status == "flag" and set(verdict.reasons) <= GOLD_SOFT_HOLDS:
+        verdict.status = "apply"
+    if verdict.status != "apply":
+        return False
+    try:
+        revised, _audit = apply_verdicts(base_cuts, timeline, [verdict])
+    except (SchemaError, ApplyError):
+        return False
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    _write_json(session / "revised_cuts.json", revised)
+    return True
+
+
+def _record_gold_detected_repeats(
+    config: WebAppConfig,
+    candidates: list,
+    mode: str,
+    protected_ranges=(),
+) -> list:
+    """Record one pass's gold candidates, settling repeats first.
+
+    In every way of working (v0.17; v0.15 settled only in
+    cleanest mode), a candidate whose basis is detection of a
+    repeat settles as an applied cut instead of waiting in gold:
+
+    - every retake candidate (an earlier take said again right
+      after; basis ``retake_repeat``);
+    - a direction ``cut_words`` / ``replace_take`` candidate whose
+      narrowed span duplicates words that stay, by the same exact
+      test the negation policy uses (basis ``duplicate``),
+      whatever its soft-hold reason.
+
+    The one repeat that does not settle: a pair whose copies
+    genuinely say different things (``copies_differ``: a
+    negation pair, copies naming different numbers, or a
+    parallel repeat said on purpose). Which copy survives can
+    flip the meaning, so it waits in gold as a question, with
+    the default stated on its card (feedback item 8). The
+    ``mode`` argument is still accepted from the passes; it no
+    longer gates the settlement.
+
+    A candidate that overlaps protected material never settles,
+    and a cut the verifier still refuses for any non-soft reason
+    (protected material, the 25 percent rule, a structural hold)
+    stays gold. Settled spans are recorded in the gold store with
+    status ``auto_cut`` (word spans plus basis), so they are never
+    offered as waiting spots, and their cuts sit in the plan like
+    any cut, restorable by the usual bring-back and undo. Returns
+    the settled spans, as the run record carries them.
+    """
+    if not candidates:
+        _record_gold_spans(config, candidates)
+        return []
+    if not config.has_job:
+        _record_gold_spans(config, candidates)
+        return []
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    protected = [
+        (span["word_start"], span["word_end"])
+        for span in Timeline(
+            transcript, _effective_cuts(config)
+        ).protected_spans(profile)
+    ]
+    protected.extend(
+        (int(s), int(e)) for s, e in (protected_ranges or ())
+    )
+
+    def overlaps_protected(start: int, end: int) -> bool:
+        return any(
+            start < p_end and p_start < end for p_start, p_end in protected
+        )
+
+    # A your-call span is never cut without the creator's yes
+    # (0.27, fix 8): an open gold record whose copies genuinely
+    # differ (copies_differ: the record IS a your-call), and any
+    # span this same batch is parking as a your-call, blocks the
+    # settlement for any candidate that overlaps it, even a
+    # candidate that claims its own copies match. The settlement
+    # used to replace an open record for the same span with its
+    # auto_cut record; that is how a labeled your-call line
+    # ("Because if I'm going to be praying...") was struck by a
+    # later pass. An open record that is NOT a your-call (a
+    # plain detected repeat parked by an older rule) gains no
+    # such protection: re-spotting it settles it, per the v0.15
+    # contract (test_v15_strictest).
+    # Filming-day P0-4 (restrictive by default, his choice):
+    # a likely retake settles as a cut and is shown as a spot
+    # he can bring back, never left in for him to find. The
+    # one differing repeat that still waits is the parallel
+    # line inside one sentence: performed repetition is
+    # content, not a take. Only those spans still block.
+    def _still_waits(record) -> bool:
+        return bool(
+            record.get("copies_differ")
+            and record.get("reason") == retakes._FLAG_PARALLEL_REASON
+        )
+
+    gold_blocked = [
+        (int(record["word_start"]), int(record["word_end"]))
+        for record in _load_gold(config)
+        if record.get("status") == "open"
+        and _still_waits(record)
+        and isinstance(record.get("word_start"), int)
+        and isinstance(record.get("word_end"), int)
+    ]
+    gold_blocked.extend(
+        (int(c["word_start"]), int(c["word_end"]))
+        for c in candidates
+        if _still_waits(c)
+        and isinstance(c.get("word_start"), int)
+        and isinstance(c.get("word_end"), int)
+    )
+
+    def overlaps_gold(start: int, end: int) -> bool:
+        return any(
+            start < g_end and g_start < end
+            for g_start, g_end in gold_blocked
+        )
+
+    settled: list = []
+    waiting: list = []
+    for candidate in candidates:
+        start, end = candidate.get("word_start"), candidate.get("word_end")
+        basis = None
+        if (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and 0 <= start < end <= len(transcript.get("words", []))
+            and not overlaps_protected(start, end)
+            and not overlaps_gold(start, end)
+            and not _still_waits(candidate)
+        ):
+            if candidate.get("source") == "retakes":
+                basis = "retake_repeat"
+            elif candidate.get("source") == "direction":
+                operation = candidate.get("operation")
+                op_type = (
+                    operation.get("type")
+                    if isinstance(operation, dict)
+                    else candidate.get("type")
+                )
+                if op_type in ("cut_words", "replace_take"):
+                    timeline = Timeline(
+                        transcript, _effective_cuts(config)
+                    )
+                    if _span_duplicates_kept(timeline, start, end):
+                        basis = "duplicate"
+        if basis is None:
+            waiting.append(candidate)
+            continue
+        if not _apply_detected_repeat_cut(config, candidate):
+            waiting.append(candidate)
+            continue
+        record = dict(candidate)
+        record["status"] = "auto_cut"
+        record["auto_struck"] = True
+        record["basis"] = basis
+        record["decided_at"] = _utc_now()
+        settled.append(record)
+        if record.get("pair_key"):
+            # The pair is decided, the same record a gold cut
+            # verdict writes, so it is never proposed again.
+            retake_record = _load_retake_record(config)
+            decisions = retake_record.setdefault("decisions", {})
+            decisions[record["pair_key"]] = {
+                "keep_both": False,
+                "source": "auto_repeat",
+            }
+            _save_retake_record(config, retake_record)
+    _record_gold_spans(config, waiting)
+    if settled:
+        # A settled span REPLACES any record the store already
+        # holds for it: the same span may have been recorded open
+        # by an earlier run (the creator never decided it), and
+        # the store's usual keep-the-existing-record rule, which
+        # protects verdicts already given, must not leave a struck
+        # span still offered as waiting. (A span the creator DID
+        # decide can never be a candidate again, so no verdict is
+        # ever overwritten here.)
+        records = _load_gold(config)
+        by_id = {
+            record.get("gold_id"): index
+            for index, record in enumerate(records)
+        }
+        for record in settled:
+            index = by_id.get(record.get("gold_id"))
+            if index is None:
+                records.append(record)
+            else:
+                records[index] = record
+        records.sort(
+            key=lambda r: (r.get("word_start", 0), r.get("word_end", 0))
+        )
+        _save_gold(config, records)
+    return [
+        {
+            "gold_id": record.get("gold_id"),
+            "word_start": record.get("word_start"),
+            "word_end": record.get("word_end"),
+            "kind": record.get("kind"),
+            "source": record.get("source"),
+            "basis": record.get("basis"),
+            "text": record.get("text"),
+        }
+        for record in settled
+    ]
 
 
 def _gold_view(record: dict) -> dict:
@@ -4773,12 +8884,66 @@ def _gold_view(record: dict) -> dict:
         "word_start": record.get("word_start"),
         "word_end": record.get("word_end"),
         "kind": record.get("kind"),
+        "source": record.get("source"),
+        "pair_id": record.get("pair_id"),
         "reason": record.get("reason"),
         "text": record.get("text"),
         "keep_text": record.get("keep_text"),
         "keep_word_start": record.get("keep_word_start"),
         "keep_word_end": record.get("keep_word_end"),
+        "again_word_start": record.get("again_word_start"),
+        "again_word_end": record.get("again_word_end"),
+        "again_output_s": record.get("again_output_s"),
     }
+
+
+def _refresh_same_point_times(
+    config: WebAppConfig, records: list, transcript: dict, plan: dict, timeline
+) -> None:
+    """Re-read a stored spot's "says it again" time from sound.
+
+    A spot stored before the detector learned to read sound
+    names the moment its stamp arithmetic produced (2:57 on
+    the stored Day 30 job), while the repeat actually sits at
+    0:57 by measured sound. Fresh runs record the sound time;
+    a stored spot is re-measured when the job opens, here, and
+    the record is healed in place when the number really moved
+    (0.27.1, run-through finding 5).
+    """
+    words = transcript.get("words") or []
+    sound_bounds = plan.get("word_sound_bounds") or []
+    changed = []
+    for record in records:
+        if record.get("kind") != "same_point":
+            continue
+        again = record.get("again_word_start")
+        if not isinstance(again, int) or not 0 <= again < len(words):
+            continue
+        fresh = _spot_output_time(timeline, words, sound_bounds, again)
+        stored = record.get("again_output_s")
+        if isinstance(stored, (int, float)) and abs(
+            float(stored) - fresh
+        ) <= 0.5:
+            continue
+        record["again_output_s"] = fresh
+        record["reason"] = (
+            "This makes the same point as "
+            f"{_format_flag_time(fresh)}. Cut it?"
+        )
+        changed.append(record)
+    if not changed:
+        return
+    try:
+        all_records = _load_gold(config)
+        by_id = {r.get("gold_id"): r for r in all_records}
+        for record in changed:
+            saved = by_id.get(record.get("gold_id"))
+            if saved is not None:
+                saved["again_output_s"] = record["again_output_s"]
+                saved["reason"] = record["reason"]
+        _save_gold(config, all_records)
+    except Exception:
+        pass
 
 
 def _open_gold_spans(config: WebAppConfig) -> list:
@@ -4798,7 +8963,9 @@ def _open_gold_spans(config: WebAppConfig) -> list:
     if not records or not config.has_job:
         return []
     transcript = _load_json(str(config.job_dir / "transcript.json"))
-    timeline = Timeline(transcript, _effective_cuts(config))
+    plan = _effective_cuts(config)
+    timeline = Timeline(transcript, plan)
+    _refresh_same_point_times(config, records, transcript, plan, timeline)
     views = []
     for record in records:
         start, end = record.get("word_start"), record.get("word_end")
@@ -4823,21 +8990,46 @@ def _mode_and_gold_lines(config: WebAppConfig, settings: dict) -> list:
     mode = settings.get("mode", "cleanest")
     label = MODE_LABELS.get(mode, MODE_LABELS["cleanest"])
     lines = [f"Your way of working: {label}."]
-    count = len(_open_gold_spans(config))
+    # v0.17 (feedback items 7 and 8): detected repeats are struck
+    # in every mode now, so the struck line is said in every
+    # mode, and the spots still waiting are never dressed up as
+    # "recommended to remove" for a repeat's sake: they are the
+    # few genuine calls (copies that say different things, big
+    # held changes), named as waiting for his call.
+    # One count (0.26, fix 3): these lines used to recount on
+    # their own, struck records in one unit and gold spans in
+    # another, and disagreed with the Done bubble on the same
+    # edit. They read the one count now: copies removed for the
+    # struck line, spots to review for the waiting line. When
+    # the count cannot be read, the lines name no number at all
+    # rather than recounting in a different unit.
+    try:
+        counts = _edit_counts(config)
+    except Exception:
+        counts = None
+    if counts is None:
+        return lines
+    struck = counts["retakes_removed"] if counts else 0
+    if struck:
+        lines.append(
+            f"{struck} detected repeat"
+            f"{'s' if struck != 1 else ''} "
+            f"{'were' if struck != 1 else 'was'} struck "
+            "automatically. You can bring any of them back."
+        )
+    count = counts["spots_to_review"] if counts else 0
     spots = f"{count} spot{'s' if count != 1 else ''}"
     if mode == "tailor":
         if count:
             lines.append(
-                f"{spots} marked as recommended to remove "
-                f"{'are' if count != 1 else 'is'} waiting for your call."
+                f"{spots} {'are' if count != 1 else 'is'} "
+                "waiting for your call."
             )
         else:
-            lines.append(
-                "No spots are marked as recommended to remove."
-            )
+            lines.append("No spots are waiting for your call.")
     elif count:
         lines.append(
-            f"{spots} marked as recommended to remove, "
+            f"{spots} waiting for your call, "
             f"for when you want "
             f"{'them' if count != 1 else 'it'}."
         )
@@ -5173,6 +9365,12 @@ def _gold_candidates_from_direction(
     return candidates
 
 
+def _words_key(text: str) -> str:
+    """A comparison key for two copies of a line: the words
+    only, case and punctuation aside."""
+    return " ".join(re.findall(r"[a-z0-9']+", str(text).lower()))
+
+
 def _gold_candidates_from_retakes(
     pairs: list, words: list, protected_ranges=()
 ) -> list:
@@ -5184,10 +9382,16 @@ def _gold_candidates_from_retakes(
     and could not settle it. Pairs the model judged and settled
     (keep both, not a pair) are decisions already, not gold.
 
-    Each span is narrowed to the words the take that stays
-    actually repeats (v0.9.0): a cut side that runs past the
-    repeated words is split, and each repeated part is offered,
-    and settled, on its own.
+    A pair's cut span is offered whole (0.25.0): the retake
+    engine already measured that span as the earlier take, and
+    narrowing it to the words the keeper repeats exactly (the
+    v0.9.0 rule) cut the take in pieces whenever the reworded
+    take diverged, leaving the earlier take's unmatched words in
+    the edit, spliced against the keeper (Justin's 0.24 Mac
+    test, finding 2). A detected retake settles as one cut: the
+    whole earlier take out, the whole later take kept. The
+    narrowing still applies to direction holds, whose spans are
+    not delivery units.
     """
     candidates = []
     for pair in pairs:
@@ -5200,7 +9404,79 @@ def _gold_candidates_from_retakes(
             continue
         if not 0 <= start < end <= len(words):
             continue
-        if outcome == "flagged" and pair.get("band") == "flag":
+        # v0.17 (feedback item 8): a pair whose copies genuinely
+        # say different things is the one retake case that still
+        # asks. Two things must both hold: the pair carries the
+        # negation flag (one copy includes a 'not'; the flag
+        # text rides on the pair as "reason" in a saved record
+        # and as "flag_reason" in a freshly scored pair), and
+        # the copies' words actually differ. The same line said
+        # twice with a 'not' in it carries the flag too, but
+        # identical copies do not differ in content and settle
+        # like every other detected repeat.
+        keep = pair.get("keep") or {}
+        keep_start_pre = keep.get("word_start")
+        keep_end_pre = keep.get("word_end")
+        cut_text = " ".join(
+            str(words[i].get("word") or "") for i in range(start, end)
+        )
+        keep_text = str(keep.get("text") or "")
+        if not keep_text and isinstance(keep_start_pre, int) \
+                and isinstance(keep_end_pre, int) \
+                and 0 <= keep_start_pre < keep_end_pre <= len(words):
+            keep_text = " ".join(
+                str(words[i].get("word") or "")
+                for i in range(keep_start_pre, keep_end_pre)
+            )
+        negation_flag = (
+            pair.get("flag_reason") == retakes._FLAG_NEGATION_REASON
+            or pair.get("reason") == retakes._FLAG_NEGATION_REASON
+            # A pair the verifier held (not a policy flag) carries
+            # no flag text, but its own record knows the copies
+            # differ by a negation (0.27, fix 8: ``negation`` on a
+            # pair means exactly one copy carries a "not"). That
+            # is a your-call span too, and the settlement must not
+            # strike it as a plain repeat.
+            or bool(pair.get("negation"))
+        )
+        # 0.25, finding 7: a pair waits for the creator only
+        # when its copies genuinely say different things. Three
+        # shapes the local record can prove: a negation in one
+        # copy and the words actually differ; the copies name
+        # different numbers (a fact changed between tries); or
+        # the pair is a parallel repeat inside one sentence,
+        # which is emphasis said on purpose, not a take. Every
+        # other detected retake settles as a cut at record time.
+        flag_text = pair.get("flag_reason") or pair.get("reason")
+        parallel_flag = flag_text == retakes._FLAG_PARALLEL_REASON
+        numbers_differ = bool(
+            flag_text == retakes._FLAG_NUMBER_REASON
+            or pair.get("numbers_differ")
+            or (
+                cut_text
+                and keep_text
+                and retakes._numbers_differ(
+                    [retakes.normalize_word(w) for w in cut_text.split()],
+                    [retakes.normalize_word(w) for w in keep_text.split()],
+                )
+            )
+        )
+        copies_differ = bool(
+            (
+                negation_flag
+                and keep_text
+                and _words_key(cut_text) != _words_key(keep_text)
+            )
+            or parallel_flag
+            or numbers_differ
+        )
+        if copies_differ and parallel_flag:
+            reason = retakes._FLAG_PARALLEL_REASON
+        elif copies_differ and numbers_differ and not negation_flag:
+            reason = _GOLD_REASON_RETAKE_NUMBERS
+        elif copies_differ:
+            reason = _GOLD_REASON_RETAKE_DIFFER
+        elif outcome == "flagged" and pair.get("band") == "flag":
             reason = str(pair.get("reason") or _GOLD_REASON_RETAKE_HELD)
         elif outcome == "flagged":
             reason = retakes.band_b_flag_reason(pair)
@@ -5209,18 +9485,14 @@ def _gold_candidates_from_retakes(
         keep = pair.get("keep") or {}
         keep_start = keep.get("word_start")
         keep_end = keep.get("word_end")
-        if isinstance(keep_start, int) and isinstance(keep_end, int):
-            pieces = _narrow_held_span(
-                words,
-                start,
-                end,
-                list(range(keep_start, keep_end)),
-                protected_ranges,
-            )
-        else:
-            pieces = _split_around_protected(
-                start, end, protected_ranges
-            )
+        # The pair is one choice: the whole earlier take is the
+        # span on the card, never narrowed into pieces. (Before
+        # 0.25.0 a non-differing pair was narrowed to the exact
+        # repeated runs against the keeper; the unmatched words
+        # of the earlier take then survived as splices.)
+        pieces = _split_around_protected(
+            start, end, protected_ranges
+        )
         for piece_start, piece_end in pieces:
             candidates.append(
                 {
@@ -5239,6 +9511,7 @@ def _gold_candidates_from_retakes(
                     "keep_word_end": keep.get("word_end"),
                     "pair_id": pair.get("pair_id"),
                     "pair_key": retakes.pair_key(pair),
+                    "copies_differ": copies_differ,
                     "operation": None,
                     "status": "open",
                     "note": None,
@@ -5247,6 +9520,112 @@ def _gold_candidates_from_retakes(
                 }
             )
     return candidates
+
+
+_BOUNDARY_REJECT_REASONS = frozenset(
+    {"word_boundary_split", "frame_quantization_clips_neighbor"}
+)
+
+
+def _expand_cut_span(timeline: Timeline, start: int, end: int) -> tuple:
+    """Widen a cut span to whole words and whole units at its edges.
+
+    A word whose span contains the cut's quantized edge joins the
+    cut, so the edge can no longer land inside it. Then the saying
+    the span starts inside starts the cut, when its head words are
+    all still in the edit; and the saying it ends inside ends the
+    cut, when that saying never lands its sentence and its
+    remaining words are all still in the edit. A finished sentence
+    is never swallowed past the span's last word: the widening
+    covers the spot's own saying, not the next one.
+    """
+    from .timeline import EPS, quantize_ceil, quantize_floor
+
+    words = timeline.words
+    total = len(words)
+
+    def edge_inside(q: float, i: int) -> bool:
+        ws = float(words[i]["start"])
+        we = float(words[i]["end"])
+        return ws + EPS < q < we - EPS
+
+    def widen_words(s: int, e: int) -> tuple:
+        while s > 0 and edge_inside(
+            quantize_floor(float(words[s]["start"]), timeline.fps), s - 1
+        ):
+            s -= 1
+        while e < total and edge_inside(
+            quantize_ceil(float(words[e - 1]["end"]), timeline.fps), e
+        ):
+            e += 1
+        return s, e
+
+    s, e = widen_words(start, end)
+    for unit in retakes.segment_units(timeline):
+        if unit["word_start"] < s < unit["word_end"]:
+            if all(
+                timeline.word_status(i) == "kept"
+                for i in range(unit["word_start"], s)
+            ):
+                s = unit["word_start"]
+        if (
+            unit["word_start"] < e <= unit["word_end"]
+            and e < unit["word_end"]
+            and not unit["terminal"]
+            and all(
+                timeline.word_status(i) == "kept"
+                for i in range(e, unit["word_end"])
+            )
+        ):
+            e = unit["word_end"]
+    s, e = widen_words(s, e)
+    return s, e
+
+
+def _propose_decision_rule(
+    config: WebAppConfig,
+    kind: str,
+    decision: str,
+    note: str,
+    gold_id: str,
+) -> None:
+    """Offer one verdict's pattern as a rule, once (source (c)).
+
+    The proposal is a thread entry carrying the pattern and its
+    statement: his own note when he gave one (his words first),
+    the pattern's plain statement otherwise. One open proposal
+    per pattern; none once the pattern is already a saved rule.
+    Nothing is saved here: the offer only shows, and Save and
+    Not now ride the rule endpoints like every other offer.
+    """
+    pattern = f"gold:{kind}:{decision}"
+    store = _rules_store(config)
+    if any(
+        isinstance(rule, dict) and rule.get("pattern_key") == pattern
+        for rule in store.get("rules", [])
+    ):
+        return
+    if any(
+        entry.get("kind") == "rule_proposal"
+        and entry.get("pattern_key") == pattern
+        and entry.get("status") == "open"
+        for entry in _load_thread(config)
+    ):
+        return
+    statement = _note_rule_statement(note) or _GOLD_RULE_STATEMENTS.get(
+        (kind, decision), _GOLD_RULE_STATEMENTS[("held", decision)]
+    )
+    _append_thread(
+        config,
+        {
+            "kind": "rule_proposal",
+            "status": "open",
+            "pattern_key": pattern,
+            "statement": statement,
+            "gold_id": gold_id,
+            "text": "Make this a rule for future edits? " + statement,
+        },
+    )
 
 
 def _gold_verdict(
@@ -5302,6 +9681,40 @@ def _gold_verdict(
         verdict = verify_operations(ops, timeline, profile)[0]
         if verdict.status == "flag" and set(verdict.reasons) <= GOLD_SOFT_HOLDS:
             verdict.status = "apply"
+        if (
+            verdict.status == "reject"
+            and _BOUNDARY_REJECT_REASONS & set(verdict.reasons)
+            and operation.get("type") == "cut_words"
+        ):
+            # An approval never refuses on the word-boundary guard
+            # (0.27.2): the creator said cut this spot, so the cut
+            # widens to whole words and whole units at its edges
+            # and is checked again, instead of bouncing back with
+            # "That edit would split a word in half." Every other
+            # safety rule still judges the widened cut exactly as
+            # written, and a widened cut that still fails is
+            # refused with its real reason.
+            op_start = operation.get("word_start", start)
+            op_end = operation.get("word_end", end)
+            if isinstance(op_start, int) and isinstance(op_end, int):
+                wide_start, wide_end = _expand_cut_span(
+                    timeline, op_start, op_end
+                )
+                if (wide_start, wide_end) != (op_start, op_end):
+                    wide_operation = dict(operation)
+                    wide_operation["word_start"] = wide_start
+                    wide_operation["word_end"] = wide_end
+                    wide_ops = validate_operations([wide_operation])
+                    wide_verdict = verify_operations(
+                        wide_ops, timeline, profile
+                    )[0]
+                    if (
+                        wide_verdict.status == "flag"
+                        and set(wide_verdict.reasons) <= GOLD_SOFT_HOLDS
+                    ):
+                        wide_verdict.status = "apply"
+                    if wide_verdict.status == "apply":
+                        verdict = wide_verdict
         if verdict.status != "apply":
             return {
                 "ok": True,
@@ -5354,10 +9767,7 @@ def _gold_verdict(
         "source": "gold",
         "created_at": _utc_now(),
     }
-    entries = creator_rules.merge_grade_entries(
-        _load_grades(config), [entry]
-    )
-    _save_grades(config, entries)
+    _merge_and_save_grades(config, [entry])
     if note and decision == "cut":
         # The note also lands on the edit the cut just made, in the
         # same store the transcript dots read, so it stays visible
@@ -5384,16 +9794,35 @@ def _gold_verdict(
             }
         )
         _save_edit_notes(config, payload)
+    if not _is_test_video(config):
+        _propose_decision_rule(config, kind, decision, note, gold_id)
     record["status"] = "cut" if decision == "cut" else "left"
     record["note"] = note or None
     record["decided_at"] = _utc_now()
     _save_gold(config, records)
     checkpoints.commit(
         config,
-        "Spot recommended to remove, cut"
+        # v0.17 (feedback item 8): the held spot's history
+        # label drops "recommended to remove" with the rest
+        # of that wording.
+        "Spot left for your call, cut"
         if decision == "cut"
-        else "Spot recommended to remove, left in",
+        else "Spot left for your call, left in",
     )
+    try:
+        _settle_thread_entry(
+            config,
+            {"kind": "held", "gold_id": gold_id, "status": "open"},
+            {"status": "settled", "decision": decision},
+        )
+        if decision == "leave" and not _is_test_video(config):
+            _append_why_thread(
+                config,
+                f"gold-grade-{gold_id}",
+                "Why are you leaving that in?",
+            )
+    except Exception:
+        pass
     result = {
         "ok": True,
         "gold_id": gold_id,
@@ -5410,6 +9839,3102 @@ def _gold_verdict(
         # ask about.
         result["why_prompt"] = {"entry_id": f"gold-grade-{gold_id}"}
     return result
+
+
+# ---------------------------------------------------------------------------
+# The Editor thread (v0.15, Batch E1): the conversation panel's record
+#
+# One thread per job, stored in the job's session folder beside the
+# gold store (thread.json, in the same _load/_save shape). Entries
+# are creator messages, editor replies, run summaries, held items,
+# rule approvals, pinned comments, and why questions. Nothing is
+# ever rewritten or deleted by the editor: a correction is a new
+# entry, and a decision settles its entry in place (decision plus
+# the time of day). Each entry carries the time of day it was said,
+# as plain text ("9:02 AM"), never as a video time.
+#
+# Held items, pins, and why questions are not a parallel record:
+# the gold store, the feedback store, and the grades store stay
+# the truth, and the thread sync below mirrors their open state
+# into entries (and settles thread entries when those stores
+# settle), so deciding in the thread goes through the existing
+# endpoints and deciding anywhere else still shows here.
+# ---------------------------------------------------------------------------
+
+_WHY_CHOICE_LABELS = {
+    "story": "It matters to the story",
+    "sound": "It sounds better this way",
+    "say_it": "That is how I say it",
+    "other": "Other",
+}
+
+THREAD_FILENAME = "thread.json"
+THREAD_PENDING_FILENAME = "thread_pending.json"
+
+
+def _time_of_day(when=None) -> str:
+    """A wall-clock time of day in plain words: "9:02 AM"."""
+    moment = when or datetime.now().astimezone()
+    return moment.strftime("%I:%M %p").lstrip("0")
+
+
+def _time_label_from_iso(value) -> str:
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return _time_of_day()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return _time_of_day(moment.astimezone())
+
+
+def _load_thread(config: WebAppConfig) -> list:
+    payload = _load_session_json(config, THREAD_FILENAME, {"entries": []})
+    if isinstance(payload, dict) and isinstance(payload.get("entries"), list):
+        return [e for e in payload["entries"] if isinstance(e, dict)]
+    return []
+
+
+def _save_thread(config: WebAppConfig, entries: list) -> None:
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(config.session_dir / THREAD_FILENAME, {"entries": entries})
+
+
+# The run labels whose Done bubble carries the run's own Undo
+# (0.26): a front-door "Make the edit" run and an intake first
+# edit each commit exactly one checkpoint under one of these
+# labels, and that checkpoint is the run's saved pre-run state.
+_DONE_ACTION_LABELS = ("Front door run", "First edit")
+
+
+def _prepare_run_entry(config: WebAppConfig, entry: dict) -> None:
+    """Undo wiring for one chat run entry, before it is stored.
+
+    A run begins when its progress entry is first written (and
+    again when a later run in the same entry names a fresh
+    start, the Try again shape): the session splice as it
+    stands then is the run's "before" video, saved with the
+    run's entry id (see the run video snapshots). When the
+    run's Done payload is stored, the splice the run built is
+    saved as its "after" video, and the entry takes the run's
+    checkpoint as its action, the same contract direction runs
+    have always carried, so the one per-action move path
+    (_thread_action_move) undoes and redoes the whole run.
+    """
+    entry_id = entry.get("id")
+    if not entry_id:
+        return
+    if "chat_progress" in entry:
+        progress = entry.get("chat_progress")
+        progress = progress if isinstance(progress, dict) else {}
+        existing = _find_thread_entry(config, entry_id)
+        begins = True
+        if existing is not None and (
+            "chat_progress" in existing or "chat_done" in existing
+        ):
+            old = existing.get("chat_progress")
+            old = old if isinstance(old, dict) else {}
+            named = progress.get("started_at_ms")
+            begins = bool(named) and named != old.get(
+                "started_at_ms"
+            )
+        if begins:
+            try:
+                _snapshot_run_video(config, entry_id, "before")
+            except Exception:
+                pass
+    if "chat_done" in entry:
+        if not entry.get("action_id"):
+            action_id, label = _current_action_id(
+                config, _DONE_ACTION_LABELS
+            )
+            if action_id:
+                entry["action_id"] = action_id
+                entry["action_label"] = label
+                entry.setdefault("undone", False)
+        try:
+            _snapshot_run_video(config, entry_id, "after")
+        except Exception:
+            pass
+
+
+def _append_thread(config: WebAppConfig, entry: dict) -> dict:
+    """Append one entry to this job's thread; returns the entry.
+
+    (0.26, fix 6) A chat run entry, one carrying a chat_progress
+    or chat_done payload, is upserted by id instead of appended:
+    the progress entry written when Make the edit starts is the
+    same entry its stage updates rewrite and the Done payload
+    finally replaces, so a run leaves exactly one entry in the
+    thread, never a trail of stage entries and never a stale
+    progress entry beside the Done. While the entry is progress
+    it keeps its first created_at (its place in the thread is
+    where the run began); the Done replacement is said when the
+    edit finishes, so it takes a fresh created_at. The server
+    stamps the progress payload's started_at_ms from its own
+    clock when a run entry is first written; a stage update
+    that does not name a start keeps the original, and only an
+    update that names one outright (Try again, a new run in the
+    same entry) moves the start.
+
+    A run entry written while a job is current is mirrored
+    into the launch home's thread as well. The run starts at
+    the front door, in the launch thread, and the job's thread
+    takes over at adoption; without the mirror the launch copy
+    would stay frozen at its last pre-adoption stage, and the
+    next launch, which reads the launch thread before any job
+    is open, would show a stale progress entry for a run that
+    finished (or never learn that it did). With the mirror,
+    both stores hold the run's true state under the same id.
+    """
+    _prepare_run_entry(config, entry)
+    stored = _append_thread_one(config, entry)
+    if (
+        ("chat_progress" in entry or "chat_done" in entry)
+        and config.has_job
+    ):
+        launch = WebAppConfig(None, launch_home=config.launch_home)
+        if launch.session_dir != config.session_dir:
+            _append_thread_one(launch, entry)
+    return stored
+
+
+def _append_thread_one(config: WebAppConfig, entry: dict) -> dict:
+    """The upsert above, for one thread store."""
+    with _THREAD_LOCK:
+        entries = _load_thread(config)
+        stored = dict(entry)
+        stored.setdefault("id", uuid.uuid4().hex[:12])
+        stored.setdefault("created_at", _utc_now())
+        stored["time_label"] = _time_of_day()
+        progress = stored.get("chat_progress")
+        names_start = bool(
+            isinstance(progress, dict) and progress.get("started_at_ms")
+        )
+        if isinstance(progress, dict) and not names_start:
+            progress = dict(progress)
+            progress["started_at_ms"] = int(time.time() * 1000)
+            stored["chat_progress"] = progress
+        if "chat_progress" in stored or "chat_done" in stored:
+            for index, existing in enumerate(entries):
+                if existing.get("id") != stored["id"]:
+                    continue
+                if not (
+                    "chat_progress" in existing
+                    or "chat_done" in existing
+                ):
+                    break
+                merged = dict(existing)
+                merged.update(stored)
+                if "chat_done" in stored:
+                    merged.pop("chat_progress", None)
+                else:
+                    merged["created_at"] = (
+                        existing.get("created_at")
+                        or stored["created_at"]
+                    )
+                    old = existing.get("chat_progress") or {}
+                    new = dict(merged.get("chat_progress") or {})
+                    if old.get("started_at_ms") and not names_start:
+                        new["started_at_ms"] = old["started_at_ms"]
+                    merged["chat_progress"] = new
+                entries[index] = merged
+                _save_thread(config, entries)
+                return merged
+        entries.append(stored)
+        _save_thread(config, entries)
+        return stored
+
+
+def _settle_thread_entry(config: WebAppConfig, match: dict, updates: dict) -> None:
+    """Settle the first open thread entry matching ``match``, in place."""
+    with _THREAD_LOCK:
+        entries = _load_thread(config)
+        changed = False
+        for entry in entries:
+            if all(entry.get(k) == v for k, v in match.items()):
+                entry.update(updates)
+                entry["settled_time_label"] = _time_of_day()
+                changed = True
+                break
+        if changed:
+            _save_thread(config, entries)
+
+
+def _claim_view(config: WebAppConfig, claim: dict) -> dict:
+    """One claim line as the page shows it, timed fresh from the words.
+
+    The printed time is worked out from where the claim's words sit
+    in the current edit, so an old claim still points at the right
+    words after a later run moves things. When every word the claim
+    touched is out of the current edit, the line is marked out.
+    """
+    view = dict(claim)
+    start, end = claim.get("word_start"), claim.get("word_end")
+    if not (isinstance(start, int) and isinstance(end, int) and end > start):
+        return view
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        timeline = Timeline(transcript, _effective_cuts(config))
+        words = transcript.get("words", [])
+        snippet = " ".join(
+            str(words[i].get("word") or "") for i in range(start, min(end, start + 6))
+        )
+        statuses = {timeline.word_status(i) for i in range(start, end)}
+        out = statuses == {"cut"}
+        at = _output_time_for_word(config, start)
+        verb = claim.get("verb") or "Cut"
+        count = end - start
+        text = f"{verb} {count} word{'s' if count != 1 else ''} at {_format_clock(at)}"
+        if snippet:
+            text += f", {snippet}"
+        if out:
+            text += " — those words are out now"
+        view["text"] = text
+        view["out"] = bool(out)
+        view["at_s"] = at
+    except Exception:
+        pass
+    return view
+
+
+def _claims_for_spans(spans: list) -> list:
+    claims = []
+    for span in spans:
+        start, end = span.get("word_start"), span.get("word_end")
+        if isinstance(start, int) and isinstance(end, int) and end > start:
+            claims.append(
+                {"verb": "Cut", "word_start": start, "word_end": end}
+            )
+    return claims
+
+
+def _edit_span_keys(config: WebAppConfig) -> set:
+    try:
+        return {
+            (s.get("word_start"), s.get("word_end")) for s in _edit_spans(config)
+        }
+    except Exception:
+        return set()
+
+
+def _new_edit_spans(config: WebAppConfig, before_keys: set) -> list:
+    try:
+        return [
+            s
+            for s in _edit_spans(config)
+            if (s.get("word_start"), s.get("word_end")) not in before_keys
+        ]
+    except Exception:
+        return []
+
+
+def _sync_thread(config: WebAppConfig) -> list:
+    """Mirror the stores into the thread, under the thread lock.
+
+    The sync is itself a load-modify-save cycle on the thread
+    store, so it takes the same lock as appends and settles;
+    without it a sync that loaded before a settle could save the
+    unsettled entries back over it.
+    """
+    with _THREAD_LOCK:
+        return _sync_thread_locked(config)
+
+
+def _sync_thread_locked(config: WebAppConfig) -> list:
+    """Mirror the gold, feedback, and grades stores into the thread.
+
+    Open gold spans gain held entries, pins gain pin entries in the
+    order they were made, and entries whose underlying record has
+    settled are settled here too. Auto-struck gold spans are NOT
+    held: they are already cuts, and they appear only as claim
+    lines in run summaries.
+    """
+    if not config.has_job:
+        return _load_thread(config)
+    entries = _load_thread(config)
+    changed = False
+
+    def has(kind, key, value):
+        return any(
+            e.get("kind") == kind and str(e.get(key)) == str(value)
+            for e in entries
+        )
+
+    gold_records = {r.get("gold_id"): r for r in _load_gold(config)}
+    for view in _open_gold_spans(config):
+        gold_id = view.get("gold_id")
+        if gold_id and not has("held", "gold_id", gold_id):
+            record = gold_records.get(gold_id) or {}
+            entries.append(
+                {
+                    "id": uuid.uuid4().hex[:12],
+                    "kind": "held",
+                    "status": "open",
+                    "gold_id": gold_id,
+                    "word_start": view.get("word_start"),
+                    "word_end": view.get("word_end"),
+                    "text": str(
+                        record.get("reason")
+                        or view.get("reason")
+                        or "The editor is holding this spot for your call."
+                    ),
+                    "quote": str(view.get("text") or record.get("text") or ""),
+                    "created_at": _utc_now(),
+                    "time_label": _time_of_day(),
+                }
+            )
+            changed = True
+    for entry in entries:
+        if entry.get("kind") != "held" or entry.get("status") != "open":
+            continue
+        record = gold_records.get(entry.get("gold_id"))
+        if record and record.get("status") in ("cut", "left", "auto_cut"):
+            entry["status"] = "settled"
+            entry["decision"] = (
+                "cut" if record.get("status") in ("cut", "auto_cut") else "leave"
+            )
+            entry["settled_time_label"] = _time_label_from_iso(
+                record.get("decided_at")
+            )
+            changed = True
+
+    feedback_path = _feedback_path(config)
+    comments = []
+    if feedback_path is not None:
+        try:
+            payload = _load_json(str(feedback_path))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("comments"), list):
+            comments = [c for c in payload["comments"] if isinstance(c, dict)]
+    applied_ids = {
+        str(op.get("comment_id"))
+        for op in _audit_operations(config)
+        if op.get("status") == "applied" and op.get("comment_id") is not None
+    }
+    def made_order(comment):
+        try:
+            return float(comment.get("id") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    for comment in sorted(comments, key=made_order):
+        comment_id = str(comment.get("id"))
+        used = comment_id in applied_ids
+        existing = next(
+            (
+                e
+                for e in entries
+                if e.get("kind") == "pin"
+                and str(e.get("comment_id")) == comment_id
+            ),
+            None,
+        )
+        if existing is None:
+            try:
+                ts = float(comment.get("ts") or 0.0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            entries.append(
+                {
+                    "id": uuid.uuid4().hex[:12],
+                    "kind": "pin",
+                    "status": "open",
+                    "comment_id": comment_id,
+                    "ts": ts,
+                    "moment_line": f"At {_format_clock(ts)} in the video",
+                    "text": str(comment.get("text") or ""),
+                    "word_start": comment.get("word_start"),
+                    "word_end": comment.get("word_end"),
+                    "used": used,
+                    "used_line": (
+                        f"Used in the {_time_of_day()} run." if used else ""
+                    ),
+                    "created_at": _utc_now(),
+                    "time_label": _time_of_day(),
+                }
+            )
+            changed = True
+        else:
+            if used and not existing.get("used"):
+                existing["used"] = True
+                existing["used_line"] = f"Used in the {_time_of_day()} run."
+                changed = True
+            if str(comment.get("text") or "") != str(existing.get("text") or ""):
+                if not existing.get("used"):
+                    existing["text"] = str(comment.get("text") or "")
+                    changed = True
+
+    grades = {str(e.get("id")): e for e in _load_grades(config)}
+    grades.update(
+        {str(e.get("record_id")): e for e in _load_grades(config)}
+    )
+    for entry in entries:
+        if entry.get("kind") != "why" or entry.get("status") != "open":
+            continue
+        grade = grades.get(str(entry.get("entry_id")))
+        if grade and isinstance(grade.get("why"), dict):
+            entry["status"] = "settled"
+            entry["decision"] = str(grade["why"].get("choice") or "")
+            entry["settled_time_label"] = _time_of_day()
+            changed = True
+
+    if changed:
+        _save_thread(config, entries)
+    return entries
+
+
+def _why_detail_lines(config: WebAppConfig, entry: dict) -> list:
+    """The editor's context for a why question (Batch E2, item 16).
+
+    The thread entry itself carries only the question; the reason
+    behind it lives on the grade record the question rides on
+    (and, for a spot the creator left in, on the gold record).
+    These plain lines are what the entry's info button expands:
+    the words the question is about, why the editor flagged or
+    cut them, and what the answer is for. An entry whose grade
+    record is gone still names its words when its id carries
+    the restored range.
+    """
+    lines: list = []
+    entry_id = str(entry.get("entry_id") or "")
+    grade = None
+    for record in _load_grades(config):
+        if entry_id and (
+            str(record.get("id")) == entry_id
+            or str(record.get("record_id")) == entry_id
+        ):
+            grade = record
+            break
+    start = end = None
+    if grade is not None:
+        gs, ge = grade.get("word_start"), grade.get("word_end")
+        if isinstance(gs, int) and isinstance(ge, int) and ge > gs:
+            start, end = gs, ge
+    if start is None and entry_id.startswith("restore-grade-"):
+        parts = entry_id[len("restore-grade-"):].split("-")
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            start, end = int(parts[0]), int(parts[1])
+    quote = ""
+    if start is not None and end is not None and config.job_dir is not None:
+        try:
+            transcript = _load_json(str(config.job_dir / "transcript.json"))
+            words = transcript.get("words", [])
+            quote = " ".join(
+                str(words[i].get("word") or "")
+                for i in range(start, min(end, len(words)))
+            )
+        except Exception:
+            quote = ""
+    gold = None
+    if entry_id.startswith("gold-grade-"):
+        gold_id = entry_id[len("gold-grade-"):]
+        for record in _load_gold(config):
+            if str(record.get("gold_id")) == gold_id:
+                gold = record
+                break
+    if gold is not None:
+        if gold.get("text"):
+            lines.append(f'The words: "{gold["text"]}"')
+        if gold.get("reason"):
+            lines.append(
+                f"Why the editor flagged them: {gold['reason']}"
+            )
+    elif quote:
+        lines.append(f'The words you put back: "{quote}"')
+    if grade is not None and grade.get("pattern_description"):
+        description = str(grade["pattern_description"])
+        if not description.endswith("."):
+            description += "."
+        lines.append(description)
+    lines.append(
+        "Your answer teaches the editor what to do next time "
+        "words like these come up. It can become one of your "
+        "rules, and a rule is only ever saved with your yes."
+    )
+    return lines
+
+
+def _thread_entries_view(config: WebAppConfig) -> list:
+    entries = _sync_thread(config)
+    views = []
+    for entry in entries:
+        view = dict(entry)
+        view["settled"] = entry.get("status") == "settled"
+        # The settled v0.18 contract fields, present on every
+        # entry the page receives: reply_to on creator messages,
+        # action_id on Editor entries that report an undoable
+        # action, undone on those entries. Entries stored before
+        # the contract simply read as null / false.
+        view["reply_to"] = entry.get("reply_to")
+        view["action_id"] = entry.get("action_id")
+        view["undone"] = bool(entry.get("undone", False))
+        if entry.get("kind") == "why":
+            # The page names the grade the way the why machinery
+            # does; the stored entry carries it as entry_id.
+            view["grade_id"] = entry.get("entry_id")
+            view["answer_label"] = _WHY_CHOICE_LABELS.get(
+                str(entry.get("decision") or ""), "saved"
+            )
+            view["detail"] = _why_detail_lines(config, entry)
+        if isinstance(entry.get("claims"), list):
+            if (
+                entry.get("kind") in ("run", "editor")
+                and not entry.get("record_answer")
+            ):
+                # v0.17 (feedback item 26): entries written
+                # before the diversion can still carry per-cut
+                # claims; the chat no longer shows them. They
+                # live in the review suggestions instead.
+                # Record answers keep theirs (marked
+                # record_answer where they are appended):
+                # there the claim is the answer.
+                view["claims"] = []
+            else:
+                view["claims"] = [
+                    _claim_view(config, c)
+                    for c in entry["claims"]
+                    if isinstance(c, dict)
+                ]
+        views.append(view)
+    return views
+
+
+def _waiting_count(config: WebAppConfig) -> int:
+    """The one waiting count: held items plus unread replies.
+
+    The same number in the panel header and the top bar. A held
+    item is an open gold span (the gold store is the truth); an
+    unread reply is an editor or run entry the page has not marked
+    read yet, plus a why question still waiting for its answer.
+    """
+    held = len(_open_gold_spans(config)) if config.has_job else 0
+    entries = _load_thread(config)
+    unread = sum(
+        1 for e in entries if e.get("unread") and e.get("kind") in ("editor", "run")
+    )
+    why_open = sum(
+        1 for e in entries if e.get("kind") == "why" and e.get("status") == "open"
+    )
+    return held + unread + why_open
+
+
+# -- Clean-up quick actions (v0.15, Batch E2, item 17) ---------------------
+#
+# The clean-up choices that can act after the first edit live in
+# the Editor panel as a chip row. Each chip flips one stored
+# choice through the same setting path its existing control uses:
+# the three Remove choices are front-door settings (saved by
+# _save_front_door_settings, the store the Edit settings toggles
+# set), and the captions choice goes through the very function
+# /api/captions-pref runs. A flip is recorded in the thread as a
+# short editor entry, so the panel stays the record (spec §4).
+# The intake pop-up's copies of the Remove choices are first-edit
+# stage choices and stay where they are; there is no studio-sound
+# control anywhere in the app, so no chip invents one.
+
+_CLEANUP_LABELS = {
+    "remove_retakes": "Remove retakes",
+    "cut_silence": "Word gaps (silence)",
+    "remove_fillers": "Remove filler words",
+    "captions_hide_fillers": "Hide ums and uhs in captions",
+}
+
+_CLEANUP_WHEN = {
+    "remove_retakes": "It counts from the next Make the edit run.",
+    "cut_silence": "It counts from the next Make the edit run.",
+    "remove_fillers": "It counts from the next Make the edit run.",
+    "captions_hide_fillers": "The caption file matches it now.",
+}
+
+
+def _cleanup_state(config: WebAppConfig) -> dict:
+    """The clean-up choices as they stand, for the chip row."""
+    settings = _front_door_settings(config)
+    return {
+        "remove_retakes": bool(settings.get("remove_retakes")),
+        "cut_silence": bool(settings.get("cut_silence")),
+        "remove_fillers": bool(settings.get("remove_fillers")),
+        "captions_hide_fillers": _captions_hide_fillers(config),
+    }
+
+
+def _apply_cleanup(config: WebAppConfig, key: str, on: bool) -> dict:
+    """Flip one clean-up choice and note the change in the thread."""
+    if key == "captions_hide_fillers":
+        _set_captions_hide_fillers(config, bool(on))
+    else:
+        settings = _front_door_settings(config)
+        settings[key] = bool(on)
+        _save_front_door_settings(config, settings)
+    line = (
+        f"{_CLEANUP_LABELS[key]} is {'on' if on else 'off'} now. "
+        f"{_CLEANUP_WHEN[key]}"
+    )
+    return _append_thread(
+        config,
+        {
+            "kind": "editor",
+            "status": "settled",
+            "text": line,
+            "lines": [],
+            "claims": [],
+        },
+    )
+
+
+def _thread_view(config: WebAppConfig) -> dict:
+    entries = _thread_entries_view(config)
+    has_edit = (
+        (config.session_dir / "revised_cuts.json").is_file()
+        or (config.session_dir / "operations_audit.json").is_file()
+    )
+    return {
+        "ok": True,
+        "editor_name": usual.load_editor_name(),
+        "entries": entries,
+        "waiting_count": _waiting_count(config),
+        "has_edit": bool(has_edit),
+        "cleanup": _cleanup_state(config),
+        "review": _review_view(config),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Review suggestions (v0.17, feedback item 26)
+#
+# A run's summary used to carry one claim line per cut ("Cut 3
+# words at 0:05..."), and a long run filled the Editor chat
+# with them: Justin called it "a word-vomit list of things
+# that it did" and asked for a conversation instead, with the
+# review suggestions in their own place. The claims now land
+# here, in the review store, one item per cut span, and the
+# page shows them in a Review suggestions card with Bring
+# back / Keep cut on each. The chat entry itself keeps only
+# its summary sentence. Answers the editor gives from the
+# record (why / what questions) keep their claims in the chat:
+# there the claim IS the answer, not a work log, and the 0.16
+# conversation test depends on it.
+# ---------------------------------------------------------------------------
+
+REVIEW_FILENAME = "review.json"
+
+
+def _load_review(config: WebAppConfig) -> list:
+    payload = _load_session_json(config, REVIEW_FILENAME, {"items": []})
+    if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        return [i for i in payload["items"] if isinstance(i, dict)]
+    return []
+
+
+def _save_review(config: WebAppConfig, items: list) -> None:
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        config.session_dir / REVIEW_FILENAME, {"items": items}
+    )
+
+
+def _record_review_claims(config: WebAppConfig, claims) -> None:
+    """File one run's cut claims as review suggestions.
+
+    One item per cut span, keyed by the span, so the same cut
+    recorded twice is one suggestion. Decided items keep their
+    decision; a span cut again after a restore reopens.
+    """
+    fresh = [
+        claim for claim in (claims or [])
+        if isinstance(claim, dict)
+        and isinstance(claim.get("word_start"), int)
+        and isinstance(claim.get("word_end"), int)
+        and claim["word_end"] > claim["word_start"]
+    ]
+    if not fresh:
+        return
+    items = _load_review(config)
+    by_id = {item.get("id"): item for item in items}
+    changed = False
+    for claim in fresh:
+        item_id = f"review-{claim['word_start']}-{claim['word_end']}"
+        existing = by_id.get(item_id)
+        if existing is None:
+            items.append(
+                {
+                    "id": item_id,
+                    "word_start": claim["word_start"],
+                    "word_end": claim["word_end"],
+                    "status": "open",
+                    "created_at": _utc_now(),
+                }
+            )
+            changed = True
+        elif existing.get("status") == "restored":
+            existing["status"] = "open"
+            changed = True
+    if changed:
+        _save_review(config, items)
+
+
+def _review_view(config: WebAppConfig) -> list:
+    """The open review suggestions, as the page shows them.
+
+    An item shows while every word it names is still out of
+    the edit. Words brought back by any path close the item
+    on their own; there is nothing to keep in step.
+    """
+    views = []
+    for item in _load_review(config):
+        if item.get("status") != "open":
+            continue
+        claim = _claim_view(
+            config,
+            {
+                "verb": "Cut",
+                "word_start": item.get("word_start"),
+                "word_end": item.get("word_end"),
+            },
+        )
+        if not claim.get("out"):
+            continue
+        quote = ""
+        try:
+            transcript = _load_json(
+                str(config.job_dir / "transcript.json")
+            )
+            words = transcript.get("words", [])
+            quote = " ".join(
+                str(words[i].get("word") or "")
+                for i in range(
+                    item["word_start"],
+                    min(item["word_end"], len(words)),
+                )
+            )
+        except Exception:
+            quote = ""
+        views.append(
+            {
+                "id": item.get("id"),
+                "word_start": item.get("word_start"),
+                "word_end": item.get("word_end"),
+                "text": claim.get("text") or "",
+                "quote": quote,
+                "at_s": claim.get("at_s"),
+            }
+        )
+    return views
+
+
+def _review_verdict(config: WebAppConfig, review_id, decision) -> dict:
+    """Settle one review suggestion: bring it back, or keep the cut.
+
+    Bring back runs the same restore the transcript's own
+    Bring back runs (one checkpoint, so it is one undo step).
+    Keep cut just closes the suggestion; the cut itself was
+    already the editor's settled work.
+    """
+    items = _load_review(config)
+    item = next(
+        (i for i in items if i.get("id") == review_id), None
+    )
+    if item is None:
+        raise ValueError("That suggestion is not on the list anymore.")
+    if decision == "restore":
+        result = _apply_word_range(
+            config,
+            int(item["word_start"]),
+            int(item["word_end"]),
+            "restore",
+        )
+        if result.get("stayed"):
+            raise ValueError(
+                "Some of those words could not come back: "
+                + "; ".join(
+                    str(stay.get("why") or "held")
+                    for stay in result["stayed"][:2]
+                )
+            )
+        item["status"] = "restored"
+    elif decision == "keep":
+        item["status"] = "kept"
+    else:
+        raise ValueError("Choose bring back, or keep the cut.")
+    _save_review(config, items)
+    return _thread_view(config)
+
+
+def _append_why_thread(config: WebAppConfig, entry_id: str, question: str) -> None:
+    """Write a pending why question into the thread (Batch E1).
+
+    The question used to sit under the transcript header; it now
+    lives in the thread as an editor entry whose answer pills are
+    quick-action buttons there. The grades store stays the truth:
+    answering goes through /api/why, and the sync settles this
+    entry from that record.
+    """
+    if not entry_id:
+        return
+    with _THREAD_LOCK:
+        entries = _load_thread(config)
+        if any(
+            e.get("kind") == "why" and str(e.get("entry_id")) == str(entry_id)
+            for e in entries
+        ):
+            return
+        _append_thread(
+            config,
+            {
+                "kind": "why",
+                "status": "open",
+                "entry_id": entry_id,
+                "text": question,
+                "question": question,
+            },
+        )
+
+
+def _append_run_summary_thread(
+    config: WebAppConfig,
+    lines: list,
+    claims: list,
+    auto_struck_count: int = 0,
+) -> dict:
+    """File a finished run's review claims. No recap bubble.
+
+    0.26, fix 3: the long recap bubble is removed. It recounted
+    the run in its own units (the pass's struck records, the
+    gold spans alone) and disagreed with the Done bubble on the
+    same edit, so the thread no longer carries it: the Done
+    bubble is a run's only summary in the chat, and every number
+    on it comes from the one count (_edit_counts). What this
+    step still does, because it was never the bubble's job, is
+    file the run's per-cut claims as review suggestions (see
+    _record_review_claims, v0.17 feedback item 26). The recap
+    lines and the struck count are accepted and dropped, so the
+    run paths keep their shape; the numbers live in the job
+    summary's counts and nowhere else. Returns a small record
+    of what was filed, not a thread entry.
+    """
+    _record_review_claims(config, claims)
+    return {"kind": "run", "claims": [], "posted": False}
+
+
+# -- Message actions: reply to one message, per-action undo (v0.18) --------
+#
+# Builder B's slice of the conversation release. Two contracts:
+#
+# Reply: a creator message may carry ``reply_to``, the id of the
+# one thread entry it answers. The server stores it on the
+# creator entry, and when that entry reports an action (below),
+# the reply is settled against that entry alone: questions are
+# answered from that entry's own record, and undo or redo words
+# act on that entry's action. A reply is never silently treated
+# as a question about the whole thread.
+#
+# Actions: an Editor entry that reports a state-changing run
+# carries ``action_id``: "checkpoint:<n>", where n is the index
+# of the checkpoint that run committed. That checkpoint is the
+# app's existing identity for the action, and it is the one that
+# truly reverses it: the checkpoint slots hold the session state
+# right before and right after the run (revised_cuts.json and
+# the rest of STATE_FILES), thread.json is not one of the
+# checkpointed files so the entry and its undone mark survive a
+# restore, and restoring costs no model or transcription call.
+# Entry kinds whose change is NOT held in a checkpoint (the
+# clean-up chips, whose captions file and usual copy live
+# outside the checkpointed files) get no action_id, so their
+# menu honestly offers no Undo.
+#
+# A checkpoint restore is a step on a single road: it can only
+# reverse the action that is still the newest step. Undoing an
+# older action would also take back every later change, so that
+# case is the honest fallback below: the Editor says so in the
+# thread, in plain words, and offers the safe next step. It
+# never performs a global undo and calls it per-action.
+
+_RUN_ACTION_LABELS = ("Direction run", "Front door run", "First edit")
+
+
+def _current_action_id(config: WebAppConfig, labels) -> tuple:
+    """("checkpoint:<n>", label) for the current checkpoint when
+    its label is one of ``labels``; (None, None) otherwise."""
+    state = checkpoints.state(config)
+    current = state.get("current")
+    if not isinstance(current, int) or current < 0:
+        return None, None
+    for item in state.get("checkpoints") or []:
+        if item.get("index") == current and item.get("label") in labels:
+            return f"checkpoint:{current}", str(item["label"])
+    return None, None
+
+
+def _parse_action_id(entry: dict) -> Optional[int]:
+    """The checkpoint index an entry's action_id names, or None."""
+    raw = str(entry.get("action_id") or "")
+    if not raw.startswith("checkpoint:"):
+        return None
+    try:
+        return int(raw.split(":", 1)[1])
+    except ValueError:
+        return None
+
+
+def _find_thread_entry(config: WebAppConfig, entry_id) -> Optional[dict]:
+    if not entry_id:
+        return None
+    for entry in _load_thread(config):
+        if str(entry.get("id")) == str(entry_id):
+            return entry
+    return None
+
+
+def _set_thread_entry_fields(
+    config: WebAppConfig, entry_id, updates: dict
+) -> Optional[dict]:
+    """Write fields onto one stored thread entry, in place."""
+    with _THREAD_LOCK:
+        entries = _load_thread(config)
+        found = None
+        for entry in entries:
+            if str(entry.get("id")) == str(entry_id):
+                entry.update(updates)
+                found = entry
+                break
+        if found is not None:
+            _save_thread(config, entries)
+        return found
+
+
+def _action_record(config: WebAppConfig, entry: dict) -> dict:
+    """What one action entry's own record says, from saved state.
+
+    The word spans the action itself cut or brought back, worked
+    out by comparing the checkpoint slot right before the action
+    with the slot the action committed (falling back to the job's
+    own plan where a slot holds no revised plan). No provider is
+    involved: this reads files the session already saved.
+    """
+    record = {
+        "index": _parse_action_id(entry),
+        "label": entry.get("action_label") or "",
+        "cut_spans": [],
+        "restored_spans": [],
+    }
+    index = record["index"]
+    if index is None or not config.has_job:
+        return record
+    state = checkpoints.state(config)
+    for item in state.get("checkpoints") or []:
+        if item.get("index") == index:
+            record["label"] = str(item.get("label") or record["label"])
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        base_cuts = _load_json(str(config.job_dir / "cuts.json"))
+
+        def cuts_at(slot_index: int) -> dict:
+            if slot_index < 0:
+                return base_cuts
+            slot = (
+                config.session_dir
+                / checkpoints.HISTORY_DIR_NAME
+                / f"{slot_index:04d}"
+                / "revised_cuts.json"
+            )
+            if slot.is_file():
+                return _load_json(str(slot))
+            return base_cuts
+
+        before = Timeline(transcript, cuts_at(index - 1))
+        after = Timeline(transcript, cuts_at(index))
+        words = transcript.get("words", [])
+        for verb, was, is_now in (
+            ("cut_spans", "kept", "cut"),
+            ("restored_spans", "cut", "kept"),
+        ):
+            spans = []
+            i = 0
+            while i < len(words):
+                if before.word_status(i) == was and after.word_status(i) == is_now:
+                    start = i
+                    while (
+                        i < len(words)
+                        and before.word_status(i) == was
+                        and after.word_status(i) == is_now
+                    ):
+                        i += 1
+                    spans.append({"word_start": start, "word_end": i})
+                else:
+                    i += 1
+            record[verb] = spans
+    except Exception:
+        pass
+    return record
+
+
+def _settle_run_entry_after_move(
+    config: WebAppConfig, entry: dict, undone: bool
+) -> None:
+    """Settle a run's Done entry after its checkpoint moved.
+
+    The checkpoint restore has put the plan back; this puts the
+    run's saved video back beside it (the "before" copy on an
+    undo, the "after" copy on a redo) and refreshes the stored
+    Done payload from the restored plan: its counts are read
+    from _edit_counts on the plan as it now stands (the one
+    count, fix 3), its length is the restored plan's length,
+    and its video points at what the app now serves for this
+    job (the splice again after a redo; the original video
+    after undoing a first edit, whose before side had no
+    edited video at all). The refreshed payload is written to
+    the job's thread and, like the run entry itself, mirrored
+    into the launch home's thread.
+    """
+    if not entry.get("chat_done"):
+        return
+    entry_id = entry.get("id")
+    try:
+        _restore_run_video(
+            config, entry_id, "before" if undone else "after"
+        )
+    except Exception:
+        pass
+    payload = dict(entry.get("chat_done") or {})
+    try:
+        counts = _edit_counts(config)
+    except Exception:
+        counts = None
+    if counts is not None:
+        payload.update(
+            {
+                "retakes": counts["retakes_removed"],
+                "retakes_set_aside": counts["retakes_set_aside"],
+                "joins_checked": counts["joins_checked"],
+                "joins_smooth": max(
+                    0,
+                    counts["joins_checked"] - counts["joins_failed"],
+                ),
+                "joins_failed": counts["joins_failed"],
+                "words_cut": counts["words_cut"],
+                "counts": counts,
+                "review_count": counts["spots_to_review"],
+            }
+        )
+        try:
+            transcript = _load_json(
+                str(config.job_dir / "transcript.json")
+            )
+            timeline = Timeline(transcript, _effective_cuts(config))
+            payload["output_duration_s"] = round(
+                timeline.output_duration, 4
+            )
+        except Exception:
+            pass
+    try:
+        watching = _watching_state(config)
+    except Exception:
+        watching = {}
+    if watching.get("kind") == "edited":
+        payload["video_src"] = "/revised-review.mp4"
+        payload.pop("video_caption", None)
+    elif watching.get("name"):
+        payload["video_src"] = "/video/" + str(watching["name"])
+        payload["video_caption"] = str(watching["name"])
+    if undone and watching.get("name"):
+        # The undone bubble names the video as brought in with
+        # its full length (0.27, fix 11): the original file the
+        # app now serves again, probed from the file itself.
+        try:
+            brought = _probe_duration_s(
+                config.job_dir / str(watching["name"])
+            )
+        except Exception:
+            brought = None
+        if brought:
+            payload["brought_in_duration_s"] = round(float(brought), 3)
+    updates = {"chat_done": payload}
+    _set_thread_entry_fields(config, entry_id, updates)
+    if config.has_job:
+        launch = WebAppConfig(None, launch_home=config.launch_home)
+        if launch.session_dir != config.session_dir:
+            _set_thread_entry_fields(launch, entry_id, updates)
+
+
+# The plan files in a checkpoint: the kept and cut words
+# themselves, and the audit that describes how they got there.
+# Everything else a checkpoint holds (notes, rules, gold
+# verdicts that left the words alone, front-door choices) is
+# work a whole-edit undo must not quietly take back when it
+# walks past it (0.27.1, run-through finding 2).
+_PLAN_STATE_FILES = (
+    "revised_cuts.json",
+    "operations.json",
+    "operations_audit.json",
+)
+
+
+def _plan_at_checkpoint(config: WebAppConfig, index: int):
+    """The edit plan as checkpoint ``index`` holds it.
+
+    A slot with no revised plan in it stands for the job's own
+    plan, the same reading _action_record gives a slot. None
+    when neither can be read.
+    """
+    slot = (
+        config.session_dir
+        / checkpoints.HISTORY_DIR_NAME
+        / f"{index:04d}"
+        / "revised_cuts.json"
+    )
+    if slot.is_file():
+        try:
+            return json.loads(slot.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+    if not config.has_job:
+        return None
+    try:
+        return _load_json(str(config.job_dir / "cuts.json"))
+    except Exception:
+        return None
+
+
+def _plan_unchanged_since(
+    config: WebAppConfig, index: int, tip: int
+) -> bool:
+    """True when the plan at ``tip`` is still the plan at ``index``.
+
+    The live plan must read the same too: the pointer and the
+    session files are one state, and a mismatch means the
+    record cannot be trusted for a pass-through move.
+    """
+    if not config.has_job:
+        return False
+    try:
+        then = _plan_at_checkpoint(config, index)
+        at_tip = _plan_at_checkpoint(config, tip)
+        live = _effective_cuts(config)
+    except Exception:
+        return False
+    return then is not None and then == at_tip and then == live
+
+
+def _redo_walk_is_plan_only(
+    config: WebAppConfig, index: int, tip: int
+) -> bool:
+    """True when redoing to ``index`` past later slots is safe.
+
+    The slots past the action must hold the action's own plan
+    (nothing later changed it), and the live plan must be the
+    one the pointer stands on now (the slot before the
+    action): the state the walk starts from. The live reading
+    differs from the undo check, whose walk starts at the tip.
+    """
+    if not config.has_job:
+        return False
+    try:
+        at_action = _plan_at_checkpoint(config, index)
+        at_tip = _plan_at_checkpoint(config, tip)
+        before = _plan_at_checkpoint(config, index - 1)
+        live = _effective_cuts(config)
+    except Exception:
+        return False
+    return (
+        at_action is not None
+        and at_action == at_tip
+        and before == live
+    )
+
+
+def _walk_pointer_preserving(
+    config: WebAppConfig, target: int, forward: bool
+) -> bool:
+    """Move the checkpoint pointer to ``target``, plan only.
+
+    The pointer's own restores roll every state file to the
+    target slot. When later work changed nothing but files
+    beside the plan, those files are set aside first and put
+    back after the walk, so the only thing the move changes is
+    the plan and its audit, and the later work (a told rule, a
+    note) stays exactly as it was.
+    """
+    session = config.session_dir
+    stash = {}
+    for name in checkpoints.STATE_FILES:
+        if name in _PLAN_STATE_FILES:
+            continue
+        path = session / name
+        try:
+            stash[name] = path.read_bytes() if path.is_file() else None
+        except OSError:
+            stash[name] = None
+    step = checkpoints.redo if forward else checkpoints.undo
+    while True:
+        current = checkpoints.state(config).get("current")
+        if current == target:
+            break
+        if not isinstance(current, int) or step(config) is None:
+            return False
+        now = checkpoints.state(config).get("current")
+        if forward and isinstance(now, int) and now > target:
+            return False
+        if not forward and isinstance(now, int) and now < target:
+            return False
+    for name, data in stash.items():
+        path = session / name
+        try:
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(data)
+        except OSError:
+            pass
+    return checkpoints.state(config).get("current") == target
+
+
+def _set_undo_note(
+    config: WebAppConfig, entry: dict, line: Optional[str]
+) -> None:
+    """Put a move's refusal on its Done entry, or clear it.
+
+    A refusal that only arrives as a separate chat message
+    leaves the Done bubble looking untouched and unexplained,
+    which is what the run-through filmed (finding 2): the
+    bubble carries the line where the tap happened. Mirrored
+    into the launch thread like the run settle, so both copies
+    of the entry agree.
+    """
+    entry_id = entry.get("id")
+    if not entry_id or not entry.get("chat_done"):
+        return
+    updates = {"undo_note": line or None}
+    _set_thread_entry_fields(config, entry_id, updates)
+    if config.has_job:
+        launch = WebAppConfig(None, launch_home=config.launch_home)
+        if launch.session_dir != config.session_dir:
+            _set_thread_entry_fields(launch, entry_id, updates)
+
+
+def _thread_action_move(config: WebAppConfig, entry_id, move: str) -> dict:
+    """Undo or redo ONE thread entry's action, from saved state only.
+
+    Returns {line, moved, fallback, entry}: the plain result line
+    (also posted into the thread as an editor entry), whether the
+    checkpoint pointer actually moved, whether the honest
+    fallback fired instead, and the updated entry. This path
+    calls checkpoints.undo / checkpoints.redo and nothing else
+    that changes the edit: no provider, no transcription, $0.
+    """
+    if move not in ("undo", "redo"):
+        raise ValueError("Say undo or redo.")
+    entry = _find_thread_entry(config, entry_id)
+    if entry is None:
+        raise ValueError("That message is not in this conversation anymore.")
+    index = _parse_action_id(entry)
+    if index is None:
+        raise ValueError(
+            "That message is not tied to an action, so there is "
+            "nothing to undo or redo on it."
+        )
+    state = checkpoints.state(config)
+    labels = {
+        item.get("index"): str(item.get("label") or "")
+        for item in state.get("checkpoints") or []
+    }
+    current = state.get("current")
+    label = entry.get("action_label") or labels.get(index) or "that change"
+    road_replaced = index in labels and labels[index] != str(
+        entry.get("action_label") or labels[index]
+    )
+
+    def note(line: str) -> dict:
+        _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": line,
+                "lines": [],
+                "claims": [],
+            },
+        )
+        # A settled outcome clears any refusal an earlier tap
+        # left on the bubble.
+        _set_undo_note(config, entry, None)
+        return {
+            "line": line,
+            "moved": False,
+            "fallback": False,
+            "entry": _find_thread_entry(config, entry_id),
+        }
+
+    def fallback(line: str) -> dict:
+        result = note(line)
+        # The refusal also lands on the entry itself, so the
+        # Done bubble says why where the tap happened, not only
+        # in a separate message below it (finding 2). Set after
+        # note(), which clears any older refusal.
+        _set_undo_note(config, entry, line)
+        result["entry"] = _find_thread_entry(config, entry_id)
+        result["fallback"] = True
+        return result
+
+    if move == "undo":
+        if entry.get("undone"):
+            return note(f"The {label} change is already undone.")
+        if current == index - 1 and not road_replaced:
+            # A history step already took this action back; the
+            # entry just had not been marked yet.
+            _set_thread_entry_fields(config, entry_id, {"undone": True})
+            _settle_run_entry_after_move(config, entry, True)
+            return note(f"The {label} change is already undone.")
+        stepped = False
+        if current == index and not road_replaced:
+            stepped = checkpoints.undo(config) is not None
+            if not stepped:
+                return fallback(
+                    f"I cannot undo the {label} change on its own. "
+                    "Its saved step is not there anymore. The safe "
+                    "next step is to make the change again as a new "
+                    "direction if you still want it."
+                )
+        elif (
+            not road_replaced
+            and isinstance(current, int)
+            and current > index
+            and _plan_unchanged_since(config, index, current)
+        ):
+            # Later entries exist, but none of them changed the
+            # plan (a question, a deferred direction, a told
+            # rule): the undo walks the pointer back over them
+            # changing only the plan, and their work stays
+            # (0.27.1, run-through finding 2).
+            stepped = _walk_pointer_preserving(config, index - 1, False)
+            if not stepped:
+                return fallback(
+                    f"I cannot undo the {label} change on its own. "
+                    "Its saved step is not there anymore. The safe "
+                    "next step is to make the change again as a new "
+                    "direction if you still want it."
+                )
+        else:
+            return fallback(
+                f"I cannot undo the {label} change on its own. "
+                "Later work came after it, and undoing it now "
+                "would take that later work back too. The safe "
+                "next step is to undo the newest change first, "
+                "or step back through the history one change at "
+                "a time."
+            )
+        _set_thread_entry_fields(config, entry_id, {"undone": True})
+        _settle_run_entry_after_move(config, entry, True)
+        try:
+            _refresh_after_review(config)
+        except Exception:
+            pass
+        result = note(
+            f"Undone: the {label} change. Its words are back "
+            "the way they were before it, and nothing was "
+            "remade or spent."
+        )
+        result["moved"] = True
+        return result
+    # redo
+    if not entry.get("undone"):
+        return note(f"The {label} change is not undone, so there is nothing to redo.")
+    if current == index and not road_replaced:
+        _set_thread_entry_fields(config, entry_id, {"undone": False})
+        _settle_run_entry_after_move(config, entry, False)
+        return note(f"The {label} change is already back in the edit.")
+    if current != index - 1 or road_replaced:
+        return fallback(
+            f"I cannot redo the {label} change on its own. "
+            "Other work happened after it was undone, so its "
+            "saved step no longer lines up. The safe next step "
+            "is to make that change again as a new direction."
+        )
+    tip = max(labels) if labels else index
+    if tip > index and _redo_walk_is_plan_only(config, index, tip):
+        # The mirror of the undo walk: later entries sit past
+        # this action's step and none of them changed the plan,
+        # so the step forward changes only the plan too.
+        stepped = _walk_pointer_preserving(config, index, True)
+    else:
+        stepped = checkpoints.redo(config) is not None
+    if not stepped:
+        return fallback(
+            f"I cannot redo the {label} change on its own. "
+            "Its saved step is not there anymore. The safe "
+            "next step is to make the change again as a new "
+            "direction if you still want it."
+        )
+    _set_thread_entry_fields(config, entry_id, {"undone": False})
+    _settle_run_entry_after_move(config, entry, False)
+    try:
+        _refresh_after_review(config)
+    except Exception:
+        pass
+    result = note(
+        f"Redone: the {label} change is back in the edit, "
+        "just as it was. Nothing was remade or spent."
+    )
+    result["moved"] = True
+    return result
+
+
+_UNDO_REPLY_WORDS = {"undo that", "undo it", "undo this", "take that back"}
+_REDO_REPLY_WORDS = {"redo that", "redo it", "redo this", "put that back in"}
+
+
+def _reply_scope_answer(config: WebAppConfig, text: str, target: dict) -> dict:
+    """An editor reply built from the replied-to entry alone.
+
+    Its text, its lines, its claims, and (when it reports an
+    action) that action's own checkpoint record: never a global
+    summary of the thread or the edit.
+    """
+    lowered = str(text or "").lower()
+    target_text = str(target.get("text") or "").strip()
+    target_lines = [str(ln) for ln in (target.get("lines") or []) if str(ln).strip()]
+    if target.get("action_id"):
+        record = _action_record(config, target)
+        label = record["label"] or "that change"
+        if any(word in lowered for word in _RECORD_WHY_WORDS):
+            reason = ""
+            for span in record["cut_spans"]:
+                for span_view in _edit_spans(config):
+                    if (
+                        span_view.get("word_start") == span["word_start"]
+                        and span_view.get("word_end") == span["word_end"]
+                    ):
+                        reason = str(span_view.get("reason") or "")
+                        break
+                if reason:
+                    break
+            opening = (
+                f"From that message's own record: {reason}"
+                if reason
+                else (
+                    f"From that message's own record: that was the "
+                    f"{label} change, and it said: {target_text}"
+                )
+            )
+            return {
+                "text": opening,
+                "lines": [],
+                "claims": _claims_for_spans(record["cut_spans"]),
+            }
+        if any(word in lowered for word in _RECORD_WHAT_WORDS):
+            if record["cut_spans"]:
+                count = len(record["cut_spans"])
+                opening = (
+                    f"From that message's own record: the {label} "
+                    f"change took out {count} spot"
+                    f"{'s' if count != 1 else ''}."
+                )
+                return {
+                    "text": opening,
+                    "lines": [],
+                    "claims": _claims_for_spans(record["cut_spans"]),
+                }
+            if record["restored_spans"]:
+                count = len(record["restored_spans"])
+                opening = (
+                    f"From that message's own record: the {label} "
+                    f"change brought back {count} spot"
+                    f"{'s' if count != 1 else ''}."
+                )
+                return {
+                    "text": opening,
+                    "lines": [],
+                    "claims": _claims_for_spans(record["restored_spans"]),
+                }
+            return {
+                "text": (
+                    f"From that message's own record: the {label} "
+                    "change did not take words out or bring words "
+                    "back on its own."
+                ),
+                "lines": [],
+                "claims": [],
+            }
+        if "cost" in lowered:
+            return {
+                "text": (
+                    "Costs are kept for the whole video, not per "
+                    "message, so I cannot split that one change "
+                    "out on its own. Ask me what the video has "
+                    "cost and I will add it all up from the record."
+                ),
+                "lines": [],
+                "claims": [],
+            }
+        lines = list(target_lines)
+        if target.get("undone"):
+            lines.append("That change is undone right now.")
+        return {
+            "text": (
+                f"That message was the {label} change. It said: "
+                f"{target_text}"
+            ),
+            "lines": lines,
+            "claims": [],
+        }
+    lines = list(target_lines)
+    claims = target.get("claims") or []
+    return {
+        "text": f"About that message: {target_text}" if target_text else "About that message: it carried no words of its own.",
+        "lines": lines,
+        "claims": claims if isinstance(claims, list) else [],
+    }
+
+
+def _scoped_reply(
+    config: WebAppConfig, text: str, target: Optional[dict]
+) -> Optional[dict]:
+    """Settle a reply against its one target entry, or None.
+
+    None means the message is not a scoped reply matter (a plain
+    direction answering an entry with no action), and the caller
+    runs the normal send order. When this returns a result, the
+    reply has been fully settled here, at $0.
+    """
+    if target is None:
+        return None
+    normalized = re.sub(r"[^a-z ]", "", str(text or "").lower()).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    has_action = bool(target.get("action_id"))
+    if has_action and normalized in _UNDO_REPLY_WORDS | {"undo"}:
+        result = _thread_action_move(config, target.get("id"), "undo")
+        return {"kind": "action", "entry": _find_thread_entry(config, target.get("id")), **result}
+    if has_action and normalized in _REDO_REPLY_WORDS | {"redo"}:
+        result = _thread_action_move(config, target.get("id"), "redo")
+        return {"kind": "action", "entry": _find_thread_entry(config, target.get("id")), **result}
+    is_question = (
+        "?" in str(text or "")
+        or _is_record_question(text)
+        or normalized.split(" ", 1)[0]
+        in ("why", "what", "how", "did", "was", "were", "is", "can", "could", "should")
+    )
+    if has_action and not is_question:
+        record = _action_record(config, target)
+        label = record["label"] or "that change"
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": (
+                    f"That reply is tied to the {label} change on "
+                    "its own. A new direction would change the "
+                    "whole video, not just that change, so I did "
+                    "not run it as part of this reply. You can "
+                    "undo or redo that change from its menu, or "
+                    "send the direction again without the reply "
+                    "and I will run it on the whole video."
+                ),
+                "lines": [],
+                "claims": [],
+            },
+        )
+        return {"kind": "scoped", "entry": entry}
+    if not is_question:
+        return None
+    answer = _reply_scope_answer(config, text, target)
+    entry = _append_thread(
+        config,
+        {
+            "kind": "editor",
+            "record_answer": bool(answer.get("claims")),
+            "status": "settled",
+            "text": answer["text"],
+            "lines": answer.get("lines") or [],
+            "claims": answer.get("claims") or [],
+        },
+    )
+    return {"kind": "scoped", "entry": entry}
+
+
+# -- Record questions: answered from the record, at $0 ----------------------
+#
+# Asking never runs an edit and never calls a provider. The
+# answers below are built only from the session's own records:
+# the edit spans (each matched to the change that removed it),
+# the audit operations behind them, and the session's cost
+# entries. The chat route's tests assert the provider is not
+# invoked on this path.
+
+_RECORD_COST_WORDS = ("cost", "how much", "price")
+_RECORD_WHY_WORDS = ("why did you", "why was", "why were", "why is that cut")
+_RECORD_WHAT_WORDS = (
+    "what did you take out",
+    "what did you cut",
+    "what have you taken out",
+    "what have you cut",
+    "what was taken out",
+    "what was cut",
+    "what did you change",
+    "what have you changed",
+    "what changed",
+)
+
+# Question shapes (0.25, finding 8): a message that ends in a
+# question mark, or opens with a question word or an auxiliary
+# ("why", "what", "how", "when", "did", "does", "can you tell
+# me", "is it", ...), is a question. Questions are answered
+# from the record and never run an edit, a render, or a charge;
+# only a clear statement command runs work. "do" alone is not
+# a question start: "do it" and "do the edit" are commands.
+_QUESTION_STARTS = {
+    "why", "what", "how", "when", "did", "does", "can", "could",
+    "would", "should", "is", "are", "was", "were", "who", "where",
+    "which", "have", "has",
+}
+
+
+def _is_chat_question(text: str) -> bool:
+    """True when a chat message is phrased as a question."""
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if raw.endswith("?"):
+        return True
+    words = re.sub(r"[^a-z ]", " ", raw.lower()).split()
+    while words and words[0] in ("and", "so", "but", "ok", "okay", "well"):
+        words.pop(0)
+    if not words:
+        return False
+    if words[0] in _QUESTION_STARTS:
+        return True
+    if words[0] == "do" and len(words) > 1 and words[1] in ("you", "we"):
+        return True
+    if (
+        words[0] == "tell"
+        and len(words) > 2
+        and words[1] == "me"
+        and words[2] in _QUESTION_STARTS
+    ):
+        return True
+    return False
+
+
+def _is_record_question(text: str) -> bool:
+    lowered = " " + str(text or "").lower().strip() + " "
+    if any(word in lowered for word in _RECORD_WHY_WORDS):
+        return True
+    if any(word in lowered for word in _RECORD_WHAT_WORDS):
+        return True
+    if "cost" in lowered and (
+        "what" in lowered or "how much" in lowered or "did" in lowered
+    ):
+        return True
+    return False
+
+
+def _latest_cut_span(config: WebAppConfig, spans: list) -> Optional[dict]:
+    """The span the record's most recent cut decision removed.
+
+    Decision order is the record's own order (0.26, fix 5): the
+    audit's operations were appended as the passes ran, the
+    session audit first and each later round after it, so the
+    last applied cut operation is the latest cut decision the
+    record holds. When no operation names a span, the last
+    detected-repeat settlement in the gold store is the latest
+    recorded decision. Returns None when the record holds no
+    dated decision at all, and the caller asks instead of
+    guessing.
+    """
+    if not spans:
+        return None
+
+    def covering(span, start, end):
+        return (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and start < (span.get("word_end") or 0)
+            and (span.get("word_start") or 0) < end
+        )
+
+    operations = _audit_operations(config)
+    for op in reversed(operations):
+        if op.get("status") != "applied":
+            continue
+        ranges = []
+        if op.get("type") == "cut_words":
+            ranges = [(op.get("word_start"), op.get("word_end"))]
+        elif op.get("type") == "replace_take":
+            ranges = [(op.get("cut_word_start"), op.get("cut_word_end"))]
+        for start, end in ranges:
+            for span in spans:
+                if covering(span, start, end):
+                    return span
+    try:
+        gold_records = _load_gold(config)
+    except Exception:
+        gold_records = []
+    for record in reversed(gold_records):
+        if not isinstance(record, dict):
+            continue
+        if record.get("status") != "auto_cut":
+            continue
+        for span in spans:
+            if covering(
+                span, record.get("word_start"), record.get("word_end")
+            ):
+                return span
+    return None
+
+
+# How close a cut must sit to the playhead to be the cut the
+# creator is looking at (0.27, fix 11): within this many
+# seconds of output time. A playhead parked far from every cut
+# is not pointing at one, and the answer asks instead.
+_WHY_NEAR_S = 10.0
+
+
+def _nearest_cut_span(
+    config: WebAppConfig, spans: list, playhead_s
+) -> Optional[tuple]:
+    """The recorded cut nearest a playhead position, or None.
+
+    Returns (span, output_time) for the span whose place in the
+    output sits within _WHY_NEAR_S of the position; None when
+    no position arrived or no cut is near it.
+    """
+    if not spans or isinstance(playhead_s, bool):
+        return None
+    if not isinstance(playhead_s, (int, float)) or playhead_s < 0:
+        return None
+    scored = []
+    for span in spans:
+        try:
+            at = _output_time_for_word(
+                config, span.get("word_start") or 0
+            )
+        except Exception:
+            continue
+        scored.append((abs(at - float(playhead_s)), at, span))
+    if not scored:
+        return None
+    scored.sort(key=lambda pair: pair[0])
+    dist, at, span = scored[0]
+    if dist > _WHY_NEAR_S:
+        return None
+    return span, at
+
+
+def _record_answer(
+    config: WebAppConfig, text: str, playhead_s=None
+) -> dict:
+    """An editor reply built from the record alone. No provider call."""
+    lowered = str(text or "").lower()
+    if "cost" in lowered:
+        entries = costs.load_session_entries(config.session_dir)
+        total = sum(float(e.get("usd") or 0.0) for e in entries)
+        by_feature: dict = {}
+        for entry in entries:
+            label = costs.row_label(
+                entry.get("feature"), costs.entry_pool(entry)
+            )
+            by_feature[label] = by_feature.get(label, 0.0) + float(
+                entry.get("usd") or 0.0
+            )
+        lines = [
+            f"{label}: {costs.format_usd(usd)}."
+            for label, usd in by_feature.items()
+        ]
+        opening = (
+            f"From the record: this video's work has cost "
+            f"{costs.format_usd(total)} so far."
+            if entries
+            else "From the record: nothing has been charged for this video yet."
+        )
+        return {"text": opening, "lines": lines, "claims": []}
+    spans = []
+    try:
+        spans = _edit_spans(config)
+    except Exception:
+        spans = []
+    picked = spans
+    has_referent = False
+    time_match = re.search(r"(\d+):(\d\d)", lowered)
+    if time_match:
+        has_referent = True
+        target = int(time_match.group(1)) * 60 + int(time_match.group(2))
+        scored = []
+        for span in spans:
+            try:
+                at = _output_time_for_word(config, span.get("word_start") or 0)
+            except Exception:
+                at = 0.0
+            scored.append((abs(at - target), span))
+        scored.sort(key=lambda pair: pair[0])
+        picked = [span for _dist, span in scored[:3]]
+    elif "near the end" in lowered or "at the end" in lowered:
+        has_referent = True
+        try:
+            transcript = _load_json(str(config.job_dir / "transcript.json"))
+            total_words = len(transcript.get("words", []))
+        except Exception:
+            total_words = 0
+        picked = [
+            s
+            for s in spans
+            if total_words and (s.get("word_start") or 0) >= total_words * 0.75
+        ] or spans[-3:]
+    if not picked:
+        return {
+            "text": (
+                "From the record: I have not taken anything out yet, "
+                "so there is nothing to point at."
+            ),
+            "lines": [],
+            "claims": [],
+        }
+    if any(word in lowered for word in _RECORD_WHY_WORDS):
+        if not has_referent:
+            # "Why did you cut that?" with nothing naming which
+            # cut: answer about the cut nearest the playhead
+            # (0.27, fix 11). The page sends the player's
+            # position in the output with the question, and the
+            # span whose place in the output is nearest it is
+            # the one he is looking at. Fix 5's most-recent-cut
+            # answer named a cut at the last second of his
+            # video, so recency no longer picks the span. With
+            # no position, or no cut near it, ask which one he
+            # means, listing real cuts; never guess a cause.
+            near = _nearest_cut_span(config, spans, playhead_s)
+            if near is None:
+                named = []
+                for span in spans[:3]:
+                    try:
+                        at = _output_time_for_word(
+                            config, span.get("word_start") or 0
+                        )
+                    except Exception:
+                        at = 0.0
+                    quote = str(span.get("removed_text") or "").strip()
+                    if len(quote) > 60:
+                        quote = quote[:57].rstrip() + "..."
+                    named.append(f"\"{quote}\" at {_format_clock(at)}")
+                return {
+                    "text": (
+                        "From the record: I cannot tell which cut "
+                        "you mean, and I will not guess. The cuts "
+                        "include " + "; ".join(named) + ". Ask me "
+                        "about one of those, by its words or its "
+                        "time, and I will tell you what the record "
+                        "says."
+                    ),
+                    "lines": [],
+                    "claims": _claims_for_spans(spans[:3]),
+                }
+            span, at = near
+            quote = str(span.get("removed_text") or "").strip()
+            if len(quote) > 80:
+                quote = quote[:77].rstrip() + "..."
+            opening = (
+                f"From the record: the cut nearest where you "
+                f"are paused was \"{quote}\" at about "
+                f"{_format_clock(at)} in the edit. "
+                f"{span.get('reason') or ''}"
+            ).strip()
+            if span.get("comment_text"):
+                opening += f" The note on it said: {span['comment_text']}"
+            return {
+                "text": opening,
+                "lines": [],
+                "claims": _claims_for_spans([span]),
+            }
+        first = picked[0]
+        opening = f"From the record: {first.get('reason') or 'Those words were removed by a run.'}"
+        if first.get("comment_text"):
+            opening += f" The note on it said: {first['comment_text']}"
+        return {
+            "text": opening,
+            "lines": [],
+            "claims": _claims_for_spans(picked),
+        }
+    opening = (
+        f"From the record: {len(picked)} spot"
+        f"{'s' if len(picked) != 1 else ''} "
+        f"{'were' if len(picked) != 1 else 'was'} taken out."
+    )
+    return {"text": opening, "lines": [], "claims": _claims_for_spans(picked)}
+
+
+def _general_record_answer(config: WebAppConfig, text: str) -> dict:
+    """A question answered from the record's counts and rules.
+
+    The fallback for any question the specific record answers
+    and the coach do not claim: what the edit currently is, in
+    the one count's numbers, or the saved rules when the
+    question is about them. No provider, no run, no charge.
+    """
+    lowered = str(text or "").lower()
+    if not config.has_job:
+        return {
+            "text": (
+                "I have not edited a video yet, so there is no "
+                "record to read. Drop a video in the chat and "
+                "ask me again after the first edit."
+            ),
+            "lines": [],
+            "claims": [],
+        }
+    if "rule" in lowered:
+        try:
+            statements = creator_rules.active_rule_statements(
+                _rules_store(config)
+            )
+        except Exception:
+            statements = []
+        if statements:
+            return {
+                "text": (
+                    f"From the record: {len(statements)} saved "
+                    f"rule{'s' if len(statements) != 1 else ''} "
+                    "are switched on for your videos:"
+                ),
+                "lines": [f"· {s}" for s in statements],
+                "claims": [],
+            }
+        return {
+            "text": (
+                "From the record: no saved rules are switched "
+                "on right now. Say \"add a rule\" and the rule "
+                "to save one in your own words."
+            ),
+            "lines": [],
+            "claims": [],
+        }
+    try:
+        counts = _edit_counts(config)
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        timeline = Timeline(transcript, _effective_cuts(config))
+        total = len(timeline.words)
+        opening = (
+            f"From the record: the edit runs "
+            f"{_format_clock(timeline.output_duration)} and keeps "
+            f"{counts['words_kept']} of {total} words "
+            f"({counts['words_cut']} cut). "
+            f"{counts['retakes_removed']} retake"
+            f"{'s' if counts['retakes_removed'] != 1 else ''} "
+            f"removed, {counts['retakes_set_aside']} set aside "
+            f"for your call, {counts['joins_checked']} joins "
+            f"checked, and {counts['spots_to_review']} spot"
+            f"{'s' if counts['spots_to_review'] != 1 else ''} "
+            "waiting for review."
+        )
+    except Exception:
+        opening = (
+            "From the record: I could not read this video's "
+            "editing record just now, so I will not guess."
+        )
+    return {"text": opening, "lines": [], "claims": []}
+
+
+def _keys_answer_line(config: WebAppConfig) -> str:
+    """Whether the keys are working, in one plain line.
+
+    A real check, the same harmless list call the sign-in card
+    runs: a saved key Meta accepts, a saved key it does not, or
+    no key at all. No key value is ever part of the answer.
+    """
+    state = _signin_state(config)
+    if not state.get("meta_signin_set"):
+        return (
+            "Your Meta key: none is saved right now, so edits "
+            "run on this computer and typed directions wait."
+        )
+    accepted, _sentence = _check_signin(config)
+    if accepted:
+        line = "Your Meta key: saved, and Meta accepts it."
+    else:
+        line = (
+            "Your Meta key: one is saved, but Meta does not "
+            "accept it right now."
+        )
+    if state.get("elevenlabs_signin_set"):
+        line += " Your ElevenLabs key is set too."
+    return line
+
+
+def _howto_answer_send(
+    config: WebAppConfig, text: str
+) -> Optional[dict]:
+    """Answer a how-to question with the answer, at $0.
+
+    "How do I review the edit? or check api keys?" used to fall
+    through to the coach and come back as a list of suggested
+    edits (0.27.1, P1 item 6). A question about how to do
+    something is answered about that thing: how reviewing works
+    (the walk on the Done message), and whether the keys are
+    working (a real check). Both halves are answered when both
+    are asked, in the fewest plain lines that hold them.
+    """
+    lowered = str(text or "").lower()
+    words = re.sub(r"[^a-z ]", " ", lowered).split()
+    wants_review = bool(re.search(r"\breview\b", lowered)) and (
+        "how" in words
+        or "where" in words
+        or lowered.strip().endswith("?")
+    )
+    wants_keys = (
+        "api key" in lowered
+        or "apikey" in lowered
+        or (
+            bool(re.search(r"\bkeys?\b", lowered))
+            and (
+                "check" in words
+                or "working" in words
+                or "how" in words
+            )
+        )
+    )
+    if not (wants_review or wants_keys):
+        return None
+    lines = []
+    if wants_review:
+        spots = None
+        if config.has_job:
+            try:
+                spots = _edit_counts(config)["spots_to_review"]
+            except Exception:
+                spots = None
+        if spots:
+            lines.append(
+                f"To review: there "
+                + ("is " if spots == 1 else "are ")
+                + f"{spots} "
+                + ("spot" if spots == 1 else "spots")
+                + " to check. Tap \u201cReview the spots\u201d on "
+                "the Done message and walk them one by one: "
+                "Cut it, Keep it, Reply, or Skip on each."
+            )
+        else:
+            lines.append(
+                "To review: tap \u201cReview the spots\u201d on "
+                "the Done message and walk them one by one: "
+                "Cut it, Keep it, Reply, or Skip on each."
+            )
+    if wants_keys:
+        lines.append(_keys_answer_line(config))
+    entry = _append_thread(
+        config,
+        {
+            "kind": "editor",
+            "record_answer": True,
+            "status": "settled",
+            "text": lines[0],
+            "lines": lines[1:],
+            "claims": [],
+        },
+    )
+    return {"kind": "record", "entry": entry}
+
+
+def _settle_chat_question(
+    config: WebAppConfig, text: str, playhead_s=None
+) -> dict:
+    """Settle one question-shaped message as an answer, at $0.
+
+    Record questions read the edit spans and costs; coaching
+    questions read the coach's local record; anything else gets
+    the general record answer. This path never runs a pass,
+    never builds a provider, and never charges (0.25, finding 8).
+    The playhead position the page sent rides along so a bare
+    "why did you cut that?" can answer about the cut nearest
+    where he is paused (0.27, fix 11).
+    """
+    # A status question while an edit runs is answered from the
+    # run record, ahead of everything else (0.27.1, P1 item 4):
+    # its stage and clock are the answer, not the record's
+    # counts. A how-to question is answered with the how-to
+    # (item 6), ahead of the coach it used to fall into.
+    status = _status_answer_send(config, text)
+    if status is not None:
+        return status
+    howto = _howto_answer_send(config, text)
+    if howto is not None:
+        return howto
+    if _is_record_question(text):
+        answer = _record_answer(config, text, playhead_s=playhead_s)
+        cap_text, cap_lines, cap_more = _cap_answer(
+            answer["text"], answer.get("lines") or []
+        )
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "record_answer": True,
+                "status": "settled",
+                "text": cap_text,
+                "lines": cap_lines,
+                "lines_more": cap_more,
+                "claims": answer.get("claims") or [],
+            },
+        )
+        return {"kind": "record", "entry": entry}
+    focus = coach.coach_focus(text)
+    if focus is not None:
+        return _coach_answer_send(config, focus)
+    answer = _general_record_answer(config, text)
+    cap_text, cap_lines, cap_more = _cap_answer(
+        answer["text"], answer.get("lines") or []
+    )
+    entry = _append_thread(
+        config,
+        {
+            "kind": "editor",
+            "record_answer": True,
+            "status": "settled",
+            "text": cap_text,
+            "lines": cap_lines,
+            "lines_more": cap_more,
+            "claims": answer.get("claims") or [],
+        },
+    )
+    return {"kind": "record", "entry": entry}
+
+
+ESTIMATE_FILENAME = "estimate.json"
+
+
+def _store_job_estimate(config: WebAppConfig, estimate: dict) -> None:
+    """Keep one estimate per job (0.27.1, P1 item 8).
+
+    The estimate priced at the offer is the job's number from
+    then on: the offer card, the chat's spend prompt, and any
+    later surface read this stored copy instead of pricing the
+    job again, so the same run never wears two different
+    numbers (his Mac run showed 156 cents on the card, 67 in
+    the chat, and 85 on Done).
+    """
+    try:
+        config.session_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(
+            config.session_dir / ESTIMATE_FILENAME,
+            {
+                "total_usd": float(estimate.get("total_usd") or 0.0),
+                "total_dollars": estimate.get("total_dollars")
+                or costs.format_dollars(estimate.get("total_usd")),
+                "surface": estimate.get("surface"),
+                "stored_at": _utc_now(),
+            },
+        )
+    except Exception:
+        pass
+
+
+def _load_job_estimate(config: WebAppConfig) -> Optional[dict]:
+    payload = _load_session_json(config, ESTIMATE_FILENAME, {})
+    if isinstance(payload, dict) and isinstance(
+        payload.get("total_usd"), (int, float)
+    ):
+        return payload
+    return None
+
+
+def _direction_estimate_line(config: WebAppConfig, settings: dict) -> str:
+    stored = _load_job_estimate(config)
+    if stored is not None:
+        return (
+            "This edit usually costs "
+            + costs.format_dollars(stored.get("total_usd"))
+            + "."
+        )
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        timeline = Timeline(transcript, _effective_cuts(config))
+        estimate = costs.estimate_run(
+            timeline.source_duration,
+            "front_door",
+            settings,
+            has_direction=True,
+            spark_route=settings.get("spark_route", "meta"),
+        )
+        return (
+            "This edit usually costs "
+            + costs.format_dollars(estimate.get("total_usd"))
+            + "."
+        )
+    except Exception:
+        return ""
+
+
+def _load_thread_pending(config: WebAppConfig) -> Optional[dict]:
+    payload = _load_session_json(config, THREAD_PENDING_FILENAME, {})
+    if isinstance(payload, dict) and payload.get("text"):
+        return payload
+    return None
+
+
+def _save_thread_pending(config: WebAppConfig, pending: Optional[dict]) -> None:
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        config.session_dir / THREAD_PENDING_FILENAME, pending or {}
+    )
+
+
+def _save_pin_comment(config: WebAppConfig, text: str, moment: dict) -> dict:
+    """Save one pinned comment into the feedback store.
+
+    The same store the comments routes write, so the pin's margin
+    markers, timeline dots, and direction runs all see it exactly
+    as they see any other comment. An existing comment id updates
+    that comment's words (the thread's pin edit); a new id appends.
+    """
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "video": config.job_dir.name if config.job_dir else "",
+        "feedback_done": False,
+        "comments": [],
+        "overall_feedback": [],
+    }
+    existing_path = _feedback_path(config)
+    if existing_path is not None:
+        try:
+            existing = _load_json(str(existing_path))
+        except (OSError, ValueError):
+            existing = None
+        if isinstance(existing, dict):
+            payload["video"] = str(existing.get("video") or payload["video"])
+            payload["feedback_done"] = bool(existing.get("feedback_done", False))
+            if isinstance(existing.get("comments"), list):
+                payload["comments"] = existing["comments"]
+            payload["overall_feedback"] = _overall_notes(existing)
+    try:
+        ts = float(moment.get("ts") or 0.0)
+    except (TypeError, ValueError):
+        ts = 0.0
+    comment_id = str(moment.get("comment_id") or "") or str(
+        int(datetime.now().timestamp() * 1000)
+    )
+    stored = next(
+        (c for c in payload["comments"] if str(c.get("id")) == comment_id),
+        None,
+    )
+    if stored is None:
+        stored = {
+            "id": comment_id,
+            "ts": round(ts, 1),
+            "time_is_estimate": True,
+            "fmt": str(moment.get("fmt") or "vertical"),
+            "scope": "both",
+            "text": text,
+            "done": False,
+        }
+        if moment.get("word_start") is not None and moment.get("word_end") is not None:
+            stored["word_start"] = int(moment["word_start"])
+            stored["word_end"] = int(moment["word_end"])
+            if moment.get("word_text"):
+                stored["word_text"] = str(moment["word_text"])
+        payload["comments"].append(stored)
+    else:
+        stored["text"] = text
+    checkpoints.begin(config)
+    _write_json(session / "feedback.json", payload)
+    checkpoints.commit(config, "Saved notes")
+    return stored
+
+
+_CONFIRM_WORDS = {"yes", "run it", "yes run it", "go ahead", "yes please"}
+
+# Conversation that is not a command (0.27.1, P1 item 5): only
+# a clear command runs anything. A complaint ("this is a long
+# time to wait"), a keep-going response to the editor ("no keep
+# going"), and anything else that carries no edit words at all
+# get one short plain line back, at no cost: they never reach
+# the direction spend gate, which on his Mac run answered a
+# complaint with a paid direction offer. Messages WITH edit
+# words are direction and keep the gate exactly as before.
+_CONTINUATION_PHRASES = {
+    "keep going",
+    "keep it going",
+    "carry on",
+    "go on",
+    "go ahead and keep going",
+}
+
+_COMPLAINT_MARKERS = (
+    "long time",
+    "taking forever",
+    "takes forever",
+    "too slow",
+    "so slow",
+    "still waiting",
+    "been waiting",
+    "taking so long",
+    "too long",
+    "hurry up",
+)
+
+
+def _conversational_line(text: str) -> Optional[str]:
+    """The one plain line a non-command message gets, or None.
+
+    None means the message carries edit words and is direction:
+    the normal spend gate decides it. Anything else (a
+    continuation, a complaint, words with no edit in them at
+    all) is conversation, and conversation runs nothing.
+    """
+    normalized = voice_commands.normalize(text)
+    if not normalized:
+        return None
+    if normalized in _CONTINUATION_PHRASES or (
+        normalized.startswith("no ")
+        and normalized[3:] in _CONTINUATION_PHRASES
+    ):
+        return "Okay, carrying on. Nothing ran, and nothing was spent."
+    if voice_commands.reads_as_direction(text):
+        return None
+    if any(marker in normalized for marker in _COMPLAINT_MARKERS):
+        return "Heard you. Nothing ran, and nothing was spent."
+    return (
+        "I did not run anything, and nothing was spent. "
+        "Tell me a change to make and I will price it first."
+    )
+
+
+def _run_chat_direction(config: WebAppConfig, text: str) -> dict:
+    """Run one chat ask through the direction pass and reply in shape."""
+    settings = _front_door_settings(config)
+    before_keys = _edit_span_keys(config)
+    before_duration = None
+    after_duration = None
+    try:
+        timeline = Timeline(
+            _load_json(str(config.job_dir / "transcript.json")),
+            _effective_cuts(config),
+        )
+        before_duration = timeline.output_duration
+    except Exception:
+        pass
+    checkpoints.begin(config)
+    summary = _run_direction_pass(config, text, settings)
+    # The final sweep (0.27.3) settles what the direction run
+    # settled, inside the same checkpoint.
+    _run_final_sweep(config)
+    committed = checkpoints.commit(config, "Direction run")
+    try:
+        timeline = Timeline(
+            _load_json(str(config.job_dir / "transcript.json")),
+            _effective_cuts(config),
+        )
+        after_duration = timeline.output_duration
+    except Exception:
+        pass
+    claims = _claims_for_spans(_new_edit_spans(config, before_keys))
+    lines = [str(line) for line in (summary.get("lines") or []) if str(line).strip()]
+    opening = lines[0] if lines else "Done."
+    rest = lines[1:]
+    held = len(_open_gold_spans(config))
+    if held:
+        rest.append(
+            f"{held} spot{'s' if held != 1 else ''} "
+            f"{'are' if held != 1 else 'is'} waiting for your call below."
+        )
+    cost_total = 0.0
+    if summary.get("usage"):
+        entries = _direction_cost_entries(summary["usage"])
+        _account_costs(config, entries)
+        cost_total = sum(float(e.get("usd") or 0.0) for e in entries)
+    changed = bool(claims) or (
+        before_duration is not None
+        and after_duration is not None
+        and abs(after_duration - before_duration) > 0.05
+    )
+    if changed or cost_total > 0:
+        closing = ""
+        if before_duration is not None and after_duration is not None:
+            closing = (
+                f"Your video is now {_format_clock(after_duration)}, "
+                f"was {_format_clock(before_duration)}."
+            )
+        if cost_total > 0 or summary.get("ran"):
+            closing = (closing + " " if closing else "") + (
+                f"Cost {costs.format_usd(cost_total)}."
+            )
+        if closing:
+            rest.append(closing.strip())
+    # v0.17 (feedback item 26): same diversion as the run
+    # summaries: the per-cut claims are review suggestions
+    # now, not chat lines.
+    _record_review_claims(config, claims)
+    opening, rest, more_lines = _cap_answer(opening, rest)
+    entry_payload = {
+        "kind": "editor",
+        "status": "settled",
+        "text": opening,
+        "lines": rest,
+        "lines_more": more_lines,
+        "claims": [],
+    }
+    # Per-action undo (v0.18, Builder B): a run that actually
+    # changed the edit reports the checkpoint it just committed
+    # as its action, so its menu can undo or redo that one run.
+    # A run that changed nothing gets no action: there is
+    # nothing to take back.
+    if changed:
+        current = committed.get("current") if isinstance(committed, dict) else None
+        if isinstance(current, int) and current >= 0:
+            entry_payload["action_id"] = f"checkpoint:{current}"
+            entry_payload["action_label"] = "Direction run"
+            entry_payload["undone"] = False
+    entry = _append_thread(config, entry_payload)
+    return {"kind": "direction", "entry": entry, "summary": summary}
+
+
+# -- Chat answers stay short (0.27.1, P1b item 7) --------------------
+#
+# A chat answer is at most three lines by default: the lead
+# line plus two more. His recording showed a six-item coach
+# list landing as one wall of text. Anything past three lines
+# waits on the entry as ``lines_more`` and comes back whole
+# when he says "more". A draft he is reading to decide on is
+# not an answer (the teach summary, the Done message, the
+# review walk) and is never capped here.
+
+def _cap_answer(text, lines):
+    """(text, lines, more): one answer, capped at three lines."""
+    units = []
+    if text:
+        units.append(str(text))
+    units.extend(
+        str(line) for line in (lines or []) if str(line).strip()
+    )
+    if len(units) <= 3:
+        return (text or ""), list(lines or []), []
+    shown = units[:3]
+    lead = shown[0] + " Say \u201cmore\u201d for the rest."
+    return lead, shown[1:], units[3:]
+
+
+_MORE_ASK_RE = re.compile(
+    r"^(more|show more|show me more|see more|the rest|go on|"
+    r"continue|list them|what else|and)$"
+)
+
+
+def _is_more_ask(text) -> bool:
+    cleaned = re.sub(r"[^a-z ]", " ", str(text or "").lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return bool(_MORE_ASK_RE.match(cleaned))
+
+
+def _more_answer_send(config: WebAppConfig) -> Optional[dict]:
+    """Hand back the lines a capped answer held, when asked.
+
+    Only the newest entry still holding lines counts, and
+    expanding spends them (the stored entry is cleared), so a
+    second "more" falls through to the normal order instead
+    of repeating the same lines.
+    """
+    entries = _load_thread(config)
+    for index in range(len(entries) - 1, -1, -1):
+        held = entries[index].get("lines_more")
+        if not isinstance(held, list):
+            continue
+        more = [
+            str(line) for line in held if str(line).strip()
+        ]
+        if not more:
+            continue
+        entries[index]["lines_more"] = []
+        _save_thread(config, entries)
+        new_entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": more[0],
+                "lines": more[1:],
+                "lines_more": [],
+                "claims": [],
+            },
+        )
+        return {"kind": "record", "entry": new_entry}
+    return None
+
+
+# -- Coach mode (v0.18, Builder C) -------------------------------------------
+#
+# A coach question in the thread is answered from the local record
+# alone (the coach module): the transcript, the current cuts plan,
+# the open held spans, and the retake record. No provider is built
+# and nothing is transcribed on this path, so the list costs $0.
+# The reply entry carries its suggestions, each with a stable id
+# and the direction words that would run it. A follow-up ("do it",
+# "do the first one", "do the second one", or a send naming a
+# suggestion id) maps one suggestion into _run_chat_direction, the
+# normal direction path: the creator's "do it" IS the plain yes
+# for that one suggestion, so it runs the way a confirmed
+# direction runs, with that path's normal cost accounting.
+
+
+def _coach_records(config: WebAppConfig):
+    """The local records the coach reads, or None with no job."""
+    if not config.has_job:
+        return None
+    try:
+        transcript = _load_json(str(config.job_dir / "transcript.json"))
+        cuts = _effective_cuts(config)
+    except Exception:
+        return None
+    try:
+        held = _open_gold_spans(config)
+    except Exception:
+        held = []
+    try:
+        retake_record = _load_retake_record(config)
+        recorded_pairs = [
+            pair
+            for pair in retake_record.get("pairs", [])
+            if isinstance(pair, dict)
+        ]
+    except Exception:
+        recorded_pairs = []
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    return transcript, cuts, held, recorded_pairs, profile
+
+
+def _last_coach_suggestions(config: WebAppConfig) -> list:
+    """The suggestions on the newest coach reply in the thread."""
+    for entry in reversed(_load_thread(config)):
+        suggestions = entry.get("suggestions")
+        if (
+            entry.get("coach")
+            and isinstance(suggestions, list)
+            and suggestions
+        ):
+            return [s for s in suggestions if isinstance(s, dict)]
+    return []
+
+
+def _coach_note(config: WebAppConfig, line: str) -> dict:
+    entry = _append_thread(
+        config,
+        {
+            "kind": "editor",
+            "status": "settled",
+            "text": line,
+            "lines": [],
+            "claims": [],
+            "coach": True,
+            "suggestions": [],
+        },
+    )
+    return {"kind": "coach", "entry": entry, "suggestions": []}
+
+
+def _coach_followup(config: WebAppConfig, text: str) -> Optional[dict]:
+    """Settle a "do it" style follow-up against the coach list.
+
+    Returns None when the words are not a follow-up, or when no
+    coach list is waiting (the words then take the normal send
+    order, exactly as they did before coach mode existed).
+    """
+    suggestions = _last_coach_suggestions(config)
+    if not suggestions:
+        return None
+    chosen = None
+    suggestion_id = coach.followup_suggestion_id(text)
+    if suggestion_id:
+        chosen = next(
+            (s for s in suggestions if s.get("id") == suggestion_id),
+            None,
+        )
+        if chosen is None:
+            return _coach_note(
+                config,
+                "That suggestion is not on the coach list I last "
+                "gave you. Ask me what I would do to make this "
+                "better and I will build the list again.",
+            )
+    else:
+        index = coach.followup_index(text)
+        if index is None:
+            return None
+        if not 1 <= index <= len(suggestions):
+            return _coach_note(
+                config,
+                f"There are only {len(suggestions)} suggestions on "
+                "the coach list, so there is no number "
+                f"{index} to run. Say \"do it\" for the first one, "
+                "or name the one you want.",
+            )
+        chosen = suggestions[index - 1]
+    result = _run_chat_direction(
+        config, str(chosen.get("direction") or chosen.get("text") or "")
+    )
+    result["coach_suggestion_id"] = chosen.get("id")
+    result["suggestion"] = chosen
+    return result
+
+
+def _coach_answer_send(config: WebAppConfig, focus: str) -> dict:
+    """Answer one coach question from the local record, at $0."""
+    records = _coach_records(config)
+    if records is None:
+        return _coach_note(
+            config,
+            "Open a video first and I will coach from its own "
+            "words and its editing record.",
+        )
+    transcript, cuts, held, recorded_pairs, profile = records
+    reply = coach.coach_reply(
+        transcript,
+        cuts,
+        focus=focus,
+        held=held,
+        recorded_retake_pairs=recorded_pairs,
+        profile=profile,
+    )
+    cap_text, cap_lines, cap_more = _cap_answer(
+        reply["text"], reply.get("lines") or []
+    )
+    entry = _append_thread(
+        config,
+        {
+            "kind": "editor",
+            "status": "settled",
+            "text": cap_text,
+            "lines": cap_lines,
+            "lines_more": cap_more,
+            "claims": [],
+            "coach": True,
+            "coach_focus": focus,
+            "suggestions": reply.get("suggestions") or [],
+        },
+    )
+    return {
+        "kind": "coach",
+        "entry": entry,
+        "suggestions": reply.get("suggestions") or [],
+        "focus": focus,
+    }
+
+
+def _coach_send_if_coach(config: WebAppConfig, text: str) -> Optional[dict]:
+    """The coach intent check for one thread message, or None.
+
+    Follow-ups first (they name a suggestion from the last coach
+    reply), then coaching questions generally. A direction stays
+    a direction: this returns None for anything that is not a
+    question asking for advice about the video, and for any
+    follow-up when no coach list is waiting.
+    """
+    followup = _coach_followup(config, text)
+    if followup is not None:
+        return followup
+    focus = coach.coach_focus(text)
+    if focus is None:
+        return None
+    return _coach_answer_send(config, focus)
+
+
+def _queue_notes(raw) -> list:
+    """Normalize the queued notes a Send to edit carries.
+
+    Each note is one carried selection: its edited-clock moment,
+    the word range, and the words themselves. The moment line is
+    printed the way the thread's pins print it, from the moment
+    the page carried (the edited clock), never recomputed here.
+    """
+    notes = []
+    if not isinstance(raw, list):
+        return notes
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            ts = float(item.get("ts") or 0.0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        word_start = item.get("word_start")
+        word_end = item.get("word_end")
+        notes.append(
+            {
+                "ts": round(ts, 1),
+                "fmt": str(item.get("fmt") or "vertical"),
+                "word_start": (
+                    int(word_start) if isinstance(word_start, int) else None
+                ),
+                "word_end": (
+                    int(word_end) if isinstance(word_end, int) else None
+                ),
+                "word_text": str(item.get("word_text") or ""),
+                "moment_line": f"At {_format_clock(ts)} in the video",
+            }
+        )
+    return notes
+
+
+def _compose_queue_ask(text: str, notes: list) -> str:
+    """One direction ask carrying the covering message and every
+    queued moment, in the order they were queued."""
+    lines = []
+    body = str(text or "").strip()
+    if body:
+        lines.append(body)
+        lines.append("Notes on moments in the video:")
+    else:
+        lines.append("Please look at these moments in the video:")
+    for note in notes:
+        line = "- " + note["moment_line"]
+        if note["word_text"]:
+            line += f': "{note["word_text"]}"'
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _save_queue_pins(config: WebAppConfig, notes: list, text: str) -> list:
+    """Save each queued note as a pinned comment in the feedback
+    store, the way a sent moment pin is saved, so the direction
+    run sees every note on its moment. The covering message is
+    each pin's words; with no covering message the pin carries
+    its own moment line."""
+    stored = []
+    cover = str(text or "").strip()
+    for note in notes:
+        pin_text = cover or (
+            note["moment_line"]
+            + (f': "{note["word_text"]}"' if note["word_text"] else "")
+        )
+        stored.append(_save_pin_comment(config, pin_text, note))
+    return stored
+
+
+def _chat_send_queue(
+    config: WebAppConfig, text: str, notes: list, reply_to=None,
+    playhead_s=None,
+) -> dict:
+    """One Send to edit (Batch E2, item 15): the queued moment
+    notes plus the covering message go as a SINGLE direction ask
+    through the same send path a typed ask takes — one run, one
+    editor reply, and the spend gate unchanged. The creator
+    entry in the thread carries the queue, so it lists each
+    queued moment; each note also lands as a pinned comment
+    when the run goes ahead."""
+    composed = _compose_queue_ask(text, notes)
+    _append_thread(
+        config,
+        {
+            "kind": "creator",
+            "status": "settled",
+            "text": text,
+            "queue": notes,
+            "reply_to": reply_to,
+        },
+    )
+    if _is_chat_question(text):
+        # A question covering queued spots is answered, not run
+        # (0.25, finding 8): the notes stay queued on the page
+        # and no pin is saved and nothing is spent here.
+        result = _settle_chat_question(config, text, playhead_s=playhead_s)
+        result["queue"] = notes
+        return result
+    if config.signin_key():
+        settings = _front_door_settings(config)
+        estimate = _direction_estimate_line(config, settings)
+        _save_thread_pending(
+            config, {"text": composed, "queue": notes, "cover": text}
+        )
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": (
+                    "That needs a direction run, which spends money. "
+                    + (estimate + " " if estimate else "")
+                    + "Say \u201crun it\u201d and I will, or change the ask."
+                ),
+                "lines": [],
+                "claims": [],
+            },
+        )
+        return {"kind": "needs_confirmation", "entry": entry, "queue": notes}
+    _save_queue_pins(config, notes, text)
+    result = _run_chat_direction(config, composed)
+    result["queue"] = notes
+    return result
+
+
+def _chat_send(
+    config: WebAppConfig,
+    text: str,
+    moment: Optional[dict] = None,
+    queue=None,
+    reply_to=None,
+    playhead_s=None,
+) -> dict:
+    """Settle one message sent in the Editor panel.
+
+    Order: a moment attachment makes the message a pinned comment;
+    a pending spend confirmation is settled; the voice-command
+    matcher runs exactly as it does for spoken words; a question
+    about the record is answered from the record at $0; anything
+    else is direction. A direction ask that would spend money is
+    not run on the first send: the reply names the estimate and
+    the run waits for a plain yes. A message carrying queued
+    moment notes (Send to edit, Batch E2) goes as one direction
+    ask composed from the queue and the covering message, under
+    the same spend gate.
+    """
+    text = str(text or "").strip()
+    notes = _queue_notes(queue)
+    if not text and not notes:
+        raise ValueError("Write or say something first.")
+    # Reply to one message (v0.18, Builder B): the target entry
+    # is resolved once, up front. The creator entry below stores
+    # its id as reply_to, and _scoped_reply settles the message
+    # against that entry alone when the entry reports an action
+    # or the message asks about it. An id that names no entry is
+    # dropped, so a stale reply can never scope a send wrongly.
+    reply_target = _find_thread_entry(config, reply_to) if reply_to else None
+    if reply_target is None:
+        reply_to = None
+    if notes and not moment:
+        return _chat_send_queue(
+            config, text, notes, reply_to=reply_to, playhead_s=playhead_s
+        )
+    if not text:
+        raise ValueError("Write or say something first.")
+    if moment:
+        # The creator's words are a thread message in their
+        # own right; the pin is the same words pinned to the
+        # moment. A record question asked on a moment is
+        # still answered from the record at $0; a direction
+        # ask rides as the pinned comment, the way comments
+        # have always fed direction runs.
+        _append_thread(
+            config,
+            {
+                "kind": "creator",
+                "status": "settled",
+                "text": text,
+                "reply_to": reply_to,
+            },
+        )
+        stored = _save_pin_comment(config, text, moment)
+        entry = next(
+            (
+                e
+                for e in _sync_thread(config)
+                if e.get("kind") == "pin"
+                and str(e.get("comment_id")) == str(stored.get("id"))
+            ),
+            None,
+        )
+        scoped = _scoped_reply(config, text, reply_target)
+        if scoped is not None:
+            scoped["pin_entry"] = entry
+            scoped["comment"] = stored
+            return scoped
+        if _is_chat_question(text):
+            # A question asked on a moment still gets an answer,
+            # never a run (0.25, finding 8). The pin above is
+            # saved, as it is for any moment message.
+            result = _settle_chat_question(
+                config, text, playhead_s=playhead_s
+            )
+            result["pin_entry"] = entry
+            result["comment"] = stored
+            return result
+        return {"kind": "pin", "entry": entry, "comment": stored}
+    _append_thread(
+        config,
+        {
+            "kind": "creator",
+            "status": "settled",
+            "text": text,
+            "reply_to": reply_to,
+        },
+    )
+    normalized = re.sub(r"[^a-z ]", "", text.lower()).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    pending = _load_thread_pending(config)
+    if pending and normalized in _CONFIRM_WORDS:
+        _save_thread_pending(config, None)
+        pending_notes = _queue_notes(pending.get("queue"))
+        if pending_notes:
+            _save_queue_pins(
+                config, pending_notes, str(pending.get("cover") or "")
+            )
+            result = _run_chat_direction(config, str(pending["text"]))
+            result["queue"] = pending_notes
+            return result
+        return _run_chat_direction(config, str(pending["text"]))
+    if pending and normalized in {"no", "never mind", "cancel"}:
+        _save_thread_pending(config, None)
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": "Okay, I did not run it. Nothing was spent.",
+                "lines": [],
+                "claims": [],
+            },
+        )
+        return {"kind": "cancelled", "entry": entry}
+    # A status ask settles from the run record ahead of
+    # everything else (0.27.1, P1 item 4): question-shaped ones
+    # are caught again in _settle_chat_question below, but a
+    # plain "I need you to update me" is not question-shaped,
+    # and it must never reach the direction gate while an edit
+    # is running (item 5: it asked for a paid direction run on
+    # his Mac run).
+    status = _status_answer_send(config, text)
+    if status is not None:
+        return status
+    # A reply to one message settles against that message alone
+    # (v0.18, Builder B), ahead of the voice matcher: "undo" as a
+    # reply means that message's action, not the newest history
+    # step. _scoped_reply returns None when the message is a
+    # plain direction answering an entry with no action, and the
+    # normal order below runs it.
+    scoped = _scoped_reply(config, text, reply_target)
+    if scoped is not None:
+        return scoped
+    # "More" after a capped answer hands back the held lines
+    # (0.27.1, P1b item 7), ahead of every other reading of
+    # the word.
+    if _is_more_ask(text):
+        more = _more_answer_send(config)
+        if more is not None:
+            return more
+    # A coach follow-up ("do it", "do the first one") settles
+    # here, ahead of the voice matcher: those exact words can
+    # also read as a voice command, but when a coach list is
+    # waiting they name a suggestion on it. With no coach list
+    # waiting this returns None and the normal order runs, word
+    # for word as before (v0.18, Builder C).
+    coach_followup = _coach_followup(config, text)
+    if coach_followup is not None:
+        return coach_followup
+    # An offer the chat made settles here (0.27.3, chunk B
+    # item 8): a dead-space note gets its measured answer and
+    # tap chip, and a bare "run it" runs the newest open
+    # offer. Ahead of the question reading, because "there's
+    # dead space at 2:10" is a note to act on, not a question
+    # about the record.
+    offer = _offer_send(config, text)
+    if offer is not None:
+        return offer
+    # Questions are not commands (0.25, finding 8): anything
+    # phrased as a question is answered from the record here,
+    # ahead of the voice matcher (whose phrases a question can
+    # echo: "did you undo that?" must not undo anything) and
+    # ahead of the spend gate and the direction path.
+    if _is_chat_question(text):
+        return _settle_chat_question(config, text, playhead_s=playhead_s)
+    match = voice_commands.match_voice_command(text)
+    decision = match.get("decision")
+    if decision in ("command", "ask", "unavailable"):
+        if decision == "command":
+            label = voice_commands.command_label(
+                match["command"], match.get("seconds")
+            )
+            record = f'Heard: "{text}". Ran command: {label}.'
+        elif decision == "ask":
+            labels = [
+                voice_commands.COMMAND_LABELS.get(c, c)
+                for c in list(match.get("candidates") or [])[:2]
+            ]
+            record = (
+                f'Heard: "{text}". I am not sure which you meant: '
+                f"{' or '.join(labels)}? Nothing ran."
+            )
+        else:
+            record = (
+                f'Heard: "{text}". '
+                + voice_commands.CENTER_UNAVAILABLE_SENTENCE
+            )
+        _record_voice_line(config, record)
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": record,
+                "lines": [],
+                "claims": [],
+            },
+        )
+        return {
+            "kind": "command",
+            "entry": entry,
+            "decision": decision,
+            "command": match.get("command"),
+            "seconds": match.get("seconds"),
+            "candidates": match.get("candidates"),
+            "record": record,
+        }
+    if _is_record_question(text):
+        answer = _record_answer(config, text, playhead_s=playhead_s)
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                # Marked like the pin path's record answer:
+                # its claims are the answer, not a work log.
+                "record_answer": True,
+                "status": "settled",
+                "text": answer["text"],
+                "lines": answer.get("lines") or [],
+                "claims": answer.get("claims") or [],
+            },
+        )
+        return {"kind": "record", "entry": entry}
+    # Coach mode (v0.18, Builder C): the coach intent check sits
+    # beside the record-question check above, before the spend
+    # gate below, so a coach question is answered from the local
+    # record at $0 and never falls through into a direction run
+    # by accident. "Do it" style follow-ups map the coach
+    # suggestion id into _run_chat_direction, the normal
+    # direction path (see _coach_send_if_coach).
+    coach_result = _coach_send_if_coach(config, text)
+    if coach_result is not None:
+        return coach_result
+    # Conversation is not a command (0.27.1, P1 item 5): what
+    # is left and carries no edit words gets one plain line at
+    # no cost, never the direction gate. Only a clear direction
+    # ask reaches the spend gate below.
+    plain_line = _conversational_line(text)
+    if plain_line is not None:
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": plain_line,
+                "lines": [],
+                "claims": [],
+            },
+        )
+        return {"kind": "note", "entry": entry}
+    if config.signin_key():
+        settings = _front_door_settings(config)
+        estimate = _direction_estimate_line(config, settings)
+        _save_thread_pending(config, {"text": text})
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": (
+                    "That needs a direction run, which spends money. "
+                    + (estimate + " " if estimate else "")
+                    + "Say \u201crun it\u201d and I will, or change the ask."
+                ),
+                "lines": [],
+                "claims": [],
+            },
+        )
+        return {"kind": "needs_confirmation", "entry": entry}
+    return _run_chat_direction(config, text)
 
 
 # ---------------------------------------------------------------------------
@@ -5749,6 +13274,7 @@ def _run_retake_pass(
     keep_mode: Optional[str] = None,
     style: Optional[str] = None,
     strict: Optional[bool] = None,
+    mode: Optional[str] = None,
 ) -> dict:
     """Measure the edit for retakes and act on what the bands allow.
 
@@ -5769,6 +13295,11 @@ def _run_retake_pass(
     judge, becomes a scored flag. Policy-flag pairs (a negation in
     either copy, a short emphasis double) are flags by construction
     on both paths, because which copy stays can change the meaning.
+    Decided pairs (v0.13) are the exception on both paths: a
+    fragment that stops mid-word, and a chain of tries at one line
+    with one complete take, are cut locally in strict and judged
+    modes alike, marked unsure, and never become flags or wait for
+    a judgment call.
     Pairs the creator already graded as keep-both are never
     proposed again.
 
@@ -5792,7 +13323,18 @@ def _run_retake_pass(
         "kept_both": 0,
         "usage": [],
         "route_events": [],
+        "auto_struck": [],
+        "auto_struck_count": 0,
     }
+    # The involvement mode decides what happens to the pairs this
+    # pass cannot settle: in cleanest mode a detected repeat is
+    # struck at gold-record time (v0.15, item 22); in tailor mode
+    # it waits in gold. A caller that does not name the mode uses
+    # the job's saved front-door mode, which defaults to cleanest.
+    if mode not in INVOLVEMENT_MODES:
+        mode = _front_door_settings(config).get("mode", "cleanest")
+    involvement_mode = mode
+    summary["mode"] = involvement_mode
     # The pass's provider is built once, with the picked style, and
     # reused for the shadow and the judgment, so the run record's
     # know-how record is the provider this pass actually used.
@@ -5825,6 +13367,96 @@ def _run_retake_pass(
         for pair in all_pairs
         if decisions.get(retakes.pair_key(pair), {}).get("keep_both") is not True
     ]
+    # A your-call span is never cut without the creator's yes
+    # (0.27, fix 8): on a re-run, a pair that would cut words
+    # already waiting open in gold is not proposed again. A pair
+    # that only flags (it cuts nothing) is untouched: it simply
+    # re-offers the same call, and the store keeps the record
+    # the creator has not decided yet.
+    open_gold_views = _open_gold_spans(config)
+    if open_gold_views:
+        gold_spans = [
+            (view["word_start"], view["word_end"])
+            for view in open_gold_views
+            if isinstance(view.get("word_start"), int)
+            and isinstance(view.get("word_end"), int)
+        ]
+
+        def _pair_cuts_gold(pair: dict) -> bool:
+            if pair["band"] == "flag" and not pair.get("decided"):
+                return False
+            cut = pair["cut"]
+            cut_start = cut["word_start"]
+            cut_end = cut["word_end"]
+            if not any(
+                cut_start < g_end and g_start < cut_end
+                for g_start, g_end in gold_spans
+            ):
+                return False
+            # A whole-saying extension (0.27) that reaches into
+            # an open your-call span is trimmed back to the
+            # pair's measured cut instead of dropping the pair:
+            # the measured cut settles as before, and the head
+            # words stay with the creator's open call. Only the
+            # added region may be trimmed; a measured cut that
+            # itself overlaps the span still holds the pair out.
+            whole_from = cut.get("whole_from")
+            if isinstance(whole_from, int) and not any(
+                whole_from < g_end and g_start < cut_end
+                for g_start, g_end in gold_spans
+            ):
+                words = transcript.get("words") or []
+                cut["word_start"] = whole_from
+                cut["text"] = " ".join(
+                    str(words[i].get("word") or "")
+                    for i in range(whole_from, cut_end)
+                )
+                del cut["whole_from"]
+                cut["whole_saying_trimmed"] = True
+                keep = pair["keep"]
+                pair["pair_id"] = retakes._pair_id(
+                    whole_from,
+                    cut_end,
+                    keep["word_start"],
+                    keep["word_end"],
+                )
+                pair["pair_key"] = (
+                    f"{whole_from}-{cut_end}"
+                    f"|{keep['word_start']}-{keep['word_end']}"
+                )
+                return False
+            # The same trim for the stopped-take tail extension
+            # (0.27.2): when only the added tail reaches into the
+            # open span, the tail stays with the creator's call
+            # and the measured cut settles as before.
+            tail_from = cut.get("tail_from")
+            if isinstance(tail_from, int) and not any(
+                cut_start < g_end and g_start < tail_from
+                for g_start, g_end in gold_spans
+            ):
+                words = transcript.get("words") or []
+                cut["word_end"] = tail_from
+                cut["text"] = " ".join(
+                    str(words[i].get("word") or "")
+                    for i in range(cut_start, tail_from)
+                )
+                del cut["tail_from"]
+                cut["whole_saying_trimmed"] = True
+                keep = pair["keep"]
+                pair["pair_id"] = retakes._pair_id(
+                    cut_start,
+                    tail_from,
+                    keep["word_start"],
+                    keep["word_end"],
+                )
+                pair["pair_key"] = (
+                    f"{cut_start}-{tail_from}"
+                    f"|{keep['word_start']}-{keep['word_end']}"
+                )
+                return False
+            return True
+
+        pairs = [pair for pair in pairs if not _pair_cuts_gold(pair)]
     shadow = None
     if mode == "best":
         shadow = _run_shadow(
@@ -5859,8 +13491,24 @@ def _run_retake_pass(
         if pair["band"] == "a":
             outcomes[pair["pair_id"]] = "proposed"
     for pair in retakes.flag_pairs(pairs):
+        if pair.get("decided"):
+            continue
         operations.append(retakes.flag_operation(pair))
         outcomes[pair["pair_id"]] = "flagged"
+    # A decided band-flag pair is cut, never flagged: the chain of
+    # tries (or the mid-word stop) is the decision, and the cut is
+    # an unsure cut the creator can bring back.
+    decided_flag = [
+        pair for pair in retakes.flag_pairs(pairs) if pair.get("decided")
+    ]
+    if decided_flag:
+        operations.extend(
+            retakes.decided_cut_operations(
+                timeline, profile, settings=settings, pairs=decided_flag
+            )
+        )
+        for pair in decided_flag:
+            outcomes[pair["pair_id"]] = "judged_cut"
 
     borderline = retakes.borderline_pairs(pairs)
     judged_ops: list = []
@@ -5876,9 +13524,29 @@ def _run_retake_pass(
         for pair in borderline:
             outcomes[pair["pair_id"]] = "judged_cut"
     elif borderline:
+        # Decided borderline pairs are cut locally on this path
+        # too; only the pairs the local evidence did not decide
+        # go to the judgment call.
+        decided_borderline = [
+            pair for pair in borderline if pair.get("decided")
+        ]
+        open_borderline = [
+            pair for pair in borderline if not pair.get("decided")
+        ]
+        if decided_borderline:
+            judged_ops.extend(
+                retakes.decided_cut_operations(
+                    timeline,
+                    profile,
+                    settings=settings,
+                    pairs=decided_borderline,
+                )
+            )
+            for pair in decided_borderline:
+                outcomes[pair["pair_id"]] = "judged_cut"
         provider = retake_provider
         judged = None
-        if provider is not None:
+        if provider is not None and open_borderline:
             guidance = creator_rules.active_rule_statements(
                 _rules_store(config)
             )
@@ -5886,7 +13554,7 @@ def _run_retake_pass(
                 guidance = guidance + [spoken_direction]
             try:
                 judged = provider.judge_retakes(
-                    borderline, timeline, guidance=guidance
+                    open_borderline, timeline, guidance=guidance
                 )
             except ProviderError as exc:
                 # A failed judgment call never fails the pass: the
@@ -5901,8 +13569,9 @@ def _run_retake_pass(
             if callable(drain_events):
                 summary["route_events"].extend(drain_events() or [])
         if judged is not None:
-            judged_ops, verdicts = judged
-        for pair in borderline:
+            provider_ops, verdicts = judged
+            judged_ops.extend(provider_ops)
+        for pair in open_borderline:
             verdict = verdicts.get(pair["pair_id"])
             if verdict in ("keep_both", "not_a_pair"):
                 outcomes[pair["pair_id"]] = (
@@ -5959,6 +13628,7 @@ def _run_retake_pass(
                 entry["retake"] = {
                     "pair_id": pair["pair_id"],
                     "band": pair["band"],
+                    "decided": pair.get("decided"),
                     "retake_class": pair["retake_class"],
                     "pattern_key": pair["pattern_key"],
                     "coverage": pair.get("coverage"),
@@ -6025,18 +13695,37 @@ def _run_retake_pass(
     _save_retake_record(config, record)
     # The pairs this pass could not settle (flagged by policy or by
     # the borderline band, or cut and then held by the verifier)
-    # wait in gold for the creator's call.
-    _record_gold_spans(
+    # wait in gold for the creator's call — except a detected
+    # repeat, which settles as an applied cut at this same record
+    # point in every mode (v0.15 item 22, extended by v0.17,
+    # feedback items 7 and 8). A pair whose copies say different
+    # things still waits, with the default stated.
+    retake_protected = [
+        (span["word_start"], span["word_end"])
+        for span in timeline.protected_spans(profile)
+    ]
+    summary["auto_struck"] = _record_gold_detected_repeats(
         config,
         _gold_candidates_from_retakes(
             record["pairs"],
             timeline.words,
-            protected_ranges=[
-                (span["word_start"], span["word_end"])
-                for span in timeline.protected_spans(profile)
-            ],
+            protected_ranges=retake_protected,
         ),
+        involvement_mode,
+        protected_ranges=retake_protected,
     )
+    summary["auto_struck_count"] = len(summary["auto_struck"])
+    if summary["auto_struck"]:
+        # The run record carries the settled spans too: reload the
+        # record the settlement just updated (it may have added
+        # pair decisions) and stamp its latest run.
+        saved_record = _load_retake_record(config)
+        if saved_record.get("runs"):
+            saved_record["runs"][-1]["auto_struck"] = summary["auto_struck"]
+            saved_record["runs"][-1]["auto_struck_count"] = (
+                summary["auto_struck_count"]
+            )
+        _save_retake_record(config, saved_record)
     session_log.log_stage(config.session_dir, "retake", "finish")
     return summary
 
@@ -6073,7 +13762,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
     ).strip().lower()
     if mode not in INVOLVEMENT_MODES:
         raise ValueError(
-            "Choose the Cleanest cut, or Tailor it with me."
+            "Choose Proactive, or Leave more in."
         )
     style = str(
         body.get("style", defaults.get("style", "justins-way"))
@@ -6093,6 +13782,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "remove_fillers": bool(
             body.get("remove_fillers", defaults.get("remove_fillers", True))
         ),
+        "crossfade": bool(body.get("crossfade", defaults.get("crossfade", True))),
         "mode": mode,
         "style": style,
     }
@@ -6120,6 +13810,7 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
             keep_mode=settings["keep_mode"],
             style=settings["style"],
             strict=settings.get("retake_strict"),
+            mode=settings["mode"],
         )
     extras = []
     if settings["remove_retakes"]:
@@ -6177,9 +13868,25 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
     filler = None
     if settings["remove_fillers"]:
         filler = _run_filler_pass(config, settings)
+    # The opening rule: the edit starts on the first real line.
+    _run_opening_pass(config)
     silence = None
     if settings["cut_silence"]:
         silence = _run_silence_pass(config, settings["buffer_s"])
+    # SMOOTH, NEVER CHOPPY (Message 2R, P0) runs last, on the plan
+    # every other pass settled: it sets the join edges on the
+    # measured quiet and checks every join before the render.
+    smooth_summary = _run_smooth_pass(config)
+    # The final sweep (0.27.3): one last look at the settled
+    # plan before the spots are read off it, so a stopped try
+    # no pass caught is cut here, and a cut final saying is
+    # put back, in every path.
+    sweep = _run_final_sweep(config)
+    # The same-point spots are read off the settled plan (0.27):
+    # a passage whose point is made again later becomes a review
+    # spot, never a cut. Recorded before the first checkpoint
+    # that follows, so Undo treats the spots as part of the edit.
+    _record_same_point_spots(config)
     # What this run cost, per feature, from the passes' own
     # records (v0.7.2). The deterministic passes are $0 and say
     # so; the model work prices from its captured usage.
@@ -6217,6 +13924,33 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
                 config, config.job_dir / source_name, has_audio
             )
     session_log.log_stage(config.session_dir, "front door", "finish")
+    # The retake line, in the one count's numbers (0.25,
+    # finding 6): copies removed and copies set aside, counted
+    # from the final plan like every other surface, not from
+    # the pass's own operation tally.
+    retake_lines: list = []
+    if retake_summary is not None:
+        try:
+            front_counts = _edit_counts(config)
+            retake_lines.append(
+                "Retakes: "
+                f"{front_counts['retakes_removed']} removed, "
+                f"{front_counts['retakes_set_aside']} set aside "
+                "for your call."
+            )
+        except Exception:
+            # No fallback tally (0.26, fix 3): a line the one
+            # count cannot back is left out, never recounted
+            # from the pass's own operations.
+            pass
+    if sweep and sweep.get("cuts"):
+        _sweep_count = len(sweep["cuts"])
+        retake_lines.append(
+            "Final check: took out "
+            f"{_sweep_count} stopped "
+            f"{'try' if _sweep_count == 1 else 'tries'} "
+            "that had slipped through."
+        )
     # The length change, said plainly in its own line: the edit
     # can be much shorter than the recording (only the talking
     # parts are kept), and the creator should never have to
@@ -6248,12 +13982,14 @@ def _run_front_door(config: WebAppConfig, body: dict) -> dict:
         "direction_runs": direction_runs,
         "retakes": retake_summary,
         "filler": filler,
-        "lines": list(filler["lines"]) if filler else [],
+        "lines": retake_lines + (list(filler["lines"]) if filler else []),
         "mode_lines": _mode_and_gold_lines(config, settings),
+        "crossfade": bool(settings.get("crossfade", True)),
         "cost_lines": cost_block["recap_lines"] if cost_block else [],
         "costs": cost_block,
         "gold": len(_open_gold_spans(config)),
         "silence": silence,
+        "smooth": smooth_summary,
         "saved_rules": creator_rules.active_rule_statements(
             _rules_store(config)
         ),
@@ -6335,6 +14071,20 @@ def _adopt_job(httpd, job_root: Path) -> WebAppConfig:
     # A test-video mark set at the front door carries into the
     # job this first edit creates, the same as a dropped job.
     _carry_launch_test_video(config)
+    # So does the estimate priced at the offer (0.27.1, P1
+    # item 8): the job's one stored number, copied in from the
+    # launch session that priced it.
+    try:
+        launch_estimate = current.session_dir / ESTIMATE_FILENAME
+        job_estimate = config.session_dir / ESTIMATE_FILENAME
+        if launch_estimate.is_file() and not job_estimate.is_file():
+            config.session_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(launch_estimate, job_estimate)
+    except Exception:
+        pass
+    # So does the front door's conversation: messages said before
+    # this job existed are the start of this job's thread.
+    _carry_launch_thread(config)
     httpd.config = config  # type: ignore[attr-defined]
     _kick_playback_copies(config)
     return config
@@ -6357,7 +14107,7 @@ def _validated_drop_settings(body) -> Optional[dict]:
     if not isinstance(raw, dict):
         return None
     validated: dict = {}
-    for key in ("remove_retakes", "cut_silence", "remove_fillers"):
+    for key in ("remove_retakes", "cut_silence", "remove_fillers", "crossfade"):
         if isinstance(raw.get(key), bool):
             validated[key] = raw[key]
     if isinstance(raw.get("retake_strict"), bool):
@@ -6408,6 +14158,104 @@ def _format_clock(seconds: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
+# The first edit's usual length (v0.20, chunk C): the app
+# records how long each finished first edit took on this
+# computer, in the launch home, and the progress display may
+# say "usually about N minutes" from those measured runs.
+# Fewer than two finished runs is not a "usually" yet, so the
+# text stays None and the page shows the elapsed time alone.
+# No figure is ever worked out from the pace of the run in
+# progress: that was the 0.15 invention v0.17 removed, and it
+# stays removed (percent and remaining_s are still always
+# None while a run works). The usual length is known before
+# a run starts and never counts down.
+FIRST_EDIT_RUNS_NAME = "first-edit-runs.json"
+FIRST_EDIT_RUNS_KEPT = 8
+FIRST_EDIT_RUNS_MIN = 2
+
+
+def _record_first_edit_run(launch_home, seconds: float) -> None:
+    """Remember one finished first edit's length. Never raises."""
+    try:
+        if launch_home is None or seconds <= 0:
+            return
+        path = Path(launch_home) / FIRST_EDIT_RUNS_NAME
+        runs = []
+        if path.is_file():
+            runs = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(runs, list):
+                runs = []
+        runs.append(round(float(seconds), 1))
+        runs = runs[-FIRST_EDIT_RUNS_KEPT:]
+        path.write_text(json.dumps(runs), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _first_edit_usual_seconds(launch_home) -> Optional[float]:
+    """The usual first-edit length on this computer, in seconds.
+
+    The median of the measured lengths of the last few finished
+    first edits (the same record _first_edit_eta_text words),
+    or None when there is not enough history to say "usually"
+    honestly. The progress bubble's bar and its time-left line
+    are computed from this number and the run's own measured
+    elapsed time, never from the pace of the run in progress
+    (0.27.3, chunk B item 5).
+    """
+    try:
+        if launch_home is None:
+            return None
+        path = Path(launch_home) / FIRST_EDIT_RUNS_NAME
+        if not path.is_file():
+            return None
+        runs = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(runs, list):
+            return None
+        runs = [
+            float(run) for run in runs
+            if isinstance(run, (int, float)) and run > 0
+        ]
+        if len(runs) < FIRST_EDIT_RUNS_MIN:
+            return None
+        return float(statistics.median(runs[-FIRST_EDIT_RUNS_KEPT:]))
+    except Exception:
+        return None
+
+
+def _first_edit_eta_text(launch_home) -> Optional[str]:
+    """Plain words for how long a first edit usually takes.
+
+    The median of the measured lengths of the last few
+    finished first edits on this computer, or None when there
+    is not enough history to say "usually" honestly.
+    """
+    try:
+        if launch_home is None:
+            return None
+        path = Path(launch_home) / FIRST_EDIT_RUNS_NAME
+        if not path.is_file():
+            return None
+        runs = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(runs, list):
+            return None
+        runs = [
+            float(run) for run in runs
+            if isinstance(run, (int, float)) and run > 0
+        ]
+        if len(runs) < FIRST_EDIT_RUNS_MIN:
+            return None
+        usual = statistics.median(runs[-FIRST_EDIT_RUNS_KEPT:])
+    except Exception:
+        return None
+    if usual < 45:
+        return "usually under a minute"
+    minutes = max(1, int(round(usual / 60.0)))
+    if minutes == 1:
+        return "usually about 1 minute"
+    return f"usually about {minutes} minutes"
+
+
 def _progress_fields(
     started_at: float,
     stage_started_at: float,
@@ -6419,18 +14267,23 @@ def _progress_fields(
 
     Elapsed time is measured, never estimated: the whole run's
     clock and the current step's own clock, both from the
-    monotonic timestamps the run recorded. The percentage is the
-    share of stages finished, the same count the step line has
-    always shown. The time remaining is computed from the run's
-    actual progress: the average time a finished stage has taken
-    so far, times the stages still to come. Before the first
-    stage finishes there is no honest average, so no remaining
-    figure is offered at all rather than a guess.
+    monotonic timestamps the run recorded.
+
+    v0.17 (feedback items 1 and 18): there is no percentage and
+    no time remaining anymore, at any stage. The old fields
+    computed both from the pace of the stages finished so far,
+    and stage times vary too much for that to mean anything:
+    at the last stage the share read "100% done" while the
+    stage was still working, and the remaining figure cycled
+    (9 seconds, 11 seconds, 9 again) as the clock ran. Justin,
+    watching it: "It doesn't actually feel true. Something
+    feels off and I'm losing trust." A run shows the step it
+    is on and how long it has been running, and that is all;
+    the keys stay in the dict, always None while a run works,
+    so no consumer can fill them with a guess.
     """
     if now is None:
         now = time.monotonic()
-    index = int(index or 0)
-    total = int(total or 0)
     elapsed = (
         max(0.0, now - started_at) if started_at is not None else 0.0
     )
@@ -6439,44 +14292,474 @@ def _progress_fields(
         if stage_started_at is not None
         else 0.0
     )
-    percent = None
-    remaining = None
-    if total > 0 and index > 0:
-        percent = int(100.0 * min(index, total) / total + 0.5)
-        finished = index - 1
-        if finished > 0:
-            remaining = (elapsed / finished) * (total - index + 1)
     return {
         "elapsed_s": round(elapsed, 1),
         "stage_elapsed_s": round(stage_elapsed, 1),
-        "percent": percent,
-        "remaining_s": (
-            round(remaining, 1) if remaining is not None else None
-        ),
+        "percent": None,
+        "remaining_s": None,
     }
 
 
 def _progress_line(fields: dict) -> str:
     """One stage's progress as a single plain line (item 15).
 
-    "Step 3 of 8 · 38% · 0:42 so far · about 1:10 to go." The
-    remaining figure is an estimate from the run's own pace and
-    says "about"; a part with no honest value is left out rather
-    than filled with a guess.
+    "Step 3 of 8 · 0:42 so far." The step and the measured
+    elapsed time are the whole line (v0.17): no percentage and
+    no time remaining, because the app does not know either
+    while a stage is still working, and saying so anyway is
+    what broke trust in the 0.15 review.
     """
     parts = []
     index = fields.get("stage_index")
     total = fields.get("stage_total")
     if index and total:
         parts.append(f"Step {index} of {total}")
-    if fields.get("percent") is not None:
-        parts.append(f"{fields['percent']}%")
     parts.append(f"{_format_clock(fields.get('elapsed_s') or 0)} so far")
-    if fields.get("remaining_s") is not None:
-        parts.append(
-            f"about {_format_clock(fields['remaining_s'])} to go"
-        )
     return " · ".join(parts)
+
+
+RUN_STATE_FILENAME = "first_edit_run.json"
+
+
+def _persist_run_state(
+    launch_home, state: dict, status: str, started_wall: float,
+    intake_id: str,
+) -> None:
+    """Write the run's state where the chat can read it.
+
+    The status endpoint's registry lives on the server object,
+    which a chat send settling in another request cannot see.
+    This file is the one run record every surface reads (the
+    launch home, which every config of this server shares): a
+    status question mid-run is answered from it, so two answers
+    in a row can never disagree the way answers read off a
+    half-settled job record did on his Mac run (0.27.1, P1
+    item 4).
+    """
+    try:
+        if launch_home is None:
+            return
+        path = Path(launch_home) / RUN_STATE_FILENAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "intake_id": intake_id,
+                    "stage": state.get("stage"),
+                    "stage_index": state.get("stage_index"),
+                    "stage_total": state.get("stage_total"),
+                    "started_at_wall": started_wall,
+                    "first_edit_eta": state.get("first_edit_eta"),
+                    "first_edit_eta_s": state.get("first_edit_eta_s"),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _active_edit_run(config: WebAppConfig) -> Optional[dict]:
+    """The first edit currently running, from the run record.
+
+    None when no run is working: the record says done or
+    failed, or is older than any real run (a stale write from a
+    server that died mid-run is not a run).
+    """
+    try:
+        path = Path(config.launch_home) / RUN_STATE_FILENAME
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get("status") != "working":
+        return None
+    started = data.get("started_at_wall")
+    if not isinstance(started, (int, float)) or isinstance(started, bool):
+        return None
+    elapsed = time.time() - float(started)
+    if elapsed < 0 or elapsed > 45 * 60:
+        return None
+    data["elapsed_s"] = elapsed
+    return data
+
+
+def _run_status_text(run: dict, question: str = "") -> str:
+    """The progress answer, in at most three short lines.
+
+    Stage and elapsed come from the run record alone (never
+    the job's counts, which move while the passes settle), and
+    the usual length is this computer's measured history, the
+    same words the status endpoint carries. The video landing
+    here is the whole answer to "where is it" while it works.
+    """
+    stage = str(run.get("stage") or "Working on it").strip()
+    stage = stage.rstrip("….").strip()
+    # The panel's answer shape (0.27.3, chunk B item 5): the
+    # current stage in plain words, about how long is left,
+    # and where the video lands. The stage phrases are the
+    # progress bubble's own stage names, so the words he hears
+    # here match the words on screen.
+    lowered_stage = stage.lower()
+    if "retake" in lowered_stage:
+        phrase = "Finding retakes now"
+    elif "sound" in lowered_stage:
+        phrase = "Taking the sound out now"
+    elif "silence" in lowered_stage and "measur" in lowered_stage:
+        phrase = "Measuring the silences now"
+    elif "silence" in lowered_stage or "gap" in lowered_stage:
+        phrase = "Cutting the silence now"
+    elif "um" in lowered_stage:
+        phrase = "Taking out the ums and uhs now"
+    elif "direction" in lowered_stage:
+        phrase = "Reading your direction now"
+    elif "plan" in lowered_stage:
+        phrase = "Laying out the plan now"
+    elif "review video" in lowered_stage or "building" in lowered_stage:
+        phrase = "Building your video now"
+    elif "word" in lowered_stage or "transcri" in lowered_stage:
+        phrase = "Writing the words down now"
+    elif "bringing" in lowered_stage or "starting" in lowered_stage:
+        phrase = "Bringing in your video now"
+    else:
+        base = (stage[0].upper() + stage[1:]) if stage else "Working on it"
+        phrase = base if base.endswith("now") else base + " now"
+    elapsed_s = float(run.get("elapsed_s") or 0)
+    eta_s = run.get("first_edit_eta_s")
+    left = ""
+    if isinstance(eta_s, (int, float)) and eta_s > 0:
+        remaining = float(eta_s) - elapsed_s
+        if remaining > 45:
+            minutes = max(1, round(remaining / 60))
+            left = f", about {minutes} minute{'s' if minutes != 1 else ''} left"
+        elif remaining > 0:
+            seconds = max(5, int(round(remaining / 5.0)) * 5)
+            left = f", about {seconds} seconds left"
+        else:
+            left = ", taking a bit longer than usual"
+    lowered = str(question or "").lower()
+    opener = "Not yet. " if "review" in lowered else ""
+    return (
+        f"{opener}{phrase}{left}. "
+        "The video lands here when it is done."
+    )
+
+
+# Status requests (0.27.1, P1 item 4): the shapes a "where is
+# my edit?" message takes while a run is working, as questions
+# ("how's it going?", "can I review now?", "where's the preview
+# video?") and as plain asks ("I need you to update me"). These
+# are answered from the run record alone, at $0: never the
+# record's counts (which move while the passes settle, so two
+# answers in a row contradicted each other on his Mac run),
+# never a direction run.
+_STATUS_PHRASES = (
+    "update me",
+    "give me an update",
+    "any update",
+    "how's it going",
+    "hows it going",
+    "how is it going",
+    "how's the edit",
+    "how is the edit",
+    "can i review",
+    "review now",
+    "ready to review",
+    "where's the preview",
+    "wheres the preview",
+    "where is the preview",
+    "preview video",
+    "where's the video",
+    "where is the video",
+    "how much longer",
+    "how long left",
+    "how long will it take",
+    "is it done",
+    "done yet",
+    "is it ready",
+    "almost done",
+    "what stage",
+    "is it still working",
+    "still editing",
+)
+
+
+def _is_status_request(text: str) -> bool:
+    """True when a chat message asks after a running edit."""
+    lowered = " " + re.sub(
+        r"\s+", " ", str(text or "").lower().strip()
+    ) + " "
+    return any(phrase in lowered for phrase in _STATUS_PHRASES)
+
+
+# ---------------------------------------------------------------------------
+# Offer chips (0.27.3, chunk B item 8): a pending action the
+# chat proposes runs on a tap, not on a typed command. The
+# first offer is the dead-space trim: the creator names a
+# moment and a quiet ("there's dead space at 2:10"), the
+# editor answers with what it measured there and one chip
+# carrying the action and its cost ("Trim to your 0.2 s pause
+# · free"). The trim itself is local and free: the one
+# join-pause path the transcript gap erase uses, aimed at the
+# creator's own pause setting. The offer rides on the editor's
+# thread entry; tapping it posts to /api/thread/offer, and the
+# result entry carries the trim's checkpoint as its action, so
+# the entry's own Undo restores the pause. Typed "run it"
+# still works: it runs the newest open offer.
+
+_DEAD_SPACE_WORDS = (
+    "dead space",
+    "dead air",
+    "silence",
+    "silent",
+    "quiet",
+    "pause",
+    "gap",
+    "empty space",
+)
+
+_OFFER_CONFIRM_WORDS = {"run it", "do it", "yes", "go ahead", "ok", "okay"}
+
+
+def _dead_space_candidates(config: WebAppConfig) -> list:
+    """Long joins in the current plan, measured from the plan.
+
+    Each candidate is the join's output time, its measured
+    pause, and the two kept words it sits between. Joins a pin
+    or protected moment covers are never offered.
+    """
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    words = transcript.get("words") or []
+    if not words:
+        return []
+    timeline = Timeline(transcript, _effective_cuts(config))
+    try:
+        buffer_s = float(
+            _front_door_settings(config).get("buffer_s") or 0.1
+        )
+    except Exception:
+        buffer_s = 0.1
+    protected = _protected_join_indices(config, timeline)
+    out = []
+    for join in timeline.joins():
+        index = join["join_index"]
+        if index in protected:
+            continue
+        prev_words = timeline.words_in_range(timeline.ranges[index])
+        next_words = timeline.words_in_range(timeline.ranges[index + 1])
+        if not prev_words or not next_words:
+            continue
+        prev_idx, next_idx = prev_words[-1], next_words[0]
+        tail = float(timeline.ranges[index]["end"]) - float(
+            words[prev_idx]["end"]
+        )
+        head = float(words[next_idx]["start"]) - float(
+            timeline.ranges[index + 1]["start"]
+        )
+        pause = tail + head
+        if pause > buffer_s + 0.25:
+            out.append(
+                {
+                    "join_index": index,
+                    "output_s": float(join["output_time"]),
+                    "pause_s": pause,
+                    "after_word_index": prev_idx,
+                    "before_word_index": next_idx,
+                    "buffer_s": buffer_s,
+                }
+            )
+    return out
+
+
+def _run_offer(config: WebAppConfig, entry: dict) -> dict:
+    """Run one entry's offer and record the result entry.
+
+    The offer is spent either way (a second tap must not trim
+    twice), the result says what happened in one line, and a
+    trim that landed carries its checkpoint as the entry's
+    action so the standing per-action Undo restores it.
+    """
+    offer = entry.get("offer") or {}
+    kind = offer.get("kind")
+    _set_thread_entry_fields(
+        config, entry.get("id"), {"offer": None, "offer_spent": True}
+    )
+    if kind == "trim_pause":
+        try:
+            result = _apply_gap_erase(
+                config,
+                int(offer.get("after_word_index")),
+                int(offer.get("before_word_index")),
+                target_total_s=float(offer.get("target_pause_s")),
+            )
+        except Exception as exc:  # the gap moved under the offer
+            result = {"changed": False, "message": str(exc)}
+        if result.get("changed"):
+            text = (
+                f"Trimmed. The quiet at {offer.get('at_label', '')} "
+                f"is now your {offer.get('target_pause_s')} s pause."
+            )
+            state = checkpoints.state(config)
+            fields = {"kind": "editor", "status": "settled", "text": text}
+            if state.get("current") is not None:
+                fields["action_id"] = f"checkpoint:{state['current']}"
+                fields["action_label"] = "Transcript gap shortened"
+            return _append_thread(config, fields)
+        return _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": (
+                    "That trim could not be made: "
+                    + str(
+                        result.get("message")
+                        or "the quiet there is not on a join."
+                    )
+                ),
+            },
+        )
+    return _append_thread(
+        config,
+        {
+            "kind": "editor",
+            "status": "settled",
+            "text": "That offer is not one I can run anymore.",
+        },
+    )
+
+
+def _offer_send(config: WebAppConfig, text: str) -> Optional[dict]:
+    """Item 8 settle step: dead-space notes and "run it".
+
+    A message naming a quiet at a clock time gets a measured
+    answer with a tap chip when a long join sits near that
+    time, and an honest one line when none does. A bare
+    confirm ("run it", "do it") runs the newest open offer.
+    Anything else falls through untouched.
+    """
+    if not config.has_job:
+        return None
+    normalized = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    normalized = normalized.strip(" .!")
+    entries = _load_thread(config)
+    if normalized in _OFFER_CONFIRM_WORDS:
+        for entry in reversed(entries):
+            if entry.get("offer"):
+                result = _run_offer(config, entry)
+                return {"kind": "offer", "entry": result}
+        return None
+    lowered = str(text or "").lower()
+    if lowered.lstrip().startswith("why"):
+        return None
+    if not any(word in lowered for word in _DEAD_SPACE_WORDS):
+        return None
+    match = re.search(r"(\d{1,3}):(\d{2})", str(text or ""))
+    if not match:
+        return None
+    target_s = int(match.group(1)) * 60 + int(match.group(2))
+    try:
+        candidates = _dead_space_candidates(config)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    near = [c for c in candidates if abs(c["output_s"] - target_s) <= 6.0]
+    if not near:
+        buffer_s = float(
+            _front_door_settings(config).get("buffer_s") or 0.1
+        )
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "status": "settled",
+                "text": (
+                    f"I don't hear a long quiet at "
+                    f"{_format_clock(target_s)}. The pauses near "
+                    f"there are already at your {buffer_s} s."
+                ),
+            },
+        )
+        return {"kind": "offer", "entry": entry}
+    best = min(near, key=lambda c: abs(c["output_s"] - target_s))
+    at_label = _format_clock(best["output_s"])
+    target_pause = best["buffer_s"]
+    entry = _append_thread(
+        config,
+        {
+            "kind": "editor",
+            "status": "open",
+            "text": (
+                f"Found {best['pause_s']:.1f} s of silence at "
+                f"{at_label}."
+            ),
+            "offer": {
+                "kind": "trim_pause",
+                "label": f"Trim to your {target_pause} s pause · free",
+                "after_word_index": best["after_word_index"],
+                "before_word_index": best["before_word_index"],
+                "target_pause_s": target_pause,
+                "at_label": at_label,
+            },
+        },
+    )
+    return {"kind": "offer", "entry": entry}
+
+
+def _status_answer_send(config: WebAppConfig, text: str) -> Optional[dict]:
+    """Settle a status request from the one run record, or None.
+
+    While an edit runs, the answer is _run_status_text over the
+    persisted record (stage, elapsed, usual length, where the
+    video lands): every number in it comes from that one file,
+    so two answers in a row can only move forward, never
+    disagree. Just after a run lands, an update ask gets the
+    one line that is true then. Anything else returns None and
+    the normal order runs.
+    """
+    if not _is_status_request(text):
+        return None
+    run = _active_edit_run(config)
+    if run is not None:
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "record_answer": True,
+                "status": "settled",
+                "text": _run_status_text(run, text),
+                "lines": [],
+                "claims": [],
+            },
+        )
+        return {"kind": "status", "entry": entry}
+    try:
+        data = json.loads(
+            (Path(config.launch_home) / RUN_STATE_FILENAME).read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception:
+        data = None
+    if isinstance(data, dict) and data.get("status") == "done":
+        entry = _append_thread(
+            config,
+            {
+                "kind": "editor",
+                "record_answer": True,
+                "status": "settled",
+                "text": (
+                    "That edit is done. The video is here in this "
+                    "chat, on the Done message."
+                ),
+                "lines": [],
+                "claims": [],
+            },
+        )
+        return {"kind": "status", "entry": entry}
+    return None
 
 
 def _run_first_edit(httpd, intake_id: str, direction_text: str,
@@ -6519,17 +14802,20 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
 
     # The run's clocks (item 15): when the run started, and when
     # the current stage started, both monotonic. Every stage
-    # carries the measured elapsed time, the percentage of stages
-    # finished, and a time remaining computed from the pace of
-    # the stages finished so far.
+    # carries the measured elapsed time only (v0.17: no
+    # percentage of stages and no computed time remaining;
+    # both were guesses that read as facts, and they are gone).
     run_started_at = time.monotonic()
+    run_started_wall = time.time()
     stage_marks = {"at": run_started_at}
 
     def stage(text: str, index: int, total: int) -> None:
         # The page shows the stage, its number, and how many there
         # are: progress a person can see, not a gray button. It
-        # also carries the run's measured progress (elapsed,
-        # percent, remaining), refreshed on the same write.
+        # also carries the run's measured elapsed time, refreshed
+        # on the same write. No percent and no time remaining are
+        # computed (v0.17): the app does not know them while a
+        # stage works, and the 0.15 review showed it guessing.
         now = time.monotonic()
         state["stage"] = text
         state["stage_index"] = index
@@ -6546,6 +14832,10 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "stage_index": index,
                 "stage_total": total,
             }
+        )
+        _persist_run_state(
+            httpd.config.launch_home,  # type: ignore[attr-defined]
+            state, "working", run_started_wall, intake_id,
         )
 
     def stage_total(settings: dict, has_direction: bool = False) -> int:
@@ -6736,6 +15026,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 keep_mode=settings["keep_mode"],
                 style=settings.get("style"),
                 strict=settings.get("retake_strict"),
+                mode=settings.get("mode", "cleanest"),
             )
             retake_audit = retake_summary.pop("audit", None)
             if retake_audit is not None:
@@ -6754,6 +15045,8 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             stage("Taking out the ums and uhs…", next_index, total)
             next_index += 1
             filler_summary = _run_filler_pass(config, settings)
+        # The opening rule: the edit starts on the first real line.
+        _run_opening_pass(config)
         silence_summary = None
         if settings["cut_silence"]:
             stage("Cutting the silence…", next_index, total)
@@ -6783,6 +15076,15 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                     ],
                     "usage": [],
                 }
+        # SMOOTH, NEVER CHOPPY (Message 2R, P0): edges on the
+        # measured quiet and the join check, before the render.
+        smooth_summary = _run_smooth_pass(config)
+        # The final sweep (0.27.3): the settled plan's last
+        # look, inside the First edit checkpoint.
+        _run_final_sweep(config)
+        # Same-point review spots (0.27): read off the settled
+        # plan, recorded before the First edit checkpoint.
+        _record_same_point_spots(config)
         checkpoints.commit(config, "First edit")
         transcript = _load_json(str(job_root / "transcript.json"))
         timeline = Timeline(transcript, _effective_cuts(config))
@@ -6820,12 +15122,28 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             # saved copy, and no provider was paid again.
             recap.insert(1, reuse_line)
         if retake_summary is not None:
-            recap.append(
-                "Retakes: "
-                f"{retake_summary.get('applied', 0)} removed, "
-                f"{retake_summary.get('flagged', 0)} set aside for "
-                "your call."
-            )
+            # One count (0.25, finding 6): the recap reads the
+            # central counts computed from the final plan, not
+            # the pass's own operation tally. The tally counts
+            # operations and flags; the plan counts copies
+            # removed (settled strikes included) and copies
+            # still waiting, which is what every other surface
+            # shows.
+            try:
+                final_counts = _edit_counts(config, timeline=timeline)
+            except Exception:
+                final_counts = None
+            if final_counts is not None:
+                recap.append(
+                    "Retakes: "
+                    f"{final_counts['retakes_removed']} removed, "
+                    f"{final_counts['retakes_set_aside']} set aside "
+                    "for your call."
+                )
+            # No fallback tally (0.26, fix 3): when the one count
+            # cannot be read, the line is left out rather than
+            # recounted from the pass's own operations, which is
+            # how the recap and the Done bubble came to disagree.
             if retake_summary.get("unsure"):
                 recap.append(
                     f"{retake_summary['unsure']} of those cuts were "
@@ -6848,6 +15166,15 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 f"{silence_summary.get('joins_trimmed', 0)} joins "
                 f"trimmed toward {settings['buffer_s']:g} seconds."
             )
+        if settings.get("crossfade", True):
+            # The first edit always builds its review video with
+            # the app's own splice, so the crossfade the recap
+            # names here really is in the video just built.
+            recap.append(
+                "Smooth the joins was on: the sound fades across "
+                "each join for 40 milliseconds in the built "
+                "video. The picture still cuts."
+            )
         if direction_summary is not None:
             # The direction lines come last: they end with the flag
             # recaps, the things left for the creator to see.
@@ -6857,6 +15184,23 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "The rest of your direction was saved as overall "
                 "guidance for the model."
             )
+        # Saved creator rules ride into the passes that read them:
+        # the retake judgment and the direction read both take the
+        # saved statements as guidance. When one of those passes
+        # ran, the recap names each saved rule it carried, in plain
+        # words, so the creator can see a rule saved on Train
+        # working on the next video.
+        applied_rule_statements = (
+            creator_rules.active_rule_statements(_rules_store(config))
+            if (
+                retake_summary is not None
+                or (direction_summary is not None
+                    and direction_summary.get("ran"))
+            )
+            else []
+        )
+        for statement in applied_rule_statements:
+            recap.append(f"Saved rule applied: {statement}")
         # What the first edit cost, per feature, from the passes'
         # own records (v0.7.2): one line per feature that ran and
         # a total, just before the recap's closing lines.
@@ -6877,7 +15221,24 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
             "filler": _state_summary(filler_summary),
             "silence": _state_summary(silence_summary),
             "direction": _state_summary(direction_summary),
+            "smooth": _state_summary(smooth_summary),
         }
+        # The run's length joins the record this computer
+        # keeps of finished first edits (v0.20, chunk C): it
+        # is what a later run's "usually about" line is
+        # measured from. A words-only run (Transcribe on its
+        # own: every pass off and no direction) is not a first
+        # edit, so it is not recorded.
+        if (
+            settings.get("remove_retakes")
+            or settings.get("cut_silence")
+            or settings.get("remove_fillers")
+            or direction_text.strip()
+        ):
+            _record_first_edit_run(
+                httpd.config.launch_home,  # type: ignore[attr-defined]
+                time.monotonic() - run_started_at,
+            )
         state.update(
             _progress_fields(
                 run_started_at,
@@ -6901,6 +15262,7 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "settings": settings,
                 "recap": recap,
                 "lines": recap,
+                "saved_rules": applied_rule_statements,
                 "costs": cost_block,
                 "passes": passes,
                 "flags": (
@@ -6913,6 +15275,18 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                 "captions": caption_info,
             }
         )
+        try:
+            _append_run_summary_thread(
+                config,
+                recap,
+                _claims_for_spans(_edit_spans(config)),
+            )
+        except Exception:
+            pass
+        _persist_run_state(
+            httpd.config.launch_home,  # type: ignore[attr-defined]
+            state, "done", run_started_wall, intake_id,
+        )
         session_log.log_stage(
             config.session_dir, "first edit", "finish"
         )
@@ -6923,6 +15297,10 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
         )
         _log_raw_error("first edit", exc)
         state.update({"status": "failed", "message": str(exc)})
+        _persist_run_state(
+            httpd.config.launch_home,  # type: ignore[attr-defined]
+            state, "failed", run_started_wall, intake_id,
+        )
     except Exception as exc:  # the page still gets one plain sentence
         session_log.log_stage(
             front_session, "first edit", "fail",
@@ -6938,6 +15316,10 @@ def _run_first_edit(httpd, intake_id: str, direction_text: str,
                     "is safe."
                 ),
             }
+        )
+        _persist_run_state(
+            httpd.config.launch_home,  # type: ignore[attr-defined]
+            state, "failed", run_started_wall, intake_id,
         )
 
 
@@ -7272,6 +15654,538 @@ def _apply_word_range(
     return result
 
 
+def _apply_gap_erase(
+    config: WebAppConfig,
+    after_word_index: int,
+    before_word_index: int,
+    target_total_s: Optional[float] = None,
+) -> dict:
+    """Shorten the quiet between two words (v0.15, item 24).
+
+    The creator double-clicked a word gap in the transcript and
+    erased inside it. A gap's silence lives in the plan only
+    when the gap sits on a join — the meeting point of two kept
+    ranges, whose pause is the tail of quiet at the end of the
+    first range plus the lead-in at the start of the second,
+    recorded in ``join_pauses_s``. Those gaps are trimmed by
+    the one existing pause path: a single ``set_join_pause``
+    operation, validated and checked by the safety verifier
+    and applied by the applier exactly as the silence pass's
+    own proposals are, and landed in ``revised_cuts.json``
+    under ONE checkpoint, so the trim is one undo step.
+
+    A gap inside a single kept range has no pause entry of
+    its own in the plan, so this path cannot trim it without
+    inventing a second editing model; the answer says so
+    plainly and changes nothing. A join a pinned comment or a
+    protected moment covers is likewise left alone, with the
+    same protection the silence pass gives it.
+    """
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    words = transcript.get("words", [])
+    if not (
+        0 <= after_word_index < len(words)
+        and before_word_index == after_word_index + 1
+        and before_word_index < len(words)
+    ):
+        raise ValueError("That gap is not in the transcript.")
+    base_cuts = _effective_cuts(config)
+    timeline = Timeline(transcript, base_cuts)
+    # The picked gap sits between two transcript entries, and
+    # cut words can sit between those entries and the join
+    # itself (a gap the creator sees between two kept words
+    # may have a cut word inside it). The join that carries
+    # the gap's pause is the one between the kept words that
+    # surround the gap: the last kept word at or before the
+    # gap's start and the first kept word at or after its end.
+    prev_kept = None
+    next_kept = None
+    for index in range(len(words)):
+        status = timeline.word_status(index)
+        if status == "kept" and index <= after_word_index:
+            prev_kept = index
+        if status == "kept" and index >= before_word_index and next_kept is None:
+            next_kept = index
+    join_index = None
+    if prev_kept is not None and next_kept is not None:
+        for join in timeline.joins():
+            index = join["join_index"]
+            prev_words = timeline.words_in_range(timeline.ranges[index])
+            next_words = timeline.words_in_range(timeline.ranges[index + 1])
+            if (
+                prev_words and next_words
+                and prev_words[-1] == prev_kept
+                and next_words[0] == next_kept
+            ):
+                join_index = index
+                break
+    if join_index is None:
+        return {
+            "ok": True,
+            "changed": False,
+            "join_index": None,
+            "message": (
+                "That quiet sits inside one kept piece, so the "
+                "edit plan holds no pause there to shorten. "
+                "Gaps where two pieces meet can be trimmed here."
+            ),
+        }
+    if join_index in _protected_join_indices(config, timeline):
+        return {
+            "ok": True,
+            "changed": False,
+            "join_index": join_index,
+            "message": (
+                "That spot is protected or has a note pinned on "
+                "it, so its pause is left as it is."
+            ),
+        }
+    prev_range = timeline.ranges[join_index]
+    next_range = timeline.ranges[join_index + 1]
+    prev_tail = float(prev_range["end"]) - float(words[after_word_index]["end"])
+    head = float(words[before_word_index]["start"]) - float(next_range["start"])
+    current_pause = prev_tail + head
+    if target_total_s is not None:
+        # A named total pause (0.27.3, chunk B item 8): the
+        # chat offer trims the join to the creator's own pause
+        # setting, not the floor. The head lead-in is what
+        # set_join_pause moves, so the target is the named
+        # total minus the tail that stays, inside the plan's
+        # own clamps.
+        target_head = float(target_total_s) - prev_tail
+        target_head = max(MIN_JOIN_PAUSE_S, min(MAX_JOIN_PAUSE_S, target_head))
+    else:
+        # Erasing takes the join's pause down to the shortest
+        # the plan allows, the same floor the silence pass
+        # clamps to: the head lead-in is what set_join_pause
+        # moves, so the target is the floor minus the tail
+        # that stays.
+        target_head = MIN_JOIN_PAUSE_S - prev_tail
+        if target_head < MIN_JOIN_PAUSE_S:
+            target_head = MIN_JOIN_PAUSE_S
+        target_head = min(target_head, MAX_JOIN_PAUSE_S)
+    if head <= target_head + 1e-3:
+        return {
+            "ok": True,
+            "changed": False,
+            "join_index": join_index,
+            "message": "That gap is already as short as it can be.",
+        }
+    operation = {
+        "type": "set_join_pause",
+        "comment_id": "transcript-gap-erase",
+        "join_index": join_index,
+        "target_pause_s": round(target_head, 3),
+        "reason": (
+            "You picked the quiet between these words in the "
+            "transcript and erased inside it."
+        ),
+        "confidence": 1.0,
+        "model": "mock",
+        "risk_tier": 1,
+        "wonder_reviewed": False,
+    }
+    ops = validate_operations([operation])
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    verdict = verify_operations(ops, timeline, profile)[0]
+    if (
+        verdict.status == "flag"
+        and verdict.reasons == ["wonder_review_required"]
+    ):
+        # The creator picked this exact gap; the pick is the
+        # review, as with a word click.
+        verdict.status = "apply"
+    if verdict.status != "apply":
+        return {
+            "ok": True,
+            "changed": False,
+            "join_index": join_index,
+            "message": _plain_toggle_message(verdict),
+        }
+    revised, _audit = apply_verdicts(base_cuts, timeline, [verdict])
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    checkpoints.begin(config)
+    _write_json(session / "revised_cuts.json", revised)
+    checkpoints.commit(config, "Transcript gap shortened")
+    new_pause = prev_tail + target_head
+    return {
+        "ok": True,
+        "changed": True,
+        "join_index": join_index,
+        "target_pause_s": round(target_head, 3),
+        "gap_before_s": round(current_pause, 3),
+        "gap_after_s": round(new_pause, 3),
+        "output_duration_s": round(
+            Timeline(transcript, revised).output_duration, 4
+        ),
+        "message": (
+            "Shortened the quiet there from about "
+            f"{current_pause:.1f} seconds to about "
+            f"{new_pause:.1f} seconds."
+        ),
+    }
+
+
+def _apply_join_pause(
+    config: WebAppConfig,
+    after_word_index: int,
+    before_word_index: int,
+    target_total_s: float,
+) -> dict:
+    """Set one join's pause from the transcript (after-5:30
+    exception, item 2).
+
+    The creator clicked the shortened-pause mark between two
+    kept words and named the pause that join should hold, as a
+    total: the tail of quiet at the end of the first piece plus
+    the lead-in at the start of the second, the plan's own
+    ``join_pauses_s`` shape. The change travels the one
+    existing pause path, a single ``set_join_pause`` operation
+    validated and checked by the safety verifier and applied
+    by the applier, and lands in ``revised_cuts.json`` under
+    ONE checkpoint, so it is one undo step, and it moves that
+    join only. The named total is clamped to the plan's own
+    bounds for the moving head, and it can never exceed the
+    pause actually recorded between the two words: what was
+    not recorded cannot be put back.
+    """
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    words = transcript.get("words", [])
+    if not (
+        0 <= after_word_index < len(words)
+        and 0 <= before_word_index < len(words)
+        and after_word_index < before_word_index
+    ):
+        raise ValueError("That gap is not in the transcript.")
+    base_cuts = _effective_cuts(config)
+    timeline = Timeline(transcript, base_cuts)
+    if (
+        timeline.word_status(after_word_index) != "kept"
+        or timeline.word_status(before_word_index) != "kept"
+    ):
+        return {
+            "ok": True,
+            "changed": False,
+            "join_index": None,
+            "message": (
+                "Those words are not both in the edit, so there "
+                "is no join pause to set there."
+            ),
+        }
+    join_index = None
+    for join in timeline.joins():
+        index = join["join_index"]
+        prev_words = timeline.words_in_range(timeline.ranges[index])
+        next_words = timeline.words_in_range(timeline.ranges[index + 1])
+        if (
+            prev_words and next_words
+            and prev_words[-1] == after_word_index
+            and next_words[0] == before_word_index
+        ):
+            join_index = index
+            break
+    if join_index is None:
+        return {
+            "ok": True,
+            "changed": False,
+            "join_index": None,
+            "message": (
+                "That quiet sits inside one kept piece, so the "
+                "edit plan holds no pause there to set. Pauses "
+                "where two pieces meet can be set here."
+            ),
+        }
+    if join_index in _protected_join_indices(config, timeline):
+        return {
+            "ok": True,
+            "changed": False,
+            "join_index": join_index,
+            "message": (
+                "That spot is protected or has a note pinned on "
+                "it, so its pause is left as it is."
+            ),
+        }
+    prev_range = timeline.ranges[join_index]
+    next_range = timeline.ranges[join_index + 1]
+    prev_tail = float(prev_range["end"]) - float(words[after_word_index]["end"])
+    head = float(words[before_word_index]["start"]) - float(next_range["start"])
+    current_total = prev_tail + head
+    recorded_total = (
+        float(words[before_word_index]["start"])
+        - float(words[after_word_index]["end"])
+    )
+    cap_total = min(recorded_total, prev_tail + MAX_JOIN_PAUSE_S)
+    floor_total = prev_tail + MIN_JOIN_PAUSE_S
+    lo = min(floor_total, current_total)
+    hi = max(cap_total, current_total)
+    target_total = max(lo, min(hi, float(target_total_s)))
+    if abs(target_total - current_total) < 0.005:
+        return {
+            "ok": True,
+            "changed": False,
+            "join_index": join_index,
+            "gap_before_s": round(current_total, 3),
+            "gap_after_s": round(current_total, 3),
+            "recorded_s": round(recorded_total, 3),
+            "message": (
+                "That pause is already as long as the recorded "
+                "pause allows."
+                if float(target_total_s) > current_total
+                else "That pause is already as short as it can be."
+            ),
+        }
+    target_head = round(target_total - prev_tail, 3)
+    operation = {
+        "type": "set_join_pause",
+        "comment_id": "transcript-join-pause",
+        "join_index": join_index,
+        "target_pause_s": target_head,
+        "reason": (
+            "You set the quiet between these words in the "
+            "transcript."
+        ),
+        "confidence": 1.0,
+        "model": "mock",
+        "risk_tier": 1,
+        "wonder_reviewed": False,
+    }
+    ops = validate_operations([operation])
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    verdict = verify_operations(ops, timeline, profile)[0]
+    if (
+        verdict.status == "flag"
+        and verdict.reasons == ["wonder_review_required"]
+    ):
+        # The creator picked this exact join; the pick is the
+        # review, as with a word click.
+        verdict.status = "apply"
+    if verdict.status != "apply":
+        return {
+            "ok": True,
+            "changed": False,
+            "join_index": join_index,
+            "message": _plain_toggle_message(verdict),
+        }
+    revised, _audit = apply_verdicts(base_cuts, timeline, [verdict])
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    checkpoints.begin(config)
+    _write_json(session / "revised_cuts.json", revised)
+    checkpoints.commit(config, "Join pause set")
+    new_total = prev_tail + target_head
+    return {
+        "ok": True,
+        "changed": True,
+        "join_index": join_index,
+        "target_pause_s": target_head,
+        "gap_before_s": round(current_total, 3),
+        "gap_after_s": round(new_total, 3),
+        "recorded_s": round(recorded_total, 3),
+        "output_duration_s": round(
+            Timeline(transcript, revised).output_duration, 4
+        ),
+        "message": (
+            "Set the quiet there from about "
+            f"{current_total:.1f} seconds to about "
+            f"{new_total:.1f} seconds."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Manual timeline edits (v0.16): split, trim, delete, move, paste, fade
+#
+# Each operation is a pure transform in manual_edits applied to the
+# session's current plan, landed in revised_cuts.json under ONE
+# history checkpoint, exactly like a word click or a gap erase, so
+# undo and redo cover them and the band, the transcript, and the
+# edited clock follow from the one plan. A refusal is the
+# transform's own plain sentence and changes nothing.
+# ---------------------------------------------------------------------------
+
+
+def _apply_timeline_edit(config: WebAppConfig, label: str, fn) -> dict:
+    """Run one manual timeline transform and land it, or refuse."""
+    transcript = _load_json(str(config.job_dir / "transcript.json"))
+    base_cuts = _effective_cuts(config)
+    timeline = Timeline(transcript, base_cuts)
+    profile = _load_optional_file(config.job_dir / "profile.json")
+    try:
+        new_cuts, info = fn(timeline, profile, base_cuts)
+    except manual_edits.ManualEditRefused as exc:
+        return {"ok": True, "changed": False, "message": str(exc)}
+    if info.get("changed") is False:
+        result = {"ok": True, "changed": False}
+        result.update(info)
+        return result
+    session = config.session_dir
+    session.mkdir(parents=True, exist_ok=True)
+    checkpoints.begin(config)
+    _write_json(session / "revised_cuts.json", new_cuts)
+    checkpoints.commit(config, label)
+    result = {"ok": True, "changed": True}
+    result.update(info)
+    result["output_duration_s"] = round(
+        Timeline(transcript, new_cuts).output_duration, 4
+    )
+    return result
+
+
+def _trim_clamp_sentence(clamps: list) -> str:
+    if "protected" in clamps:
+        return " It stopped at a word you protected."
+    if "next-piece" in clamps:
+        return " It stopped at the next piece."
+    if "min-length" in clamps:
+        return " A piece keeps at least a little length."
+    return ""
+
+
+def _timeline_split(config: WebAppConfig, output_time: float) -> dict:
+    result = _apply_timeline_edit(
+        config,
+        "Timeline piece split",
+        lambda tl, _p, cuts: manual_edits.split_at_output_time(
+            cuts, tl, output_time
+        ),
+    )
+    if result.get("changed"):
+        result["message"] = "Split the piece at the playhead."
+    return result
+
+
+def _timeline_trim(
+    config: WebAppConfig, range_index: int, edge: str, new_time: float
+) -> dict:
+    def fn(tl, profile, cuts):
+        return manual_edits.trim_edge(
+            cuts, tl, range_index, edge, new_time, profile=profile
+        )
+
+    result = _apply_timeline_edit(config, "Timeline edge moved", fn)
+    if result.get("changed"):
+        result["message"] = "Moved the edge." + _trim_clamp_sentence(
+            result.get("clamps") or []
+        )
+    elif "message" not in result:
+        result["message"] = (
+            "The edge is already there."
+            + _trim_clamp_sentence(result.get("clamps") or [])
+        )
+    return result
+
+
+def _timeline_delete(config: WebAppConfig, range_index: int) -> dict:
+    result = _apply_timeline_edit(
+        config,
+        "Timeline piece removed",
+        lambda tl, profile, cuts: manual_edits.delete_range(
+            cuts, tl, range_index, profile=profile
+        ),
+    )
+    if result.get("changed"):
+        result["message"] = "Took that piece out. The edit closed up."
+    return result
+
+
+def _timeline_move(config: WebAppConfig, from_index: int, to_index: int) -> dict:
+    result = _apply_timeline_edit(
+        config,
+        "Timeline piece moved",
+        lambda tl, _p, cuts: manual_edits.move_range(
+            cuts, tl, from_index, to_index
+        ),
+    )
+    if result.get("changed"):
+        result["message"] = "Moved the piece."
+        if "special" in (result.get("clamps") or []):
+            result["message"] += (
+                " It stopped before the special insert."
+            )
+    elif "message" not in result:
+        result["message"] = "The piece is already there."
+    return result
+
+
+def _timeline_paste(
+    config: WebAppConfig, spans: list, output_time: float
+) -> dict:
+    result = _apply_timeline_edit(
+        config,
+        "Timeline piece pasted",
+        lambda tl, _p, cuts: manual_edits.paste_spans(
+            cuts, tl, spans, output_time
+        ),
+    )
+    if result.get("changed"):
+        count = result.get("count", 1)
+        result["message"] = (
+            "Pasted the piece at the playhead."
+            if count == 1
+            else f"Pasted {count} pieces at the playhead."
+        )
+    return result
+
+
+def _timeline_fade(
+    config: WebAppConfig, join_index: int, fade_s
+) -> dict:
+    result = _apply_timeline_edit(
+        config,
+        "Timeline crossfade set",
+        lambda tl, _p, cuts: manual_edits.set_join_fade(
+            cuts, tl, join_index, fade_s
+        ),
+    )
+    if result.get("changed"):
+        fade = result.get("fade_s") or 0.0
+        result["message"] = (
+            "Took the crossfade off that cut."
+            if not fade
+            else f"That cut now crossfades over {fade:g} seconds."
+        )
+    return result
+
+
+def _join_call(config: WebAppConfig, join_index: int, move: str) -> dict:
+    """Settle one join the join check left for the creator's call.
+
+    "smooth" applies the remedy the check itself uses for a
+    join that sounds abrupt, the long crossfade, through the
+    timeline fade path (with its checkpoint, so the bubble's
+    Undo covers it). "keep" changes no sound at all. Either
+    way the spot leaves the smooth pass's your-call list, so
+    it is not offered again and the counts every surface
+    reads agree that it is settled.
+    """
+    payload = _load_session_json(config, "smooth_pass.json", {})
+    calls = payload.get("your_call") if isinstance(payload, dict) else None
+    if not isinstance(calls, list):
+        raise ValueError("That join is not waiting for a call anymore.")
+    spot = next(
+        (
+            c
+            for c in calls
+            if isinstance(c, dict) and c.get("join_index") == join_index
+        ),
+        None,
+    )
+    if spot is None:
+        raise ValueError("That join is not waiting for a call anymore.")
+    if move == "smooth":
+        result = _timeline_fade(config, join_index, 0.1)
+        if not result.get("changed"):
+            raise ValueError(
+                result.get("message")
+                or "That join could not be smoothed."
+            )
+    payload["your_call"] = [c for c in calls if c is not spot]
+    config.session_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(config.session_dir / "smooth_pass.json", payload)
+    return {"ok": True, "join_index": join_index, "move": move}
+
+
 def _edit_action(config: WebAppConfig, edit_id: str, action: str) -> dict:
     """Bring a removed span back, or swap it with the take that stayed.
 
@@ -7395,7 +16309,7 @@ VIDEO_ONLY_MESSAGE = (
     "also make the first edit itself: it writes down the words, "
     "lays out a first plan, and runs the same choices the front "
     "door offers. Give any direction you have, then choose Make "
-    "the first edit."
+    "the edit."
 )
 NOT_A_JOB_MESSAGE = (
     "That folder is not a finished-edit job. A job folder carries "
@@ -7510,6 +16424,76 @@ def _staged_playback_target(source: Path) -> Optional[Path]:
     return None
 
 
+def _ordered_drop_videos(base: Path, ordered: list) -> list:
+    """The drop's video files in the order they were brought in.
+
+    The intake file route records each file as it arrives, so the
+    recorded order is the order the parts were sent in, which the
+    intake pop-up lets the creator arrange before anything is
+    uploaded (v0.15 Batch C, item 2). Only files that landed and
+    are videos count, each once.
+    """
+    seen = set()
+    videos = []
+    for rel in ordered or []:
+        parts = _safe_relative_parts(str(rel))
+        if not parts:
+            continue
+        path = base.joinpath(*parts)
+        key = "/".join(parts)
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+            videos.append(path)
+    return videos
+
+
+def _join_ordered_parts(videos: list, out_path: Path) -> bool:
+    """Join video parts into one file, in the given order.
+
+    One ffmpeg pass with the concat filter, re-encoded the same
+    way the intake render encodes, so the joined file is the
+    single video the first edit then processes: the parts order
+    is the processing order, end to end. Any failure (a part
+    ffmpeg cannot read, no sound stream to join) returns False
+    and the caller falls back to the first part alone, saying so.
+    """
+    if len(videos) < 2:
+        return False
+    inputs = []
+    for video in videos:
+        inputs += ["-i", str(video)]
+    pieces = "".join(
+        f"[{i}:v][{i}:a]" for i in range(len(videos))
+    )
+    graph = (
+        pieces + f"concat=n={len(videos)}:v=1:a=1[outv][outa]"
+    )
+    scratch = out_path.with_name(out_path.stem + ".joining.mp4")
+    command = [
+        "ffmpeg", "-y", "-v", "error",
+        *inputs,
+        "-filter_complex", graph,
+        "-map", "[outv]", "-map", "[outa]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+        "-movflags", "+faststart",
+        str(scratch),
+    ]
+    try:
+        proc = subprocess.run(
+            command, capture_output=True, text=True, timeout=1800
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0 or not scratch.is_file()             or scratch.stat().st_size == 0:
+        scratch.unlink(missing_ok=True)
+        return False
+    scratch.replace(out_path)
+    return True
+
+
 def _detect_intake(base: Path) -> dict:
     """What a finished drop turned out to be, in plain categories.
 
@@ -7605,28 +16589,396 @@ def _save_voice_note(config: WebAppConfig, text: str) -> None:
 # The test-video route stays open there too, on purpose: the mark
 # can be set before a job exists, in the launch session, and a drop
 # that becomes the job carries it into the job's own session.
+# The rule routes (/api/rule-save, /api/rule-dismiss, /api/rule-remove)
+# stay open at the front door too: saved rules are creator-level, so
+# Train can save them with no job loaded.
+# The thread's two write routes (/api/thread for an append,
+# /api/thread/message for a send) stay open at the front door too
+# (0.25, finding 5): the conversation starts before any job exists,
+# so a first message must be able to land in the launch session's
+# thread instead of being refused and lost. When a drop becomes
+# the job, those entries carry into the job's thread
+# (_carry_launch_thread). The routes that act on a job's own
+# records (thread action, read, cleanup) stay job-required.
 _JOB_REQUIRED_POSTS = frozenset({
     "/api/comments",
     "/api/direct",
     "/api/front-door",
     "/api/edit-note",
     "/api/grades",
-    "/api/rule-save",
-    "/api/rule-dismiss",
-    "/api/rule-remove",
     "/api/word-toggle",
     "/api/word-range",
+    "/api/gap-erase",
+    "/api/join-pause",
+    "/api/timeline/split",
+    "/api/timeline/trim",
+    "/api/timeline/delete",
+    "/api/timeline/move",
+    "/api/timeline/paste",
+    "/api/timeline/fade",
     "/api/edit-action",
     "/api/gold-verdict",
+    "/api/join-call",
     "/api/why",
     "/api/word-correct",
     "/api/word-correct-remove",
     "/api/captions-pref",
     "/api/render",
+    "/api/finish/versions",
+    "/api/finish/offset",
+    "/api/finish/render",
+    "/api/finish/export",
+    "/api/finish/reveal",
+    "/api/project/save",
+    "/api/project/open",
     "/api/history/undo",
     "/api/history/redo",
     "/api/voice-command",
+    "/api/thread/action",
+    "/api/thread/read",
+    "/api/thread/cleanup",
+    "/api/review/verdict",
 })
+
+
+# ---------------------------------------------------------------------------
+# Chat export job (0.27.3, chunk B item 9): the Export bubble's
+# renders run here, one shape at a time, always from the
+# CURRENT plan (every export renders; nothing is served from
+# an older render). Per-shape state feeds the bubble's bar
+# and its "16:9 done · 9:16 72% · about 40 s left" line; the
+# per-shape percent while a render runs is elapsed against
+# the usual render length learned on this computer (the
+# finish-export-runs.json record beside the first-edit one),
+# capped below 100 until the render actually returns.
+
+FINISH_EXPORT_RUNS_NAME = "finish-export-runs.json"
+FINISH_EXPORT_RUNS_KEPT = 8
+FINISH_EXPORT_DEFAULT_S = 60.0
+
+
+def _finish_export_usual_seconds(launch_home, aspect) -> float:
+    """The usual render length for one shape on this computer."""
+    try:
+        if launch_home is None:
+            return FINISH_EXPORT_DEFAULT_S
+        path = Path(launch_home) / FINISH_EXPORT_RUNS_NAME
+        if not path.is_file():
+            return FINISH_EXPORT_DEFAULT_S
+        runs = json.loads(path.read_text(encoding="utf-8"))
+        values = (runs or {}).get(aspect) if isinstance(runs, dict) else None
+        values = [
+            float(v) for v in (values or [])
+            if isinstance(v, (int, float)) and v > 0
+        ]
+        if not values:
+            return FINISH_EXPORT_DEFAULT_S
+        return float(statistics.median(values[-FINISH_EXPORT_RUNS_KEPT:]))
+    except Exception:
+        return FINISH_EXPORT_DEFAULT_S
+
+
+def _record_finish_export_run(launch_home, aspect, seconds) -> None:
+    try:
+        if launch_home is None:
+            return
+        path = Path(launch_home) / FINISH_EXPORT_RUNS_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            runs = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(runs, dict):
+                runs = {}
+        except Exception:
+            runs = {}
+        values = runs.get(aspect) or []
+        values.append(round(float(seconds), 1))
+        runs[aspect] = values[-FINISH_EXPORT_RUNS_KEPT:]
+        path.write_text(json.dumps(runs) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _finish_export_view(state: dict, launch_home) -> dict:
+    """One export job as the page reads it, with progress."""
+    now = time.monotonic()
+    shapes = {}
+    remaining = 0.0
+    for aspect, shape in (state.get("shapes") or {}).items():
+        view = dict(shape)
+        usual = _finish_export_usual_seconds(launch_home, aspect)
+        if shape.get("state") == "working":
+            started = shape.get("started_at") or now
+            elapsed = max(0.0, now - started)
+            view["percent"] = int(min(95, elapsed / usual * 100)) \
+                if usual > 0 else 0
+            remaining += max(0.0, usual - elapsed)
+        elif shape.get("state") == "done":
+            view["percent"] = 100
+        elif shape.get("state") == "queued":
+            view["percent"] = 0
+            remaining += usual
+        shapes[aspect] = view
+    return {
+        "id": state.get("id"),
+        "status": state.get("status"),
+        "aspects": list(state.get("aspects") or []),
+        "shapes": shapes,
+        "eta_s": round(remaining) if state.get("status") == "working" else 0,
+        "error": state.get("error"),
+    }
+
+
+def _run_finish_export(registry: dict, export_id: str, config) -> None:
+    """Render the job's shapes in order, recording state."""
+    state = registry.get(export_id)
+    if state is None:
+        return
+    try:
+        # One job, one plan (filming day, P0-2): the plan is
+        # snapshotted once, here, and every shape in the job
+        # renders from that snapshot. Justin's keyed "Export
+        # both" shipped two different edits because each shape
+        # re-read the plan file at its own render moment and a
+        # revision landed between them; a job can no longer
+        # split that way.
+        plan = json.loads(json.dumps(_effective_cuts(config)))
+        state["plan_stamp"] = _plan_stamp_of(plan)
+        for aspect in state["aspects"]:
+            shape = state["shapes"][aspect]
+            shape["state"] = "working"
+            shape["started_at"] = time.monotonic()
+            started = time.monotonic()
+            try:
+                result = _render_finish_shape(config, aspect, plan=plan)
+            except Exception as exc:  # one shape must not strand the rest
+                result = {"ok": False, "error": str(exc)}
+            took = time.monotonic() - started
+            if result.get("ok"):
+                _record_finish_export_run(
+                    config.launch_home, aspect, took
+                )
+                path = config.session_dir / finish.finish_filename(aspect)
+                duration = None
+                try:
+                    duration = speech.probe_media(path).get("duration")
+                except Exception:
+                    duration = None
+                shape["state"] = "done"
+                shape["file"] = finish.finish_filename(aspect)
+                shape["duration_s"] = duration
+            else:
+                shape["state"] = "error"
+                shape["error"] = result.get("error") or "Export failed."
+        states = [s.get("state") for s in state["shapes"].values()]
+        state["status"] = "done" if all(
+            s == "done" for s in states
+        ) else "error"
+        if state["status"] == "error":
+            state["error"] = next(
+                (
+                    s.get("error")
+                    for s in state["shapes"].values()
+                    if s.get("state") == "error"
+                ),
+                "Export failed.",
+            )
+    except Exception as exc:  # the job record must always settle
+        state["status"] = "error"
+        state["error"] = str(exc)
+
+
+def _render_finish_shape(
+    config: WebAppConfig, aspect: str, plan: dict = None
+) -> dict:
+    """Render one shape's finished video from one plan.
+
+    The body of the Finish export (see _post_finish_render
+    for the full story), lifted out so the chat export job
+    renders through exactly the same path: same splice,
+    same framing correction loop, same -14 LUFS finish,
+    same measured entry, now stamped with the plan it was
+    rendered from (0.27.3, chunk B item 9). A caller running
+    a multi-shape job passes its one snapshotted plan, so
+    every shape in the job is the same edit (filming day,
+    P0-2); a lone render reads the current plan. Returns
+    the payload the endpoint sends.
+    """
+    session = config.session_dir
+    if not config.has_job or not (
+        session / "revised_cuts.json"
+    ).is_file():
+        return {
+                "ok": False,
+                "error": "Make the edit first, so there is an "
+                "edit to finish.",
+            }
+    source = _finish_source(config)
+    if source is None:
+        return {
+                "ok": False,
+                "error": "The video this job came from is not "
+                "in the folder anymore, so the finished video "
+                "cannot be built.",
+            }
+    try:
+        media = speech.probe_media(source)
+        has_audio = bool(media.get("has_audio", True))
+        width = int(media.get("width") or 0)
+        height = int(media.get("height") or 0)
+    except speech.TranscribeError:
+        has_audio, width, height = True, 0, 0
+    window, ref, _notes = _finish_window(config, aspect)
+    if window is None or not width or not height:
+        return {
+                "ok": False,
+                "error": "This video's size could not be read, "
+                "so its framing could not be set.",
+            }
+    x, y, w, h = framing.crop_pixels(window, width, height)
+    out_w, out_h = finish.finish_output_size(aspect, width, height)
+    # The correction loop iterates at proxy size when the
+    # full frame is bigger than the proxy (finish.proxy_
+    # output_size); its renders go to a scratch file that
+    # is removed afterwards, and the delivered file is
+    # rendered once at full frame below. When the full
+    # frame already is proxy-sized, the loop's renders are
+    # the delivered renders and there is no second pass.
+    loop_w, loop_h = finish.proxy_output_size(out_w, out_h)
+    iterate_at_proxy = (loop_w, loop_h) != (out_w, out_h)
+    crossfade_on = bool(
+        _front_door_settings(config).get("crossfade", True)
+    )
+    out_path = session / finish.finish_filename(aspect)
+    loop_path = (
+        session / (out_path.stem + ".proxy.mp4")
+        if iterate_at_proxy
+        else out_path
+    )
+    cuts = plan if plan is not None else _effective_cuts(config)
+    new_profile = _finish_new_profile(config)
+    ref_face = (
+        ref.get("face") if ref and ref.get("found") else None
+    )
+    corrections = 0
+    result = None
+    profile = None
+    report = {"ok": False}
+    try:
+        while True:
+            result = finish.render_finish_video(
+                source,
+                config.job_dir,
+                cuts,
+                loop_path,
+                (x, y, w, h, loop_w, loop_h),
+                crossfade_s=0.04 if crossfade_on else 0.0,
+                has_audio=has_audio,
+            )
+            # The output is read with the one ruler, the
+            # same read the reference was learned with.
+            profile = framing.ruler_profile(loop_path)
+            report = framing.match_report(ref, profile)
+            # Correct the crop's size from the measured
+            # share and render again, at most twice, while
+            # the size misses the 3 percent bar and every
+            # number the correction needs is really there.
+            if not (
+                report.get("ok")
+                and window.get("matched")
+                and ref_face
+                and new_profile
+                and new_profile.get("found")
+                and float(report.get("size_off_pct") or 0.0) > 3.0
+                and corrections < 2
+            ):
+                break
+            measured_share = float(profile["face"]["width"])
+            ref_share = float(ref_face["width"])
+            if measured_share <= 0 or ref_share <= 0:
+                break
+            window = framing.scale_window(
+                window,
+                ref,
+                new_profile,
+                width,
+                height,
+                aspect,
+                measured_share,
+            )
+            x, y, w, h = framing.crop_pixels(window, width, height)
+            corrections += 1
+        if iterate_at_proxy:
+            # The delivered file, rendered once at full
+            # frame with the crop the proxy loop settled,
+            # then measured with the ruler: the stored
+            # match line is this render's own measurement.
+            result = finish.render_finish_video(
+                source,
+                config.job_dir,
+                cuts,
+                out_path,
+                (x, y, w, h, out_w, out_h),
+                crossfade_s=0.04 if crossfade_on else 0.0,
+                has_audio=has_audio,
+            )
+            profile = framing.ruler_profile(out_path)
+            report = framing.match_report(ref, profile)
+    except speech.TranscribeError as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        if iterate_at_proxy:
+            loop_path.unlink(missing_ok=True)
+    if report.get("ok"):
+        line = report["line"].replace(
+            "the reference", f"your {aspect} reference"
+        )
+    else:
+        line = (
+            "The exported video's face could not be measured, "
+            "so no match line is claimed for it."
+        )
+    entry = {
+        "plan_stamp": _plan_stamp_of(cuts),
+        "line": line,
+        "position_off_pct": report.get("position_off_pct"),
+        "size_off_pct": report.get("size_off_pct"),
+        "loudness_before_lufs": result["loudness_before_lufs"],
+        "loudness_after_lufs": result["loudness_after_lufs"],
+        "subtitles": result["subtitles"],
+        "framing_corrections": corrections,
+        "output_width_share": (
+            float(profile["face"]["width"])
+            if profile and profile.get("found")
+            else None
+        ),
+        "reference_width_share": (
+            float(ref_face["width"]) if ref_face else None
+        ),
+        "frame_width": out_w,
+        "frame_height": out_h,
+        # How far the crop was scaled up to fill the
+        # frame: the same ratio the crop's may-look-soft
+        # note is decided by, recorded so it can be said
+        # plainly instead of guessed from sizes later.
+        "scale_up": (
+            round(out_w / (float(window["width"]) * width), 2)
+            if window.get("width") and width
+            else None
+        ),
+    }
+    measured = _load_session_json(config, FINISH_MEASURED_FILENAME, {})
+    if not isinstance(measured, dict):
+        measured = {}
+    measured[aspect] = entry
+    _write_json(session / FINISH_MEASURED_FILENAME, measured)
+    project = _save_project(config)
+    return {
+            "ok": True,
+            "file": finish.finish_filename(aspect),
+            "match": entry,
+            "project": project,
+            "shape": _finish_shape_view(config, aspect),
+    }
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -7686,7 +17038,7 @@ class _Handler(BaseHTTPRequestHandler):
             "color: #f5f5f7; padding: 24px;\">"
             "<h1>" + html.escape(title) + "</h1>"
             "<p>" + html.escape(sentence) + "</p>"
-            "<p><a href=\"/\" style=\"color: #0a84ff;\">Back to the app</a></p>"
+            "<p><a href=\"/\" style=\"color: #0064d1;\">Back to the app</a></p>"
             "</body></html>"
         )
         self._send_bytes(
@@ -7779,12 +17131,23 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - stdlib name
         path = unquote(urlsplit(self.path).path)
         try:
-            if path == "/":
+            if path == "/" or path == "/studio":
+                self._page_studio()
+            elif path == "/classic":
                 self._page_index()
             elif path == "/api/job":
                 self._send_json(200, _job_summary(self.config))
             elif path == "/api/signin":
                 self._send_json(200, _signin_state(self.config))
+            elif path == "/api/thread":
+                # The thread reads the same with or without a job:
+                # before a job exists it is the launch session's
+                # thread, where the conversation starts (0.25,
+                # finding 5). Its entries carry into the job when
+                # one arrives (_carry_launch_thread).
+                self._send_json(200, _thread_view(self.config))
+            elif path == "/api/editor-name":
+                self._send_json(200, {"ok": True, "editor_name": usual.load_editor_name()})
             elif path == "/api/saved-transcripts":
                 self._send_json(
                     200,
@@ -7801,6 +17164,20 @@ class _Handler(BaseHTTPRequestHandler):
                 self._get_intake_status()
             elif path == "/api/captions":
                 self._serve_captions()
+            elif path == "/api/export":
+                self._serve_export()
+            elif path == "/api/finish/state":
+                self._serve_finish_state()
+            elif path == "/api/finish/frame":
+                self._serve_finish_frame()
+            elif path == "/api/finish/download":
+                self._serve_finish_download()
+            elif path == "/api/finish/export/status":
+                self._get_finish_export_status()
+            elif path == "/api/project/recent":
+                self._serve_project_recent()
+            elif path == "/api/project/file":
+                self._serve_project_file()
             elif path == "/api/finish/video":
                 self._serve_finish_video()
             elif path == "/api/history":
@@ -7881,6 +17258,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_intake_file()
         elif path == "/api/intake/finish":
             self._post_intake_finish()
+        elif path == "/api/intake/link":
+            self._post_intake_link()
         elif path == "/api/intake/first-edit":
             self._post_intake_first_edit()
         elif path == "/api/teach/begin":
@@ -7927,18 +17306,44 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_grades()
         elif path == "/api/rule-save":
             self._post_rule_save()
+        elif path == "/api/inspiration-save":
+            self._post_inspiration_save()
+        elif path == "/api/rule-custom":
+            self._post_rule_custom()
         elif path == "/api/rule-dismiss":
             self._post_rule_dismiss()
         elif path == "/api/rule-remove":
             self._post_rule_remove()
+        elif path == "/api/rule-edit":
+            self._post_rule_edit()
+        elif path == "/api/styles":
+            self._post_styles()
         elif path == "/api/word-toggle":
             self._post_word_toggle()
         elif path == "/api/word-range":
             self._post_word_range()
+        elif path == "/api/gap-erase":
+            self._post_gap_erase()
+        elif path == "/api/join-pause":
+            self._post_join_pause()
+        elif path == "/api/timeline/split":
+            self._post_timeline_split()
+        elif path == "/api/timeline/trim":
+            self._post_timeline_trim()
+        elif path == "/api/timeline/delete":
+            self._post_timeline_delete()
+        elif path == "/api/timeline/move":
+            self._post_timeline_move()
+        elif path == "/api/timeline/paste":
+            self._post_timeline_paste()
+        elif path == "/api/timeline/fade":
+            self._post_timeline_fade()
         elif path == "/api/edit-action":
             self._post_edit_action()
         elif path == "/api/gold-verdict":
             self._post_gold_verdict()
+        elif path == "/api/join-call":
+            self._post_join_call()
         elif path == "/api/why":
             self._post_why()
         elif path == "/api/word-correct":
@@ -7949,16 +17354,72 @@ class _Handler(BaseHTTPRequestHandler):
             self._post_captions_pref()
         elif path == "/api/render":
             self._post_render()
+        elif path == "/api/finish/versions":
+            self._post_finish_versions()
+        elif path == "/api/finish/offset":
+            self._post_finish_offset()
+        elif path == "/api/finish/render":
+            self._post_finish_render()
+        elif path == "/api/finish/export":
+            self._post_finish_export()
+        elif path == "/api/finish/reveal":
+            self._post_finish_reveal()
+        elif path == "/api/project/save":
+            self._post_project_save()
+        elif path == "/api/project/open":
+            self._post_project_open()
         elif path == "/api/history/undo":
             self._post_history_move(undo=True)
         elif path == "/api/history/redo":
             self._post_history_move(undo=False)
         elif path == "/api/voice-command":
             self._post_voice_command()
+        elif path == "/api/thread":
+            self._post_thread_append()
+        elif path == "/api/thread/message":
+            self._post_thread_message()
+        elif path == "/api/thread/action":
+            self._post_thread_action()
+        elif path == "/api/thread/offer":
+            self._post_thread_offer()
+        elif path == "/api/thread/cleanup":
+            self._post_thread_cleanup()
+        elif path == "/api/review/verdict":
+            self._post_review_verdict()
+        elif path == "/api/thread/read":
+            self._post_thread_read()
+        elif path == "/api/editor-name":
+            self._post_editor_name()
         else:
             self._error(404, "not found")
 
     # -- GET handlers -----------------------------------------------------
+
+    def _page_studio(self) -> None:
+        """Studio, the new front end (Message 1: shell and Train).
+
+        One small file, served as it sits; Studio reads everything
+        it needs from the existing endpoints. The classic page stays
+        reachable at /classic, byte for byte as it was.
+        """
+        template_path = (
+            Path(__file__).resolve().parent
+            / "templates"
+            / "studio.html"
+        )
+        try:
+            page = template_path.read_text(encoding="utf-8")
+        except OSError:
+            self._send_plain_page(
+                404,
+                "Studio is not here yet",
+                "Studio has not been built in this copy yet. "
+                "The classic page is at /classic.",
+            )
+            return
+        self._send_bytes(
+            200, page.encode("utf-8"), "text/html; charset=utf-8"
+        )
 
     def _page_index(self) -> None:
         template_path = (
@@ -8141,7 +17602,7 @@ class _Handler(BaseHTTPRequestHandler):
             "<h1>No after-review yet</h1>"
             "<p>Run direction first, then this page will show what "
             "changed, comment by comment.</p>"
-            "<p><a href=\"/\" style=\"color: #0a84ff;\">Back to the test "
+            "<p><a href=\"/\" style=\"color: #0064d1;\">Back to the test "
             "page</a></p></body></html>"
         )
         self._send_bytes(
@@ -8258,6 +17719,9 @@ class _Handler(BaseHTTPRequestHandler):
             self.config.session_fireworks_key
         )
         self.server.config = new_config  # type: ignore[attr-defined]
+        # The front door's conversation carries into the job that
+        # just arrived, the same as on the intake path.
+        _carry_launch_thread(new_config)
         _kick_playback_copies(new_config)
 
     def _post_load_sample(self) -> None:
@@ -8380,6 +17844,9 @@ class _Handler(BaseHTTPRequestHandler):
                 "nothing was loaded.",
             )
             return
+        # The order files arrive in is the order the creator put
+        # the parts in; record it on the drop (item 2).
+        record.setdefault("files", []).append("/".join(parts))
         self._send_json(
             200,
             {"ok": True, "path": "/".join(parts), "size": target.stat().st_size},
@@ -8407,6 +17874,16 @@ class _Handler(BaseHTTPRequestHandler):
                 "That drop is not on record anymore. Drop the folder again.",
             )
             return
+        self._send_json(200, self._finish_intake(intake_id, record))
+
+    def _finish_intake(self, intake_id: str, record: dict) -> dict:
+        """What a closed drop turned out to be, as a payload.
+
+        The body of _post_intake_finish, shared with the chat's
+        link route (0.27.1, run-through finding 4): a video
+        fetched from a pasted link is finished exactly like a
+        dropped file, so both paths stage the same way.
+        """
         base = Path(record["dir"])
         detected = _detect_intake(base)
         kind = detected["kind"]
@@ -8416,25 +17893,53 @@ class _Handler(BaseHTTPRequestHandler):
             # A test-video mark set at the front door, in the
             # launch session, carries into this job's session.
             _carry_launch_test_video(self.config)
-            self._send_json(
-                200,
-                {
-                    "ok": True,
-                    "kind": "job",
-                    "job_name": job_root.name,
-                    "message": (
-                        f"Your job folder is in. The app is now "
-                        f"running on {job_root.name}, the copy it "
-                        "just took in; your original folder was not "
-                        "changed. The page will reload on the new job."
-                    ),
-                },
-            )
-            return
+            return {
+                "ok": True,
+                "kind": "job",
+                "parts": list(record.get("files") or []),
+                "job_name": job_root.name,
+                "message": (
+                    f"Your job folder is in. The app is now "
+                    f"running on {job_root.name}, the copy it "
+                    "just took in; your original folder was not "
+                    "changed. The page will reload on the new job."
+                ),
+            }
         if kind == "video":
             video_path = detected["video_path"]
+            # Parts brought in together are processed in the
+            # order they were recorded in (item 2): with several
+            # videos and no job files, the parts are joined into
+            # one video in that order and the joined file is what
+            # the first edit processes. If the join cannot be
+            # made, the first part in the order is the video, and
+            # the answer says the rest were not joined.
+            ordered_videos = _ordered_drop_videos(
+                base, list(record.get("files") or [])
+            )
+            joined = False
+            join_note = ""
+            if len(ordered_videos) >= 2:
+                combined = base / "combined-parts.mp4"
+                if _join_ordered_parts(ordered_videos, combined):
+                    video_path = combined
+                    joined = True
+                else:
+                    video_path = ordered_videos[0]
+                    join_note = (
+                        " The parts could not be joined into one "
+                        "video here, so only the first part, in "
+                        "the order you put them in, was taken in."
+                    )
+            elif len(ordered_videos) == 1:
+                video_path = ordered_videos[0]
             relative = video_path.relative_to(base).as_posix()
             record["video_rel"] = relative
+            record["parts"] = [
+                path.relative_to(base).as_posix()
+                for path in ordered_videos
+            ]
+            record["joined"] = joined
             # The watchable copy starts now, in the background,
             # the moment the drop is complete: the preview and
             # the later job both draw on it, and no play request
@@ -8442,33 +17947,84 @@ class _Handler(BaseHTTPRequestHandler):
             _ensure_playback_copy_for(
                 video_path, _staged_copy_path(video_path)
             )
+            return {
+                "ok": True,
+                "kind": "video",
+                "parts": list(record.get("files") or []),
+                "joined": joined,
+                "video_name": video_path.name,
+                "video_url": (
+                    f"/api/intake/video/{intake_id}/"
+                    + quote(relative)
+                ),
+                "playback": _playback_state_for(
+                    video_path, _staged_copy_path(video_path)
+                ),
+                "can_first_edit": True,
+                "message": VIDEO_ONLY_MESSAGE + join_note,
+            }
+        if kind == "empty":
+            return {"ok": True, "kind": "empty", "message": EMPTY_DROP_MESSAGE}
+        return {"ok": True, "kind": "not_a_job", "message": NOT_A_JOB_MESSAGE}
+
+    def _post_intake_link(self) -> None:
+        """Bring in the video at a link pasted into the chat.
+
+        The same link handling Teach uses (0.27.1, run-through
+        finding 4): the video is fetched into a staging drop and
+        finished exactly like a dropped file, so the chat's
+        offer can run on it. A link the app cannot get is the
+        same honest answer the Teach field gives, and a social
+        link gets Teach's plain refusal: never a fake success.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        url = str(body.get("url") or "").strip()
+        if not (
+            url.lower().startswith("http://")
+            or url.lower().startswith("https://")
+        ):
+            self._error(400, "That is not a link the app can open.")
+            return
+        try:
+            host = (urlsplit(url).hostname or "").lower()
+        except ValueError:
+            host = ""
+        if any(host == h or host.endswith("." + h) for h in _SOCIAL_HOSTS):
             self._send_json(
                 200,
-                {
-                    "ok": True,
-                    "kind": "video",
-                    "video_name": video_path.name,
-                    "video_url": (
-                        f"/api/intake/video/{intake_id}/"
-                        + quote(relative)
-                    ),
-                    "playback": _playback_state_for(
-                        video_path, _staged_copy_path(video_path)
-                    ),
-                    "can_first_edit": True,
-                    "message": VIDEO_ONLY_MESSAGE,
-                },
+                {"ok": True, "landed": False, "message": SOCIAL_LINK_MESSAGE},
             )
             return
-        if kind == "empty":
+        name = "linked-video"
+        intake_id = uuid.uuid4().hex[:12]
+        staging = self._intake_root() / f"{name}-{intake_id}"
+        try:
+            staging.mkdir(parents=True, exist_ok=False)
+        except OSError:
+            _log_raw_error("intake link", OSError(str(staging)))
+            self._error(
+                500,
+                "The link could not be taken in. Try again in a moment.",
+            )
+            return
+        record = {"dir": str(staging), "name": name}
+        self._intakes()[intake_id] = record
+        try:
+            landed = teaching.fetch_link(url, staging)
+        except teaching.TeachingLinkError:
             self._send_json(
-                200, {"ok": True, "kind": "empty", "message": EMPTY_DROP_MESSAGE}
+                200,
+                {"ok": True, "landed": False, "message": TEACH_LINK_MESSAGE},
             )
             return
-        self._send_json(
-            200,
-            {"ok": True, "kind": "not_a_job", "message": NOT_A_JOB_MESSAGE},
-        )
+        record["files"] = [landed.name]
+        payload = self._finish_intake(intake_id, record)
+        payload["intake_id"] = intake_id
+        payload["landed"] = True
+        self._send_json(200, payload)
 
     def _post_teach_begin(self) -> None:
         """Open a teaching session folder and hand back its id.
@@ -8600,10 +18156,32 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
         folder = Path(record["dir"])
+        url_text = str(body.get("url") or "")
+        host = ""
         try:
-            landed = teaching.fetch_link(
-                str(body.get("url") or ""), folder
+            host = (urlsplit(url_text).hostname or "").lower()
+        except ValueError:
+            host = ""
+        if any(host == h or host.endswith("." + h) for h in _SOCIAL_HOSTS):
+            self._send_json(
+                200,
+                {"ok": True, "landed": False, "message": SOCIAL_LINK_MESSAGE},
             )
+            return
+        if record.get("kind") == "style" and teaching._youtube_video_id(
+            urlsplit(url_text)
+        ):
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "landed": False,
+                    "message": STYLE_YOUTUBE_MESSAGE,
+                },
+            )
+            return
+        try:
+            landed = teaching.fetch_link(url_text, folder)
         except teaching.TeachingLinkError:
             self._send_json(
                 200,
@@ -8700,6 +18278,15 @@ class _Handler(BaseHTTPRequestHandler):
             "percent": None,
             "remaining_s": None,
             "progress_line": "0:00 so far",
+            # The run's usual length (v0.20, chunk C), from
+            # this computer's finished first edits; None until
+            # enough of them are recorded to say "usually".
+            "first_edit_eta_s": _first_edit_usual_seconds(
+                self.config.launch_home
+            ),
+            "first_edit_eta": _first_edit_eta_text(
+                self.config.launch_home
+            ),
         }
         thread = threading.Thread(
             target=_run_first_edit,
@@ -8798,6 +18385,369 @@ class _Handler(BaseHTTPRequestHandler):
             },
         )
 
+    # -- Finish (Message 3) ------------------------------------------------
+
+    def _serve_finish_state(self) -> None:
+        self._send_json(200, {"ok": True, **_finish_state_view(self.config)})
+
+    def _serve_finish_frame(self) -> None:
+        """One preview frame of a shape, cropped the way it exports."""
+        query = parse_qs(urlsplit(self.path).query)
+        aspect = (query.get("aspect") or [""])[0]
+        if aspect not in finish.ASPECTS or not self.config.has_job:
+            self._error(404, "no preview for that shape yet")
+            return
+        source = _finish_source(self.config)
+        window, _ref, _notes = _finish_window(self.config, aspect)
+        if source is None or window is None:
+            self._error(404, "no preview for that shape yet")
+            return
+        try:
+            media = speech.probe_media(source)
+        except speech.TranscribeError:
+            self._error(404, "no preview for that shape yet")
+            return
+        width = int(media.get("width") or 0)
+        height = int(media.get("height") or 0)
+        if not width or not height:
+            self._error(404, "no preview for that shape yet")
+            return
+        at = query.get("t") or [None]
+        try:
+            at_s = float(at[0]) if at[0] is not None else None
+        except (TypeError, ValueError):
+            at_s = None
+        if at_s is None:
+            at_s = float(media.get("duration") or 0) / 2.0
+        x, y, w, h = framing.crop_pixels(window, width, height)
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-ss", f"{at_s:.3f}", "-i", str(source),
+                "-frames:v", "1",
+                "-vf", f"crop={w}:{h}:{x}:{y},scale=360:-2",
+                "-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+            ],
+            capture_output=True, timeout=120,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            self._error(404, "no preview for that shape yet")
+            return
+        self._send_bytes(200, proc.stdout, "image/jpeg", {})
+
+    def _serve_finish_download(self) -> None:
+        query = parse_qs(urlsplit(self.path).query)
+        aspect = (query.get("aspect") or [""])[0]
+        if aspect not in finish.ASPECTS:
+            self._error(400, "unknown shape")
+            return
+        target = self.config.session_dir / finish.finish_filename(aspect)
+        if not target.is_file():
+            self._error(404, "that version has not been exported yet")
+            return
+        self._send_bytes(
+            200,
+            target.read_bytes(),
+            "video/mp4",
+            {
+                "Content-Disposition": (
+                    f'attachment; filename="{target.name}"'
+                )
+            },
+        )
+
+    def _post_finish_versions(self) -> None:
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        state = finish.set_versions(
+            self.config.session_dir, body.get("versions") or []
+        )
+        self._send_json(200, {"ok": True, "versions": state["versions"]})
+
+    def _post_finish_offset(self) -> None:
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        aspect = body.get("aspect")
+        if aspect not in finish.ASPECTS:
+            self._error(400, "unknown shape")
+            return
+        state = finish.nudge_offset(
+            self.config.session_dir,
+            aspect,
+            float(body.get("dx") or 0.0),
+            float(body.get("dy") or 0.0),
+            reset=bool(body.get("reset")),
+        )
+        # A nudge changes the framing, so a measured line from an
+        # earlier render no longer describes what will export.
+        measured = _load_session_json(
+            self.config, FINISH_MEASURED_FILENAME, {}
+        )
+        if isinstance(measured, dict) and aspect in measured:
+            del measured[aspect]
+            _write_json(
+                self.config.session_dir / FINISH_MEASURED_FILENAME,
+                measured,
+            )
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "offset": state["offsets"][aspect],
+                "shape": _finish_shape_view(self.config, aspect),
+            },
+        )
+
+    def _post_finish_render(self) -> None:
+        """Export one shape's finished video (Message 3, beat 7).
+
+        The render is the intake splice with this shape's framing
+        crop, finished to his settings by finish.render_finish_
+        video (loudness -14 LUFS, AAC 128 kbps stereo 48 kHz, a
+        subtitle track inside the file), at the shape's full
+        frame for the source. The rendered face is measured
+        with the one ruler and compared with the shape's
+        reference, so the match line on Finish is a measurement,
+        not a promise. When the measured face size misses the
+        reference by more than 3 percent, the crop is corrected
+        from the measured share (framing.scale_window), at most
+        twice. The correction loop iterates at a 1080-high
+        proxy in the same shape (the crop math is in shares,
+        so a correction measured there lands the same at full
+        size); the delivered file is then rendered once, at
+        full frame, with the settled crop, and measured for
+        the stored match line. Export also saves the project
+        file.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        aspect = body.get("aspect")
+        if aspect not in finish.ASPECTS:
+            self._error(400, "unknown shape")
+            return
+        self._send_json(200, _render_finish_shape(self.config, aspect))
+
+    def _finish_exports(self) -> dict:
+        """The chat export jobs on this server, by id.
+
+        Same lazy pattern as the first-edit registry: created
+        on first use so a server object built any way carries
+        it (run_server also seeds it beside the others).
+        """
+        registry = getattr(self.server, "finish_exports", None)
+        if registry is None:
+            registry = {}
+            self.server.finish_exports = registry
+        return registry
+
+    def _post_finish_export(self) -> None:
+        """Start a chat export (0.27.3, chunk B item 9).
+
+        Renders the named shapes from the current plan, in the
+        background, one at a time. Starting while one is
+        already working answers with the running job instead
+        of doubling the renders.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        aspects = body.get("aspects")
+        if (
+            not isinstance(aspects, list)
+            or not aspects
+            or any(a not in finish.ASPECTS for a in aspects)
+        ):
+            self._error(400, "unknown shape")
+            return
+        if not self.config.has_job:
+            self._send_json(
+                200,
+                {"ok": False, "error": "Make the edit first, so "
+                 "there is an edit to export."},
+            )
+            return
+        registry = self._finish_exports()
+        for state in registry.values():
+            if state.get("status") == "working":
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "started": False,
+                        "export": _finish_export_view(
+                            state, self.config.launch_home
+                        ),
+                    },
+                )
+                return
+        export_id = uuid.uuid4().hex[:12]
+        state = {
+            "id": export_id,
+            "status": "working",
+            "aspects": list(aspects),
+            "shapes": {
+                a: {"state": "queued"} for a in aspects
+            },
+            "error": None,
+        }
+        registry[export_id] = state
+        worker = threading.Thread(
+            target=_run_finish_export,
+            args=(registry, export_id, self.config),
+            daemon=True,
+        )
+        worker.start()
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "started": True,
+                "export": _finish_export_view(
+                    state, self.config.launch_home
+                ),
+            },
+        )
+
+    def _get_finish_export_status(self) -> None:
+        query = parse_qs(urlsplit(self.path).query)
+        export_id = (query.get("id") or [None])[0]
+        state = self._finish_exports().get(export_id or "")
+        if state is None:
+            self._error(404, "no such export")
+            return
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "export": _finish_export_view(
+                    state, self.config.launch_home
+                ),
+            },
+        )
+
+    def _post_finish_reveal(self) -> None:
+        """Show one exported file in Finder (chat export, item 9)."""
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        aspect = body.get("aspect")
+        if aspect not in finish.ASPECTS:
+            self._error(400, "unknown shape")
+            return
+        target = self.config.session_dir / finish.finish_filename(aspect)
+        if not target.is_file():
+            self._send_json(
+                200,
+                {
+                    "ok": False,
+                    "message": "That file is not exported yet.",
+                },
+            )
+            return
+        opened, message = _reveal_in_finder(target)
+        self._send_json(200, {"ok": opened, "message": message})
+
+    def _post_project_save(self) -> None:
+        if not self.config.has_job:
+            self._error(404, "no job is loaded yet")
+            return
+        saved = _save_project(self.config)
+        self._send_json(200, {"ok": True, **saved})
+
+    def _serve_project_file(self) -> None:
+        target = self.config.session_dir / finish.PROJECT_FILENAME
+        if not target.is_file():
+            if self.config.has_job:
+                _save_project(self.config)
+            else:
+                self._error(404, "no project has been saved yet")
+                return
+        self._send_bytes(
+            200,
+            target.read_bytes(),
+            "application/json; charset=utf-8",
+            {
+                "Content-Disposition": (
+                    f'attachment; filename="{finish.PROJECT_FILENAME}"'
+                )
+            },
+        )
+
+    def _serve_project_recent(self) -> None:
+        self._send_json(
+            200, {"ok": True, "projects": _recent_projects(self.config)}
+        )
+
+    def _post_project_open(self) -> None:
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        ok, message = _open_project(
+            self.config, str(body.get("id") or "")
+        )
+        self._send_json(200, {"ok": ok, "message": message})
+
+    def _serve_export(self) -> None:
+        """Hand the current edit to another editor as a timeline file.
+
+        The format rides the query string: fcpxml for Final Cut
+        Pro (DaVinci Resolve imports it too), premiere for
+        Premiere Pro's XML, edl for most other editors. The file
+        is built from the session's current plan, the same one
+        the render and the captions read, by the timeline_export
+        module: local text only, no run and no cost. The frame
+        rate is the plan's own, which the module reads from the
+        plan when none is handed to it. An unknown format gets
+        one plain sentence and no file.
+        """
+        if not self.config.has_job:
+            self._error(404, "no job is loaded yet")
+            return
+        query = parse_qs(urlsplit(self.path).query)
+        fmt = (query.get("format") or [""])[0].strip().lower()
+        if fmt not in ("fcpxml", "premiere", "edl"):
+            self._error(
+                400,
+                "That is not one of the three timeline formats: "
+                "fcpxml, premiere, or edl.",
+            )
+            return
+        source_name = intake_build.intake_source_video(
+            self.config.job_dir
+        )
+        if not source_name and self.config.source_video:
+            source_name = Path(self.config.source_video).name
+        if not source_name:
+            source_name = self.config.job_dir.name
+        cuts = _effective_cuts(self.config)
+        filename, text, _notes = timeline_export.export_timeline(
+            cuts, source_name
+        )[fmt]
+        content_type = (
+            "text/plain; charset=utf-8"
+            if fmt == "edl"
+            else "application/xml; charset=utf-8"
+        )
+        self._send_bytes(
+            200,
+            text.encode("utf-8"),
+            content_type,
+            {
+                "Content-Disposition": (
+                    f'attachment; filename="{filename}"'
+                )
+            },
+        )
+
     def _post_cost_estimate(self) -> None:
         """What one run will probably cost, before it runs (v0.7.2).
 
@@ -8836,6 +18786,8 @@ class _Handler(BaseHTTPRequestHandler):
             history_entries=costs.load_money_entries(),
             spark_route=self.config.spark_route(),
         )
+        estimate["surface"] = surface
+        _store_job_estimate(self.config, estimate)
         self._send_json(200, {"ok": True, "estimate": estimate})
 
     def _post_money_reset(self) -> None:
@@ -9053,6 +19005,8 @@ class _Handler(BaseHTTPRequestHandler):
                     heard,
                     _front_door_settings(self.config),
                 )
+                # The final sweep (0.27.3), same checkpoint.
+                _run_final_sweep(self.config)
                 checkpoints.commit(self.config, "Direction run")
             except Exception as exc:
                 _log_raw_error("voice direction", exc)
@@ -9088,6 +19042,246 @@ class _Handler(BaseHTTPRequestHandler):
                 "message": record,
             },
         )
+
+    def _post_thread_append(self) -> None:
+        """Append one raw entry to the thread (the store's own route)."""
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        kind = str(body.get("kind") or "creator")
+        if kind not in ("creator", "editor", "run", "held", "pin", "rule", "why"):
+            self._error(400, "That kind of thread entry is not one the panel keeps.")
+            return
+        entry = {
+            key: value
+            for key, value in body.items()
+            if key not in ("kind",)
+        }
+        entry["kind"] = kind
+        entry.setdefault("status", "settled")
+        stored = _append_thread(self.config, entry)
+        self._send_json(200, {"ok": True, "entry": stored, **_thread_view(self.config)})
+
+    def _post_thread_action(self) -> None:
+        """Undo or redo one thread entry's own action (v0.18).
+
+        The body names the entry and the move. The move resolves
+        through saved checkpoints only (see _thread_action_move):
+        no provider or transcription call happens on this route.
+        The answer is the updated thread view plus the plain
+        result line, which is also posted into the thread.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        entry_id = str(body.get("entry_id") or "")
+        move = str(body.get("move") or "")
+        if not entry_id or move not in ("undo", "redo"):
+            self._error(
+                400, "Say which message, and whether to undo or redo it."
+            )
+            return
+        try:
+            result = _thread_action_move(self.config, entry_id, move)
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        view = _thread_view(self.config)
+        entry_view = result.get("entry") or {}
+        for candidate in view["entries"]:
+            if candidate.get("id") == entry_view.get("id"):
+                entry_view = candidate
+                break
+        payload = {
+            "ok": True,
+            "result": result["line"],
+            "line": result["line"],
+            "moved": result["moved"],
+            "fallback": result["fallback"],
+            "entry": entry_view,
+            "thread": view,
+            **view,
+        }
+        self._send_json(200, payload)
+
+    def _post_thread_read(self) -> None:
+        """Mark the thread's editor and run entries read."""
+        if self._read_json_body() is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        entries = _load_thread(self.config)
+        changed = False
+        for entry in entries:
+            if entry.get("unread"):
+                entry["unread"] = False
+                changed = True
+        if changed:
+            _save_thread(self.config, entries)
+        self._send_json(200, {"ok": True, "waiting_count": _waiting_count(self.config)})
+
+    def _post_review_verdict(self) -> None:
+        """Settle one review suggestion (v0.17, feedback item 26)."""
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        try:
+            view = _review_verdict(
+                self.config,
+                str(body.get("review_id") or ""),
+                str(body.get("decision") or ""),
+            )
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        self._send_json(200, {"ok": True, **view})
+
+    def _post_editor_name(self) -> None:
+        """Rename the editor. The name is the creator's, not this job's."""
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        name = str(body.get("name") or "").strip()
+        if not name:
+            self._error(400, "Give the editor a name first.")
+            return
+        saved = usual.save_editor_name(name)
+        self._send_json(200, {"ok": True, "editor_name": saved})
+
+    def _post_thread_offer(self) -> None:
+        """Run the offer chip on one thread entry (item 8).
+
+        The tap carries only the entry id; the action and its
+        terms were fixed when the editor made the offer, so a
+        tap can never become a different or paid action. The
+        result entry is returned with the whole thread view, so
+        the page redraws the conversation as it now stands.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        if not self.config.has_job:
+            self._error(400, "Bring a video in first.")
+            return
+        entry = _find_thread_entry(self.config, body.get("entry_id"))
+        if entry is None or not entry.get("offer"):
+            self._error(400, "That offer is not open anymore.")
+            return
+        result = _run_offer(self.config, entry)
+        result_view = next(
+            (
+                view
+                for view in _thread_entries_view(self.config)
+                if view.get("id") == result.get("id")
+            ),
+            dict(result),
+        )
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "kind": "offer",
+                "entry": result_view,
+                "thread": _thread_view(self.config),
+            },
+        )
+
+    def _post_thread_cleanup(self) -> None:
+        """Flip one clean-up choice from the Editor panel (E2).
+
+        The chip row's one route: the flip goes through the same
+        setting path the choice's existing control uses (see
+        _apply_cleanup), and the thread gains the editor entry
+        that says what changed."""
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        key = str(body.get("key") or "")
+        if key not in _CLEANUP_LABELS:
+            self._error(
+                400, "That clean-up choice is not one the panel has."
+            )
+            return
+        on = body.get("on")
+        if not isinstance(on, bool):
+            self._error(
+                400, "Say whether the clean-up choice is on or off."
+            )
+            return
+        entry = _apply_cleanup(self.config, key, on)
+        view = _thread_view(self.config)
+        payload = {
+            "ok": True,
+            "key": key,
+            "on": on,
+            "entry": entry,
+            "thread": view,
+            **view,
+        }
+        self._send_json(200, payload)
+
+    def _post_thread_message(self) -> None:
+        """Send one message in the Editor panel (Batch E1)."""
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        text = str(body.get("text") or "").strip()
+        queue = body.get("queue")
+        if queue is not None and not isinstance(queue, list):
+            self._error(
+                400, "The queued notes on that message are not shaped right."
+            )
+            return
+        if not text and not queue:
+            self._error(400, "Write or say something first.")
+            return
+        moment = body.get("moment")
+        if moment is not None and not isinstance(moment, dict):
+            self._error(400, "The moment on that message is not shaped right.")
+            return
+        reply_to = body.get("reply_to")
+        if reply_to is not None and not isinstance(reply_to, str):
+            self._error(400, "The message that one answers is not shaped right.")
+            return
+        # The player's position in the output, when the page
+        # knows one (0.27, fix 11): a bare "why did you cut
+        # that?" answers about the cut nearest it. Anything
+        # that is not a plain number is dropped, never trusted.
+        playhead_s = body.get("playhead_s")
+        if isinstance(playhead_s, bool) or not isinstance(
+            playhead_s, (int, float)
+        ):
+            playhead_s = None
+        elif playhead_s < 0:
+            playhead_s = None
+        try:
+            result = _chat_send(
+                self.config, text, moment, queue,
+                reply_to=reply_to, playhead_s=playhead_s,
+            )
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        except Exception as exc:
+            _log_raw_error("editor message", exc)
+            self._error(400, "That message could not be settled just now.")
+            return
+        view = _thread_view(self.config)
+        payload = {"ok": True, **result, "thread": view, **view}
+        # The entry the send just made, in its page shape (claims
+        # timed fresh from the words).
+        if result.get("entry") and isinstance(result["entry"], dict):
+            for view in payload["entries"]:
+                if view.get("id") == result["entry"].get("id"):
+                    payload["entry"] = view
+                    break
+        self._send_json(200, payload)
 
     def _post_signin(self) -> None:
         body = self._read_json_body()
@@ -9425,6 +19619,10 @@ class _Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self._error(404, JOB_INCOMPLETE_MESSAGE)
             return
+        # The final sweep (0.27.3) settles what the direction
+        # run settled, before the review rebuilds and the
+        # checkpoint commits.
+        _run_final_sweep(self.config)
         try:
             _regenerate_after_review(self.config)
             after_review = True
@@ -9479,6 +19677,7 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             self._error(400, "request body must be a JSON object")
             return
+        before_span_keys = _edit_span_keys(self.config)
         checkpoints.begin(self.config)
         try:
             result = _run_front_door(self.config, body)
@@ -9511,6 +19710,24 @@ class _Handler(BaseHTTPRequestHandler):
                 after_review = False
         checkpoints.commit(self.config, "Front door run")
         result["after_review"] = after_review
+        try:
+            lines = []
+            if result.get("length_recap"):
+                lines.append(str(result["length_recap"]))
+            if result.get("recap"):
+                lines.append(str(result["recap"]))
+            lines.extend(result.get("lines") or [])
+            lines.extend(result.get("mode_lines") or [])
+            lines.extend(result.get("cost_lines") or [])
+            _append_run_summary_thread(
+                self.config,
+                lines,
+                _claims_for_spans(
+                    _new_edit_spans(self.config, before_span_keys)
+                ),
+            )
+        except Exception:
+            pass
         self._send_json(200, result)
 
     def _post_edit_note(self) -> None:
@@ -9721,28 +19938,37 @@ class _Handler(BaseHTTPRequestHandler):
             return
         note = body.get("note")
         note = note.strip() if isinstance(note, str) else ""
-        entries = _load_grades(self.config)
-        entry = next(
-            (
-                e
-                for e in entries
-                if entry_id
-                and (
-                    e.get("id") == entry_id
-                    or e.get("record_id") == entry_id
-                )
-            ),
-            None,
-        )
-        if entry is None:
-            self._error(
-                400,
-                "That change could not be found, so your answer "
-                "was not saved.",
+        with _GRADES_LOCK:
+            entries = _load_grades(self.config)
+            entry = next(
+                (
+                    e
+                    for e in entries
+                    if entry_id
+                    and (
+                        e.get("id") == entry_id
+                        or e.get("record_id") == entry_id
+                    )
+                ),
+                None,
             )
-            return
-        entry["why"] = {"choice": choice, "note": note}
-        _save_grades(self.config, entries)
+            if entry is None:
+                self._error(
+                    400,
+                    "That change could not be found, so your answer "
+                    "was not saved.",
+                )
+                return
+            entry["why"] = {"choice": choice, "note": note}
+            _save_grades(self.config, entries)
+        try:
+            _settle_thread_entry(
+                self.config,
+                {"kind": "why", "entry_id": entry_id, "status": "open"},
+                {"status": "settled", "decision": choice},
+            )
+        except Exception:
+            pass
         self._send_json(200, {"ok": True, "entry_id": entry_id})
 
     def _post_grades(self) -> None:
@@ -9766,12 +19992,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, "entries must be a list of graded changes")
             return
         raw = _enrich_retake_grades(self.config, raw)
-        entries = creator_rules.merge_grade_entries(
-            _load_grades(self.config), raw
-        )
-        checkpoints.begin(self.config)
-        _save_grades(self.config, entries)
-        checkpoints.commit(self.config, "Grades saved")
+        with _GRADES_LOCK:
+            entries = creator_rules.merge_grade_entries(
+                _load_grades(self.config), raw
+            )
+            checkpoints.begin(self.config)
+            _save_grades(self.config, entries)
+            checkpoints.commit(self.config, "Grades saved")
         # A worked or partly grade on a job a direction run already
         # finished is the other moment a teaching rule turns tested.
         _refresh_teaching_tested(self.config)
@@ -9788,8 +20015,108 @@ class _Handler(BaseHTTPRequestHandler):
         return {
             "ok": True,
             "saved_rules": _saved_rules_view(self.config),
+            "inspiration": _inspiration_view(self.config),
             "suggestions": _rule_suggestions(self.config),
         }
+
+    def _post_inspiration_save(self) -> None:
+        """Save style teachings as Inspiration, apart from the rules.
+
+        Only ever on a yes, and only for suggestions the teaching
+        run marked as a style (kind "style"). A style teaches the
+        surface only, never the creator's retake judgment, so these
+        statements land in the Inspiration store at the creator
+        level, not in the creator's own rules.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        keys = body.get("pattern_keys")
+        if not isinstance(keys, list):
+            self._error(400, "pattern_keys must be a list")
+            return
+        offered = {
+            s["pattern_key"]: s for s in _rule_suggestions(self.config)
+        }
+        entries = _load_inspiration(self.config)
+        have = {entry.get("pattern_key") for entry in entries}
+        saved = 0
+        for key in keys:
+            suggestion = offered.get(str(key))
+            if (
+                suggestion is None
+                or suggestion.get("kind") != "style"
+                or key in have
+            ):
+                continue
+            entries.append(
+                {
+                    "pattern_key": key,
+                    "statement": suggestion.get("statement"),
+                    "saved_at": _utc_now(),
+                    "style": str(body.get("style") or "")
+                    or _current_style(self.config),
+                }
+            )
+            have.add(key)
+            saved += 1
+        if saved:
+            _save_inspiration(self.config, entries)
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "saved": saved,
+                "inspiration": _inspiration_view(self.config),
+            },
+        )
+
+    def _post_rule_custom(self) -> None:
+        """Save a rule the creator wrote themselves, in plain words.
+
+        The save tap is the yes; nothing is stored before it. The
+        rule is a statement like any other, so the passes that read
+        rule statements read this one too.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        statement = str(body.get("statement") or "").strip()
+        if not statement:
+            self._error(400, "Write the rule first, in plain words.")
+            return
+        if len(statement) > 300:
+            self._error(
+                400,
+                "That is long for one rule. Keep it to a sentence or two.",
+            )
+            return
+        key = (
+            "custom-"
+            + hashlib.sha1(statement.encode("utf-8")).hexdigest()[:12]
+        )
+        suggestion = {
+            "pattern_key": key,
+            "statement": statement,
+            "rule_class": "small",
+            "support_count": 0,
+            "explicit": True,
+            "source": "creator",
+        }
+        store = _rules_store(self.config)
+        rule = creator_rules.save_rule(store, suggestion)
+        rule["style"] = str(body.get("style") or "") or _current_style(self.config)
+        checkpoints.begin(self.config)
+        _save_rules_store(self.config, store)
+        checkpoints.commit(self.config, "Creator's own rule saved")
+        response = self._rules_state_response()
+        response["rule"] = {
+            "rule_id": rule.get("rule_id"),
+            "statement": rule.get("statement"),
+        }
+        self._send_json(200, response)
 
     def _post_rule_save(self) -> None:
         """Save one offered pattern as a rule. Only ever on a yes."""
@@ -9811,9 +20138,55 @@ class _Handler(BaseHTTPRequestHandler):
             return
         store = _rules_store(self.config)
         rule = creator_rules.save_rule(store, suggestion)
+        rule["style"] = str(body.get("style") or "") or _current_style(self.config)
         checkpoints.begin(self.config)
         _save_rules_store(self.config, store)
         checkpoints.commit(self.config, "Rule saved")
+        try:
+            proposal_open = any(
+                entry.get("kind") == "rule_proposal"
+                and entry.get("pattern_key") == pattern_key
+                and entry.get("status") == "open"
+                for entry in _load_thread(self.config)
+            )
+            if proposal_open:
+                # A save that answers a verdict's proposal
+                # (source (c)) settles the proposal and says
+                # what was learned, in one line.
+                _settle_thread_entry(
+                    self.config,
+                    {
+                        "kind": "rule_proposal",
+                        "pattern_key": pattern_key,
+                        "status": "open",
+                    },
+                    {"status": "settled", "decision": "saved"},
+                )
+                _append_thread(
+                    self.config,
+                    {
+                        "kind": "rule",
+                        "status": "settled",
+                        "text": (
+                            "Thanks. Learned: "
+                            + str(rule.get("statement") or "")
+                        ),
+                    },
+                )
+            else:
+                _append_thread(
+                    self.config,
+                    {
+                        "kind": "rule",
+                        "status": "settled",
+                        "text": (
+                            "Saved as one of your rules: "
+                            + str(rule.get("statement") or "")
+                        ),
+                    },
+                )
+        except Exception:
+            pass
         response = self._rules_state_response()
         response["rule"] = {
             "rule_id": rule.get("rule_id"),
@@ -9849,6 +20222,18 @@ class _Handler(BaseHTTPRequestHandler):
             teaching.remove_draft(
                 self.config.session_dir, pattern_key[len("teach:"):]
             )
+        try:
+            _settle_thread_entry(
+                self.config,
+                {
+                    "kind": "rule_proposal",
+                    "pattern_key": pattern_key,
+                    "status": "open",
+                },
+                {"status": "settled", "decision": "passed"},
+            )
+        except Exception:
+            pass
         checkpoints.begin(self.config)
         _save_rules_store(self.config, store)
         checkpoints.commit(self.config, "Rule suggestion passed over")
@@ -9870,6 +20255,119 @@ class _Handler(BaseHTTPRequestHandler):
         _save_rules_store(self.config, store)
         checkpoints.commit(self.config, "Rule removed")
         self._send_json(200, self._rules_state_response())
+
+    def _post_rule_edit(self) -> None:
+        """Change a saved rule's own words, in place (Message 2R).
+
+        A thin route: no existing endpoint could edit a rule's
+        statement; remove-and-re-add would lose its examples and
+        its place. The edit is the creator's yes, like the save.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        rule_id = str(body.get("rule_id") or "")
+        statement = str(body.get("statement") or "").strip()
+        if not statement:
+            self._error(400, "Write the rule first, in plain words.")
+            return
+        if len(statement) > 300:
+            self._error(
+                400,
+                "That is long for one rule. Keep it to a sentence or two.",
+            )
+            return
+        store = _rules_store(self.config)
+        target = next(
+            (r for r in store.get("rules", []) if r.get("rule_id") == rule_id),
+            None,
+        )
+        if target is None:
+            self._error(400, "That rule is not saved.")
+            return
+        checkpoints.begin(self.config)
+        target["statement"] = statement
+        _save_rules_store(self.config, store)
+        checkpoints.commit(self.config, "Rule changed")
+        self._send_json(200, self._rules_state_response())
+
+    def _post_styles(self) -> None:
+        """Select, create, or rename a named style (Message 2R, P4).
+
+        A thin route: styles are new in this round and no existing
+        endpoint can hold them. Styles live in the launch home
+        beside the rules store; renaming retags the rules and
+        Inspiration that carried the old name, so nothing is lost.
+        """
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        action = str(body.get("action") or "")
+        data = _load_styles(self.config)
+        names = [entry["name"] for entry in data["styles"]]
+        if action == "select":
+            name = str(body.get("name") or "").strip()
+            if name not in names:
+                self._error(400, "That style is not saved.")
+                return
+            data["current"] = name
+            _save_styles(self.config, data)
+        elif action == "new":
+            name = str(body.get("name") or "").strip()
+            if not name:
+                self._error(400, "Give the style a name first.")
+                return
+            if len(name) > 60:
+                self._error(400, "That name is long for a style. Keep it short.")
+                return
+            if name in names:
+                self._error(400, "A style with that name is already saved.")
+                return
+            data["styles"].append({"name": name})
+            data["current"] = name
+            _save_styles(self.config, data)
+        elif action == "rename":
+            name = str(body.get("name") or "").strip()
+            new_name = str(body.get("new_name") or "").strip()
+            if name not in names:
+                self._error(400, "That style is not saved.")
+                return
+            if not new_name or len(new_name) > 60:
+                self._error(400, "Give the style a name first.")
+                return
+            if new_name in names and new_name != name:
+                self._error(400, "A style with that name is already saved.")
+                return
+            for entry in data["styles"]:
+                if entry["name"] == name:
+                    entry["name"] = new_name
+            if data["current"] == name:
+                data["current"] = new_name
+            _save_styles(self.config, data)
+            store = _rules_store(self.config)
+            touched = False
+            for rule in store.get("rules", []):
+                if str(rule.get("style") or DEFAULT_STYLE_NAME) == name:
+                    rule["style"] = new_name
+                    touched = True
+            if touched:
+                _save_rules_store(self.config, store)
+            entries = _load_inspiration(self.config)
+            touched = False
+            for entry in entries:
+                if str(entry.get("style") or DEFAULT_STYLE_NAME) == name:
+                    entry["style"] = new_name
+                    touched = True
+            if touched:
+                _save_inspiration(self.config, entries)
+        else:
+            self._error(400, "Unknown style action.")
+            return
+        self._send_json(
+            200, {"ok": True, "styles": _styles_view(self.config)}
+        )
 
     def _post_word_toggle(self) -> None:
         body = self._read_json_body()
@@ -9957,6 +20455,233 @@ class _Handler(BaseHTTPRequestHandler):
                     ],
                 },
             )
+            return
+        self._send_json(200, result)
+
+    def _post_join_pause(self) -> None:
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        after = body.get("after_word_index")
+        before = body.get("before_word_index")
+        target = body.get("target_total_s")
+        if (
+            not isinstance(after, int) or isinstance(after, bool)
+            or not isinstance(before, int) or isinstance(before, bool)
+            or not isinstance(target, (int, float))
+            or isinstance(target, bool)
+        ):
+            self._error(
+                400,
+                "after_word_index and before_word_index must be "
+                "whole numbers and target_total_s a number",
+            )
+            return
+        try:
+            result = _apply_join_pause(
+                self.config, after, before, float(target)
+            )
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        except (SchemaError, ApplyError) as exc:
+            _log_raw_error("join-pause", exc)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "changed": False,
+                    "message": (
+                        "The safety check would not change that "
+                        "pause, so it was left as it is."
+                    ),
+                },
+            )
+            return
+        self._send_json(200, result)
+
+    def _post_gap_erase(self) -> None:
+        body = self._read_json_body()
+        if body is None:
+            self._error(400, "request body must be a JSON object")
+            return
+        after = body.get("after_word_index")
+        before = body.get("before_word_index")
+        if (
+            not isinstance(after, int) or isinstance(after, bool)
+            or not isinstance(before, int) or isinstance(before, bool)
+        ):
+            self._error(
+                400,
+                "after_word_index and before_word_index must be "
+                "whole numbers",
+            )
+            return
+        try:
+            result = _apply_gap_erase(self.config, after, before)
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        except (SchemaError, ApplyError) as exc:
+            _log_raw_error("gap-erase", exc)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "changed": False,
+                    "message": (
+                        "The safety check would not change that "
+                        "gap, so it was left as it is."
+                    ),
+                },
+            )
+            return
+        self._send_json(200, result)
+
+    # -- manual timeline edits (v0.16) --------------------------------
+
+    @staticmethod
+    def _whole(value) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    @staticmethod
+    def _number(value) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    def _post_timeline_split(self) -> None:
+        body = self._read_json_body()
+        if body is None or not self._number(body.get("output_time")):
+            self._error(400, "output_time must be a number")
+            return
+        try:
+            result = _timeline_split(self.config, float(body["output_time"]))
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        self._send_json(200, result)
+
+    def _post_timeline_trim(self) -> None:
+        body = self._read_json_body()
+        if (
+            body is None
+            or not self._whole(body.get("range_index"))
+            or body.get("edge") not in ("start", "end")
+            or not self._number(body.get("new_time"))
+        ):
+            self._error(
+                400,
+                "range_index must be a whole number, edge must be "
+                "'start' or 'end', and new_time must be a number",
+            )
+            return
+        try:
+            result = _timeline_trim(
+                self.config,
+                body["range_index"],
+                body["edge"],
+                float(body["new_time"]),
+            )
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        self._send_json(200, result)
+
+    def _post_timeline_delete(self) -> None:
+        body = self._read_json_body()
+        if body is None or not self._whole(body.get("range_index")):
+            self._error(400, "range_index must be a whole number")
+            return
+        try:
+            result = _timeline_delete(self.config, body["range_index"])
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        self._send_json(200, result)
+
+    def _post_timeline_move(self) -> None:
+        body = self._read_json_body()
+        if (
+            body is None
+            or not self._whole(body.get("from_index"))
+            or not self._whole(body.get("to_index"))
+        ):
+            self._error(
+                400, "from_index and to_index must be whole numbers"
+            )
+            return
+        try:
+            result = _timeline_move(
+                self.config, body["from_index"], body["to_index"]
+            )
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        self._send_json(200, result)
+
+    def _post_timeline_paste(self) -> None:
+        body = self._read_json_body()
+        if (
+            body is None
+            or not isinstance(body.get("spans"), list)
+            or not self._number(body.get("output_time"))
+        ):
+            self._error(
+                400, "spans must be a list and output_time a number"
+            )
+            return
+        try:
+            result = _timeline_paste(
+                self.config, body["spans"], float(body["output_time"])
+            )
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        self._send_json(200, result)
+
+    def _post_timeline_fade(self) -> None:
+        body = self._read_json_body()
+        if (
+            body is None
+            or not self._whole(body.get("join_index"))
+            or not (
+                body.get("fade_s") is None or self._number(body.get("fade_s"))
+            )
+        ):
+            self._error(
+                400, "join_index must be a whole number and fade_s "
+                "a number or null",
+            )
+            return
+        try:
+            result = _timeline_fade(
+                self.config,
+                body["join_index"],
+                None if body.get("fade_s") is None else float(body["fade_s"]),
+            )
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        self._send_json(200, result)
+
+    def _post_join_call(self) -> None:
+        body = self._read_json_body()
+        if (
+            body is None
+            or not self._whole(body.get("join_index"))
+            or body.get("move") not in ("smooth", "keep")
+        ):
+            self._error(
+                400, "join_index must be a whole number and move "
+                "must be smooth or keep",
+            )
+            return
+        try:
+            result = _join_call(
+                self.config, body["join_index"], body["move"]
+            )
+        except ValueError as exc:
+            self._error(400, str(exc))
             return
         self._send_json(200, result)
 
@@ -10140,11 +20865,17 @@ class _Handler(BaseHTTPRequestHandler):
                 else:
                     runs.append((index, index + 1))
             if len(runs) == 1:
-                entry_id = _record_restore_grade(
-                    self.config, runs[0][0], runs[0][1], "history-undo"
+                # The grade record still lands (the undo is a
+                # signal like any other), but the editor never
+                # questions him after an Undo (item 11): no why
+                # question on the thread, no prompt in the reply.
+                _record_restore_grade(
+                    self.config,
+                    runs[0][0],
+                    runs[0][1],
+                    "history-undo",
+                    ask_why=False,
                 )
-                if entry_id:
-                    response["why_prompt"] = {"entry_id": entry_id}
         _refresh_after_review(self.config)
         self._send_json(200, response)
 
@@ -10171,39 +20902,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "Say whether ums and uhs stay hidden in the captions.",
             )
             return
-        config = self.config
-        _save_captions_hide_fillers(config, on)
-        session = config.session_dir
-        captions_path = session / clean_captions.CAPTIONS_FILENAME
-        available = captions_path.is_file()
-        if config.is_intake_job:
-            marker_path = config.job_dir / intake_build.INTAKE_MARKER
-            try:
-                marker = _load_json(str(marker_path))
-            except (OSError, ValueError):
-                marker = {}
-            marker["captions"] = on
-            try:
-                _write_json(marker_path, marker)
-            except OSError:
-                _log_raw_error("captions marker", OSError("write failed"))
-            if on:
-                try:
-                    clean_captions.build_captions(
-                        config.job_dir,
-                        _effective_cuts(config),
-                        captions_path,
-                    )
-                    available = captions_path.is_file()
-                except Exception as exc:
-                    _log_raw_error("clean captions", exc)
-                    available = captions_path.is_file()
-            else:
-                captions_path.unlink(missing_ok=True)
-                available = False
-        elif not on:
-            captions_path.unlink(missing_ok=True)
-            available = False
+        available = _set_captions_hide_fillers(self.config, on)
         self._send_json(
             200,
             {
@@ -10213,14 +20912,16 @@ class _Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def _post_render_intake(self) -> None:
+    def _post_render_intake(self, aspect=None) -> None:
         """Render an intake job with the app's own splice.
 
         Runner jobs render through the runner's script, untouched.
         A job born here from a raw video has no runner pieces, so
         its kept ranges are spliced from the dropped video itself.
         Clean captions are rebuilt from the same plan when the job
-        was born with them on.
+        was born with them on. ``aspect`` is the framing choice
+        ("9:16" or "16:9"); absent, the recorded framing is kept
+        and nothing is cropped.
         """
         session = self.config.session_dir
         revised = session / "revised_cuts.json"
@@ -10258,10 +20959,18 @@ class _Handler(BaseHTTPRequestHandler):
             has_audio = bool(media.get("has_audio", True))
         except speech.TranscribeError:
             has_audio = True
-        failure = _render_session_splice(self.config, source, has_audio)
+        crop, framing_note = _render_framing(
+            self.config, source, aspect
+        )
+        failure = _render_session_splice(
+            self.config, source, has_audio, crop=crop
+        )
         if failure is not None:
             self._send_json(200, {"ok": False, "error": failure})
             return
+        crossfade_on = bool(
+            _front_door_settings(self.config).get("crossfade", True)
+        )
         marker_path = self.config.job_dir / intake_build.INTAKE_MARKER
         try:
             marker = _load_json(str(marker_path))
@@ -10280,13 +20989,19 @@ class _Handler(BaseHTTPRequestHandler):
             _regenerate_after_review(self.config)
         except Exception:
             pass
-        self._send_json(200, {"ok": True})
+        response = {"ok": True, "crossfade": crossfade_on}
+        if framing_note is not None:
+            response["framing"] = framing_note
+        self._send_json(200, response)
 
     def _post_render(self) -> None:
         body = self._read_json_body()
         if body is None:
             self._error(400, "request body must be a JSON object")
             return
+        aspect = body.get("aspect")
+        if aspect not in framing.ASPECTS:
+            aspect = None
         missing = self.config.render_missing()
         if missing:
             self._send_json(
@@ -10299,7 +21014,7 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
         if self.config.is_intake_job:
-            self._post_render_intake()
+            self._post_render_intake(aspect)
             return
         session = self.config.session_dir
         revised = session / "revised_cuts.json"
@@ -10378,7 +21093,18 @@ class _Handler(BaseHTTPRequestHandler):
             _regenerate_after_review(self.config)
         except Exception:
             pass
-        self._send_json(200, {"ok": True})
+        response = {"ok": True}
+        if aspect is not None:
+            # A shape was asked for, but this job renders through
+            # the runner's script, which the app does not change:
+            # say plainly that the recorded framing was kept.
+            response["framing"] = (
+                f"Framing: the {aspect} shape applies to videos "
+                "the app took in itself. This job renders "
+                "through the runner, so the recorded framing "
+                "was kept."
+            )
+        self._send_json(200, response)
 
 
 # ---------------------------------------------------------------------------
@@ -10428,6 +21154,7 @@ def create_server(
     httpd.intake_root = config.session_dir / INTAKE_DIR_NAME  # type: ignore[attr-defined]
     httpd.intakes = {}  # type: ignore[attr-defined]
     httpd.first_edit_jobs = {}  # type: ignore[attr-defined]
+    httpd.finish_exports = {}  # type: ignore[attr-defined]
     return httpd
 
 
