@@ -318,32 +318,38 @@ class EstimateExplanationTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Item 15: elapsed, percent, and remaining from actual progress
+# Item 15: elapsed from actual progress. v0.17 (feedback items 1
+# and 18): no percent and no time remaining at any stage, ever.
+# The pace-based figures read "100% done" at the last stage
+# while it was still working and cycled 9s/11s while nothing
+# finished; Justin called it untrue and lost trust. The step
+# and the measured elapsed time are the whole report now.
 # ---------------------------------------------------------------------------
 
 
 class ProgressFieldsTests(unittest.TestCase):
-    def test_first_stage_has_elapsed_but_no_remaining_yet(self):
+    def test_first_stage_has_elapsed_but_no_percent_no_remaining(self):
         fields = webapp._progress_fields(100.0, 100.0, 1, 8, now=100.0)
         self.assertEqual(fields["elapsed_s"], 0.0)
-        self.assertEqual(fields["percent"], 13)
-        # No stage has finished, so there is no honest pace yet.
+        self.assertIsNone(fields["percent"])
         self.assertIsNone(fields["remaining_s"])
 
-    def test_remaining_comes_from_the_finished_stages_pace(self):
-        # At stage 3 of 8, 20 seconds in: two stages finished at
-        # 10 seconds each, six stage-lengths remain (the current
-        # one plus five), so about 60 seconds to go.
+    def test_mid_run_still_no_percent_no_remaining(self):
         fields = webapp._progress_fields(100.0, 118.0, 3, 8, now=120.0)
         self.assertEqual(fields["elapsed_s"], 20.0)
         self.assertEqual(fields["stage_elapsed_s"], 2.0)
-        self.assertEqual(fields["percent"], 38)
-        self.assertEqual(fields["remaining_s"], 60.0)
+        self.assertIsNone(fields["percent"])
+        self.assertIsNone(fields["remaining_s"])
 
-    def test_last_stage_leaves_one_stage_length(self):
+    def test_last_stage_is_not_reported_as_done_while_it_works(self):
+        # The 0.15 review's stuck state, exactly: the last stage
+        # on screen as "Step 9 of 9, 100% done, about 0:11 to
+        # go" while it was still running. The fields must carry
+        # nothing that can render that way.
         fields = webapp._progress_fields(0.0, 60.0, 8, 8, now=70.0)
-        self.assertEqual(fields["percent"], 100)
-        self.assertEqual(fields["remaining_s"], 10.0)
+        self.assertIsNone(fields["percent"])
+        self.assertIsNone(fields["remaining_s"])
+        self.assertEqual(fields["elapsed_s"], 70.0)
 
     def test_no_total_no_percent_no_remaining(self):
         fields = webapp._progress_fields(0.0, 0.0, 0, 0, now=5.0)
@@ -353,21 +359,21 @@ class ProgressFieldsTests(unittest.TestCase):
 
     def test_progress_line_words(self):
         fields = {
-            "stage_index": 3, "stage_total": 8, "percent": 38,
-            "elapsed_s": 20.0, "remaining_s": 60.0,
+            "stage_index": 3, "stage_total": 8, "percent": None,
+            "elapsed_s": 20.0, "remaining_s": None,
         }
         self.assertEqual(
             webapp._progress_line(fields),
-            "Step 3 of 8 · 38% · 0:20 so far · about 1:00 to go",
+            "Step 3 of 8 · 0:20 so far",
         )
 
     def test_progress_line_omits_what_it_cannot_honestly_say(self):
         fields = {
-            "stage_index": 1, "stage_total": 8, "percent": 13,
+            "stage_index": 1, "stage_total": 8, "percent": None,
             "elapsed_s": 0.0, "remaining_s": None,
         }
         self.assertEqual(
-            webapp._progress_line(fields), "Step 1 of 8 · 13% · 0:00 so far"
+            webapp._progress_line(fields), "Step 1 of 8 · 0:00 so far"
         )
 
     def test_format_clock(self):
@@ -426,10 +432,19 @@ class NewSurfaceContractTests(unittest.TestCase):
             'id="firstEditProgressDetail"',
             "data.estimate.explanation",
             "firstEditProgressDetail",
-            "remaining_s",
             "setInterval(renderFirstEditProgressDetail, 1000)",
         ):
             self.assertIn(needle, template)
+        # v0.17 (feedback items 1 and 18): the page never reads
+        # a remaining-time figure; the server does not send
+        # one, and the detail line shows only the elapsed time.
+        self.assertNotIn("remaining_s", template)
+        detail = template[
+            template.index("function renderFirstEditProgressDetail"):
+            template.index("function renderFirstEditProgressDetail")
+            + 700]
+        self.assertNotIn("to go", detail)
+        self.assertNotIn("%", detail)
 
 
 class EstimateEndpointExplanationTests(unittest.TestCase):

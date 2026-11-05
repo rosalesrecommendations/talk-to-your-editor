@@ -285,7 +285,7 @@ class HalfSizeRearrangeTests(unittest.TestCase):
     def test_two_columns_and_a_tools_band(self):
         split = rule_body(self.medium, "body.job-loaded .review-split")
         self.assertIn(
-            "grid-template-columns: minmax(0, 300px) minmax(0, 1fr)",
+            "grid-template-columns: minmax(260px, 300px) minmax(0, 1fr)",
             split,
         )
         self.assertIn(
@@ -313,7 +313,10 @@ class HalfSizeRearrangeTests(unittest.TestCase):
 
     def test_arrangements_stay_inside_the_same_rows(self):
         for marker in (
-            "body.job-loaded.panels-swapped .review-left",
+            # v0.15 Batch F, item 14b: at this size the swap
+            # trades the transcript and the Editor panel.
+            "body.job-loaded.panels-swapped .review-right",
+            "body.job-loaded.panels-swapped .review-tools",
             "body.job-loaded.video-hidden .review-right",
             "body.job-loaded.transcript-hidden .review-left",
             "body.job-loaded.comments-closed .review-tools",
@@ -328,13 +331,13 @@ class HalfSizeRearrangeTests(unittest.TestCase):
         # squeezed to nothing: tighter card, no help line next
         # to the counts, a compact header and status line.
         self.assertIn(
-            "body.job-loaded #transcriptCard { padding: 14px 16px; }",
+            "body.job-loaded #transcriptCard { padding: 12px 16px; }",
             self.medium,
         )
-        self.assertIn(
-            "body.job-loaded #txClockNote { display: none; }",
-            self.medium,
-        )
+        # Until v0.13 a help line next to the counts hid at
+        # this size; item 7 removed the line from the header
+        # entirely, so the rule retired with it.
+        self.assertNotIn("#txClockNote", self.medium)
         panel = rule_body(
             self.medium, "body.job-loaded #transcriptPanel"
         )

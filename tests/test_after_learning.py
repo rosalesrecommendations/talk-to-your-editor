@@ -182,7 +182,7 @@ class PlainActionReasonTests(unittest.TestCase):
         }
         self.assertEqual(
             self.action_for(op),
-            "Removed the words this note pointed at from the finished edit.",
+            "The record shows the words this note pointed at were removed from the finished edit.",
         )
 
     def test_join_index_reason_falls_back_to_template(self) -> None:
@@ -206,7 +206,7 @@ class PlainActionReasonTests(unittest.TestCase):
         self.assertNotIn("protected_span", action)
         self.assertEqual(
             action,
-            "Removed the words this note pointed at from the finished edit.",
+            "The record shows the words this note pointed at were removed from the finished edit.",
         )
 
     def test_plain_reason_is_shown_without_the_provider_prefix(self) -> None:
@@ -232,7 +232,7 @@ class PlainActionReasonTests(unittest.TestCase):
         self.assertNotIn("mock:", page)
         self.assertNotIn("word 16", page)
         self.assertIn(
-            "Removed the words this note pointed at", page
+            "The record shows the words this note pointed at", page
         )
 
 

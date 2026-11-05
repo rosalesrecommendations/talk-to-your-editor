@@ -119,7 +119,7 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(status, 200)
         page = body.decode("utf-8")
         self.assertIn('id="dropArea"', page)
-        self.assertIn("Drop the job folder or a video here", page)
+        self.assertIn("Drop a video or a job folder here", page)
         self.assertIn('id="dropStatus"', page)
 
     # -- a dropped job folder becomes the current job ------------------------

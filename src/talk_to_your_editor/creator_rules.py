@@ -13,9 +13,10 @@ change as "my style" on the review page, that pattern is offered
 right away instead of waiting for the repeat threshold.
 
 This module reads and writes plain JSON dicts. The store lives in
-the session folder (``tye-session/creator_rules.json``), never in the
-job's own files. Learning here is inference over the creator's own
-grades, not model training.
+one creator-level place in the launch home (``creator_rules.json``),
+read and written by every job and by Train with no job loaded, never
+in a job's own files. Learning here is inference over the creator's
+own grades, not model training.
 """
 
 from __future__ import annotations

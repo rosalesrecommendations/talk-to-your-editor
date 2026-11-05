@@ -64,11 +64,13 @@ OVERLAP_FLAG_REASON = (
 # where it pointed, only what happened to the edit.
 PLAIN_ACTION_BY_TYPE = {
     "cut_words": (
-        "Removed the words this note pointed at from the finished edit."
+        "The record shows the words this note pointed at were "
+        "removed from the finished edit."
     ),
     "restore_words": "Restored words that had been cut, as this note asked.",
     "replace_take": (
-        "Swapped the take used here for the other take, as this note asked."
+        "The record shows the take used here was swapped for the "
+        "other take, as this note asked."
     ),
     "set_join_pause": (
         "Changed the pause at this join to the length this note asked for."
@@ -116,6 +118,18 @@ _PLAIN_REASON_SENTENCES = {
         "be made."
     ),
     "word_boundary_split": "That edit would split a word in half.",
+    "your_call_span": (
+        "That part is waiting for your call, so it stays as it is "
+        "until you decide."
+    ),
+    "unique_content": (
+        "That part is said only once in this video, so it stays "
+        "until a person decides."
+    ),
+    "final_saying": (
+        "That is the last line of the video, so it stays until "
+        "a person decides."
+    ),
     "frame_quantization_clips_neighbor": (
         "That edit would clip the word next to it."
     ),
@@ -428,11 +442,19 @@ def verify_operations(
                     flag(f"protected_span:{span['label']} ({span['source']})")
 
         # Negation-bearing spans are flagged in v1, never auto-applied.
-        for start, end, _role in spans:
-            if 0 <= start < end <= total_words and span_has_negation(
-                timeline, start, end
-            ):
-                flag("negation_bearing_span")
+        # A decided retake cut is the one exception: the local
+        # evidence that decided it (a try that stops mid-word, or a
+        # chain of tries at one line with one complete take) has
+        # already settled that these words are a restart of the line
+        # that stays, not a meaning the creator chose between. Every
+        # other check still runs on a decided cut: bounds, protected
+        # spans, special inserts, and conflicts all hold as before.
+        if not op.decided:
+            for start, end, _role in spans:
+                if 0 <= start < end <= total_words and span_has_negation(
+                    timeline, start, end
+                ):
+                    flag("negation_bearing_span")
 
         # Word boundaries: operations are word-index based, so the only way
         # to split a word is a quantized edge landing strictly inside some
@@ -544,7 +566,16 @@ def verify_operations(
         if tier3:
             req = 3
         effective = max(op.risk_tier, req)
-        if status == "apply" and req >= 2 and not op.wonder_reviewed:
+        # A decided retake cut needs no second review: the local
+        # evidence named in the operation's ``decided`` field is the
+        # review. This settles only the second-review hold; a cut
+        # held for any other reason above stays held.
+        if (
+            status == "apply"
+            and req >= 2
+            and not op.wonder_reviewed
+            and not op.decided
+        ):
             flag("wonder_review_required")
             effective = max(effective, req)
         if status == "flag":

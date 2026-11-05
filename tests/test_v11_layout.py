@@ -81,7 +81,12 @@ class TeachCardCollapseTests(unittest.TestCase):
     def test_header_button_with_one_clear_name(self):
         head = between('<header class="app-head">', "</header>")
         self.assertIn('id="teachToggle"', head)
-        self.assertIn(">Teach the app<", head)
+        # v0.13: an icon button; the one clear name rides the
+        # tooltip and aria-label.
+        # v0.17 (feedback item 10): the one clear name is
+        # "Train the editor" now.
+        self.assertIn('title="Train the editor"', head)
+        self.assertIn('aria-label="Train the editor"', head)
         self.assertIn('aria-expanded="false"', head)
         self.assertIn('aria-controls="teachFull"', head)
         # No slim bar sits in the card, or anywhere else.
@@ -100,7 +105,10 @@ class TeachCardCollapseTests(unittest.TestCase):
 
     def test_card_collapses_only_once_a_job_is_loaded(self):
         # The whole card hides only in review, and shows there
-        # only once opened; the front door (no job) is untouched.
+        # only once opened. (v0.15 Batch C, item 1 supersedes the
+        # front-door half: the first page keeps only the app name
+        # and the one bring-in job, so the card is also hidden
+        # with no job loaded, behind its header door.)
         self.assertIn(
             "body.job-loaded #teachCard { display: none; }",
             TEMPLATE,
@@ -110,7 +118,7 @@ class TeachCardCollapseTests(unittest.TestCase):
             "{ display: block;",
             TEMPLATE,
         )
-        self.assertNotIn("body.no-job #teachCard", TEMPLATE)
+        self.assertIn("body.no-job #teachCard { display: none; }", TEMPLATE)
         self.assertNotIn("body.no-job #teachSlimBar", TEMPLATE)
 
     def test_one_click_opens_and_closes_the_teaching_choices(self):
@@ -121,8 +129,12 @@ class TeachCardCollapseTests(unittest.TestCase):
         self.assertIn('teachCardEl.classList.toggle("expanded")', TEMPLATE)
         self.assertIn(
             'teachToggle.setAttribute("aria-expanded"', TEMPLATE)
-        self.assertIn('"Hide teaching choices"', TEMPLATE)
-        self.assertIn('"Teach the app"', TEMPLATE)
+        self.assertIn('"Train the editor"', TEMPLATE)
+        # v0.15, item 29: the toggle no longer swaps its label
+        # for text ("Hide teaching choices"); the icon button
+        # and its tooltip carry the name in both states.
+        self.assertNotIn('"Hide teaching choices"', TEMPLATE)
+        self.assertNotIn("teachToggle.textContent", TEMPLATE)
 
 
 # ---------------------------------------------------------------------------
@@ -134,21 +146,49 @@ class PanelWidthLimitTests(unittest.TestCase):
     def test_stored_widths_are_read_through_clamps(self):
         # v0.11.1, item 2: the video column's widest is no
         # longer the fixed 420px. It is the window width minus
-        # 620px (the other panels at their smallest, the
+        # 616px (the other panels at their smallest, the
         # dividers, and the page padding), and the comments
         # clamp reads the video column so the two can never add
         # up past the window. See test_v111_resize for the full
         # pinning of the new behavior.
         self.assertIn(
-            "--col-a: clamp(280px, var(--pane-a, 350px), "
-            "calc(100vw - 620px));",
+            "--col-a: clamp(260px, var(--pane-a, 410px), "
+            "calc(100vw - 616px));",
             TEMPLATE,
         )
         self.assertIn(
             "--col-c: clamp(260px, var(--pane-c, 310px), "
-            "min(360px, calc(100vw - var(--col-a) - 360px)));",
+            "min(360px, calc(100vw - var(--col-a) - 356px)));",
             TEMPLATE,
         )
+
+    def test_video_column_starts_wider_in_v012(self):
+        # v0.12, final build change: with nothing saved, the
+        # video column starts at 410px instead of 350px (380px
+        # instead of 320px in the 1100px to 1400px range), taken
+        # from the transcript's flexible share. Every place the
+        # starting width is written agrees, so the first paint
+        # and the settled layout are the same width.
+        self.assertEqual(TEMPLATE.count("var(--pane-a, 410px)"), 2)
+        self.assertNotIn("var(--pane-a, 350px)", TEMPLATE)
+        self.assertIn("--pane-a: 380px; --pane-c: 280px;", TEMPLATE)
+        self.assertNotIn("--pane-a: 320px;", TEMPLATE)
+        # At the new starting widths the three columns still
+        # fit, with the transcript at or above its 320px
+        # smallest: at 1440px it keeps 684px, and at 1100px
+        # (the range's own starting widths) it keeps 404px.
+        # (v0.14 Batch C: the divider columns are 8px each,
+        # 16 in all, so the transcript gains the 4px.)
+        self.assertEqual(1440 - 20 - 410 - 310 - 16, 684)
+        self.assertEqual(1100 - 20 - 380 - 280 - 16, 404)
+        # A saved width is not migrated to the new starting
+        # width: nothing in the script writes 410px (or 380px)
+        # over a stored width, and Reset still only clears the
+        # stored and inline widths back to these defaults.
+        self.assertNotIn('setProperty("--pane-a", "410px")', TEMPLATE)
+        self.assertNotIn('setProperty("--pane-a", "380px")', TEMPLATE)
+        self.assertIn(
+            'split.style.removeProperty("--pane-a")', TEMPLATE)
 
     def test_no_column_reads_a_stored_width_without_a_clamp(self):
         # Every grid use of the stored --pane-a / --pane-c values
@@ -175,14 +215,17 @@ class PanelWidthLimitTests(unittest.TestCase):
 
     def test_every_arrangement_uses_the_limited_columns(self):
         for marker in (
-            "grid-template-columns: var(--col-a) 10px "
-            "minmax(320px, 1fr) 10px var(--col-c);",
-            "grid-template-columns: minmax(320px, 1fr) 10px "
-            "var(--col-a) 10px var(--col-c);",
-            "grid-template-columns: var(--col-a) 10px "
+            "grid-template-columns: var(--col-a) 8px "
+            "minmax(340px, 1fr) 8px var(--col-c);",
+            # v0.15 Batch F, item 14b: the swapped row is the
+            # video, then the Editor's column, then the
+            # transcript's flexible column.
+            "grid-template-columns: var(--col-a) 8px "
+            "var(--col-c) 8px minmax(340px, 1fr);",
+            "grid-template-columns: var(--col-a) 8px "
             "minmax(0, 1fr) 0 0;",
-            "grid-template-columns: minmax(0, 1fr) 10px var(--col-c);",
-            "grid-template-columns: var(--col-a) 10px minmax(0, 1fr);",
+            "grid-template-columns: minmax(0, 1fr) 8px var(--col-c);",
+            "grid-template-columns: var(--col-a) 8px minmax(0, 1fr);",
             "grid-template-columns: var(--col-a) 0 0;",
         ):
             self.assertIn(marker, TEMPLATE)
@@ -193,19 +236,19 @@ class PanelWidthLimitTests(unittest.TestCase):
             "body.job-loaded.video-hidden .review-split",
             "body.job-loaded.video-hidden .review-right",
         )
-        self.assertIn("minmax(0, 1fr) 10px var(--col-c)", video_hidden)
+        self.assertIn("minmax(0, 1fr) 8px var(--col-c)", video_hidden)
         # Transcript hidden: the comments panel takes it instead.
         transcript_hidden = between(
             "body.job-loaded.transcript-hidden .review-split",
             "body.job-loaded.transcript-hidden .review-left",
         )
-        self.assertIn("var(--col-a) 10px minmax(0, 1fr)", transcript_hidden)
+        self.assertIn("var(--col-a) 8px minmax(0, 1fr)", transcript_hidden)
         # Comments closed: the transcript takes the flexible column.
         closed = between(
             "body.comments-closed .review-split",
             "body.comments-closed #toolsPane",
         )
-        self.assertIn("var(--col-a) 10px minmax(0, 1fr) 0 0", closed)
+        self.assertIn("var(--col-a) 8px minmax(0, 1fr) 0 0", closed)
 
 
 class VideoShapeTests(unittest.TestCase):
@@ -248,7 +291,7 @@ class VideoShapeTests(unittest.TestCase):
 class WholeWorkspaceFitTests(unittest.TestCase):
     def test_three_columns_fit_a_1440_window_at_their_widest(self):
         # v0.11.1, item 2: the video column's widest is derived
-        # from the window (window width minus 620px, parsed out
+        # from the window (window width minus 616px, parsed out
         # of the clamp), and at that widest the comments column
         # is read at its smallest (260px) because its own clamp
         # subtracts the video column. The fit question is now:
@@ -259,11 +302,11 @@ class WholeWorkspaceFitTests(unittest.TestCase):
         reserve = int(
             re.search(r"calc\(100vw - (\d+)px\)", a_line.group(1)).group(1)
         )
-        a_min, a_default = 280, 350
+        a_min, a_default = 280, 410
         c_min, c_default = 260, 310
         transcript_min = 320
-        self.assertIn("minmax(320px, 1fr)", TEMPLATE)
-        dividers = 10 + 10
+        self.assertIn("minmax(340px, 1fr)", TEMPLATE)
+        dividers = 8 + 8
         page_padding = 10 + 10
         # The reserve is exactly the pieces that must survive at
         # the video's widest.
@@ -351,7 +394,7 @@ class ServedFrontDoorTests(unittest.TestCase):
             page = resp.read().decode("utf-8")
         for marker in (
             'id="bringInBtn"', 'id="teachToggle"', 'id="teachFull"',
-            "--col-a: clamp(280px", "--col-c: clamp(260px",
+            "--col-a: clamp(260px", "--col-c: clamp(260px",
             "body.job-loaded #vid",
         ):
             self.assertIn(marker, page)

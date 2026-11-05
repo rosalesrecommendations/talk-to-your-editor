@@ -131,9 +131,11 @@ class BandMarkupTests(unittest.TestCase):
         self.assertIn("width: 100%", band_css)
         # The height is clamped: a stored or dragged height can
         # never push the band past the window or below its
-        # minimum. The minimum (156px) is the smallest height at
-        # which every row inside the band still fits inside it.
-        self.assertIn("clamp(156px, var(--band-height, 176px), 360px)",
+        # minimum. The minimum (180px since v0.12, when the
+        # overview strip row joined the band; it was 156px) is
+        # the smallest height at which every row inside the
+        # band still fits inside it.
+        self.assertIn("clamp(180px, var(--band-height, 200px), 360px)",
                       band_css)
 
     def test_band_rows_follow_the_model_order(self):
@@ -215,12 +217,16 @@ class BandTransportTests(unittest.TestCase):
         left = between('class="review-left"', 'id="paneDivider"')
         for marker in (
             'id="vid"',
-            'id="swapSidesBtn"',
             'id="videoExpandBtn"',
             'id="videoHideBtn"',
             'id="makeEditCard"',
         ):
             self.assertIn(marker, left)
+        # v0.15 Batch F, item 14b: the swap control moved to
+        # the transcript head (it trades the transcript and
+        # Editor sides), so it is not the video column's own
+        # control any more.
+        self.assertNotIn('id="swapSidesBtn"', left)
         # No hole where the strip was: nothing in the column waits
         # on the timeline or the transport any more.
         self.assertNotIn('id="tlbar"', left)
@@ -244,9 +250,13 @@ class BandHeightTests(unittest.TestCase):
             'tlBandHandle.addEventListener("pointerdown"', TEMPLATE)
         self.assertIn("function setBandHeight(px)", TEMPLATE)
         # The same limits in the drag and in the band CSS.
-        self.assertIn("Math.min(360, Math.max(156, Math.round(px)))",
+        # (v0.12: the minimum and the default rose by the new
+        # overview row's height, 156px to 180px and 176px to
+        # 200px; the superseding checks are in test_v12_timeline,
+        # BandMinimumTests.)
+        self.assertIn("Math.min(360, Math.max(180, Math.round(px)))",
                       TEMPLATE)
-        self.assertIn("clamp(156px, var(--band-height, 176px), 360px)",
+        self.assertIn("clamp(180px, var(--band-height, 200px), 360px)",
                       TEMPLATE)
         self.assertIn('bandEl.style.setProperty("--band-height"',
                       TEMPLATE)
@@ -495,16 +505,26 @@ class RowBandFitTests(unittest.TestCase):
             "function setRowHeight(px)", "function wireRowDivider()"))
         self.assertIn("fitRowBand();", between(
             "function wireRowDivider()", "// -- stage timeline marks"))
+        # v0.15 Batch I: the resize pass first re-measures
+        # whether the quick actions take a line of their own
+        # (syncBandGrowth), then fits with that growth.
         self.assertIn('window.addEventListener("resize", '
-                      'function () { fitRowBand(); });', TEMPLATE)
+                      'function () { syncBandGrowth(); '
+                      'fitRowBand(); });', TEMPLATE)
 
     def test_band_yields_to_its_minimum_before_the_row_yields(self):
         fit = between("function fitRowBand()",
                       "function applyLayout()")
         band_cut = fit.index("band -= cut;")
-        row_cut = fit.index("splitH = Math.max(320, budget - band);")
+        # v0.15 Batch I: the row cut also leaves room for the
+        # band's wrapped-line growth (grown), planned by the
+        # same fit; the order is unchanged.
+        row_cut = fit.index(
+            "splitH = Math.max(320, budget - band - grown);")
         self.assertLess(band_cut, row_cut)
-        self.assertIn("band - 156", fit)
+        # v0.12: the floor the band yields to is its new 180px
+        # minimum (the overview row's height added to 156px).
+        self.assertIn("band - 180", fit)
         # The remembered heights are never rewritten: the fit
         # writes the applied values to the style properties and
         # keeps the wanted height in its own variable.
@@ -520,7 +540,7 @@ class RowBandFitTests(unittest.TestCase):
         # flexes down to a thin strip at the minimum instead of
         # spilling below the band's own box.
         self.assertIn(
-            "height: clamp(156px, var(--band-height, 176px), "
+            "height: clamp(180px, var(--band-height, 200px), "
             "360px);", TEMPLATE)
         self.assertIn(
             ".tl-wave-row { position: relative; flex: 1 1 auto; "

@@ -294,12 +294,29 @@ class StrictHttpTests(unittest.TestCase):
         summary = data["retakes"]
         self.assertFalse(summary["strict"])
         # The sure duplicate is still cut; the borderline pair is
-        # left as a flag for the creator's call, as before.
+        # still left as a flag at the pass level, as before.
         self.assertEqual(summary["applied"], 1)
         self.assertEqual(summary["flagged"], 1)
         self.assertEqual(summary["unsure"], 0)
+        # Changed on purpose in v0.15 (Batch A, item 22): the front
+        # door runs in the Cleanest cut mode, where the flagged
+        # pair's detected repeat no longer waits in gold — it is
+        # struck at gold-record time, so the near-duplicate's
+        # repeated words come out too. (In tailor mode they would
+        # all stay, as before.)
+        # Changed again on purpose in 0.25.0 (Justin's 0.24 Mac
+        # test, finding 2): the strike now takes the WHOLE earlier
+        # take, all nine words. The v0.15 count kept the last word
+        # ("today", the one the keeper says differently) because
+        # the span was narrowed to the exact repeated runs; that
+        # narrowing is what spliced his real takes, so the
+        # differing word goes with its take.
+        self.assertEqual(summary["auto_struck_count"], 1)
         status, job = self.call("/api/job")
-        self.assertEqual(job["words_kept"], TOTAL_WORDS - DUPE_WIDTH)
+        self.assertEqual(
+            job["words_kept"],
+            TOTAL_WORDS - DUPE_WIDTH - NEAR_WIDTH,
+        )
 
     def test_template_shows_unsure_cuts_and_the_note(self):
         status, page = self.call("/")

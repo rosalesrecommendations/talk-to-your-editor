@@ -37,9 +37,9 @@ _STATUS_LABELS = {
     "rejected": "Rejected",
 }
 _OPERATION_ACTION_TEMPLATES = {
-    "cut_words": "Removed the words this note pointed at from the finished edit.",
+    "cut_words": "The record shows the words this note pointed at were removed from the finished edit.",
     "restore_words": "Restored words that had been cut, as this note asked.",
-    "replace_take": "Swapped the take used here for the other take, as this note asked.",
+    "replace_take": "The record shows the take used here was swapped for the other take, as this note asked.",
     "set_join_pause": "Changed the pause at this join to the length this note asked for.",
     "flag_for_review": "No change was made. A person needs to decide this one.",
 }
@@ -141,13 +141,29 @@ def _clean_reason(value: Any) -> Optional[str]:
     return text
 
 
+# Action wording stored by runs before 0.27 (fix 11): the bare
+# fragments read as if the assistant had performed the cut, so
+# wherever a stored value is shown it is re-voiced as what the
+# record shows. The templates above carry the new wording for
+# anything written from now on.
+_LEGACY_ACTION_WORDING = {
+    "Removed the words this note pointed at from the finished edit.":
+        "The record shows the words this note pointed at were "
+        "removed from the finished edit.",
+    "Swapped the take used here for the other take, as this note asked.":
+        "The record shows the take used here was swapped for the "
+        "other take, as this note asked.",
+}
+
+
 def _plain_action(op: Optional[dict], status: str) -> str:
     """Plain-language description of what happened for one comment."""
     if op is not None:
         for key in ("plain_action", "action_taken", "summary", "action"):
             value = op.get(key)
             if value and str(value).strip():
-                return str(value).strip()
+                text = str(value).strip()
+                return _LEGACY_ACTION_WORDING.get(text, text)
         cleaned = _clean_reason(op.get("reason"))
         if cleaned:
             return cleaned

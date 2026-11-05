@@ -202,16 +202,27 @@ class PageTextTests(unittest.TestCase):
         self.assertIn("var PAUSE_DOT_STEP_S = 0.3;", block)
         self.assertIn("var PAUSE_DOT_MAX = 30;", block)
 
-    def test_pause_runs_are_plain_spans_with_no_word_data(self):
+    def test_pause_runs_carry_the_gap_not_a_word(self):
+        # v0.15 Batch G (item 24) supersedes the v0.11 "plain
+        # spans with no data" contract: the dots are the gap
+        # pick surface now. They carry the gap's own
+        # boundaries (the words around it and the silence
+        # between), never a word's own data (no dataset.index,
+        # no .tw class), so word logic still cannot mistake
+        # a dot run for a word.
         start = self.html.index('pauseEl.className = "tpause"')
-        chunk = self.html[max(0, start - 700):start + 700]
-        # The builder sets a class, the dot text, and a hidden
-        # flag for screen readers; it never sets word data, so
-        # no word logic can pick a dot run up as a word.
-        self.assertNotIn("pauseEl.dataset", chunk)
-        self.assertIn('pauseEl.setAttribute("aria-hidden", "true")', chunk)
+        chunk = self.html[max(0, start - 700):start + 900]
+        self.assertIn("pauseEl.dataset.afterIndex = w.index", chunk)
+        self.assertIn("pauseEl.dataset.beforeIndex = nextEntry.index",
+                      chunk)
+        self.assertIn("pauseEl.dataset.gapStart = w.end", chunk)
+        self.assertIn("pauseEl.dataset.gapEnd = nextEntry.start", chunk)
+        self.assertNotIn("pauseEl.dataset.index", chunk)
+        self.assertNotIn(
+            'pauseEl.setAttribute("aria-hidden", "true")', chunk)
         self.assertIn("pauseEl.textContent = pauseDotText(pauseSeconds)",
                       chunk)
+        self.assertIn("Double-click to pick this gap.", chunk)
         # The dots are measured from the entry timings, between
         # this word and the next one, at paragraph breaks too
         # (the code runs before the next paragraph is started).
@@ -232,11 +243,18 @@ class PageTextTests(unittest.TestCase):
         # A long run wraps inside the paragraph instead of
         # pushing the line wider than the panel.
         self.assertIn("overflow-wrap: anywhere", body)
-        self.assertNotIn("cursor: pointer", body)
+        # v0.15 Batch G (item 24): the dots can be picked, so
+        # they take the pointer cursor (they were inert marks
+        # before this round).
+        self.assertIn("cursor: pointer", body)
 
     def test_cut_words_stay_struck_and_dimmed_in_place(self):
+        # v0.15 Batch H (item 25) supersedes the dimming step:
+        # 0.38 measured contrast 3.3:1 against the panel, too
+        # close to the background to read; the ladder's low
+        # rung is now 0.62 (6.6:1). The strike is unchanged.
         self.assertIn(
-            ".tw-cut { text-decoration: line-through; opacity: 0.38; }",
+            ".tw-cut { text-decoration: line-through; opacity: 0.62; }",
             self.html)
         self.assertIn('span.className = "tw tw-" + w.status', self.html)
 
@@ -383,6 +401,11 @@ eval(html.slice(pBegin, pEnd));
 
 var transcriptEl = new El("p");
 var transcriptPanel = null;
+// v0.15 Batch G (item 24): the render consults the picked
+// gap for the dots' picked look, and refreshes the gap bar
+// at the end; both are stubbed here (no gap picked).
+var pickedGap = null;
+function updateGapBar() {}
 var followOn = false;
 var transcriptEntries = [];
 var currentWordIndex = null;
@@ -410,7 +433,7 @@ function openFlagPopup() {}
 function openGoldPopup() {}
 function updateTxCounts() {}
 function refreshFixSelection() {}
-function updateTxActionStrip() {}
+function updateSelBar() {}
 function updateChangeButtons() {}
 
 const rBegin = html.indexOf("function renderTranscript(words)");
@@ -548,15 +571,23 @@ class RenderedParagraphTests(IsolatedHomeCase):
                 closing.append((runs[-1]["after"], runs[-1]["count"]))
         self.assertEqual(closing, [(2, 4), (4, 10), (14, 4)])
 
-    def test_dot_runs_carry_no_word_data(self):
+    def test_dot_runs_carry_the_gap_they_measure(self):
+        # v0.15 Batch G (item 24): a run carries the gap's
+        # boundaries (never a word's own index key), is no
+        # longer hidden from screen readers, and its title
+        # offers the double-click pick.
         pauses = [t for t in self.all_tokens(self.render())
                   if t["kind"] == "pause"]
         self.assertTrue(pauses)
         for run in pauses:
-            self.assertEqual(run["datasetKeys"], [])
-            self.assertEqual(run["ariaHidden"], "true")
+            self.assertEqual(
+                run["datasetKeys"],
+                ["afterIndex", "beforeIndex", "gapStart", "gapEnd"])
+            self.assertIsNone(run["ariaHidden"])
             self.assertEqual(set(run["chars"]), {"·"})
             self.assertIn("Dead air", run["title"])
+            self.assertIn("Double-click to pick this gap.",
+                          run["title"])
 
     def test_cut_take_renders_struck_in_place_and_the_keeper_reads_clean(self):
         tokens = [t for t in self.all_tokens(self.render())
@@ -586,7 +617,7 @@ class RenderedParagraphTests(IsolatedHomeCase):
         held = [t for t in markers if t["cls"] == "theld"]
         self.assertEqual(len(held), 1)
         self.assertEqual(held[0]["after"], 9)
-        self.assertIn("Recommended to remove", held[0]["label"])
+        self.assertIn("Your call", held[0]["label"])
         words = [t for t in tokens if t["kind"] == "word"]
         for token in words:
             if token["index"] in CUT_WORDS:

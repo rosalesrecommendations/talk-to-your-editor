@@ -157,7 +157,8 @@ class NoJobServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         page = body.decode("utf-8")
         self.assertIn('id="dropArea"', page)
-        self.assertIn("Drop the job folder or a video here", page)
+        # v0.15 Batch C, item 3: the drop line is one short line.
+        self.assertIn("Drop a video or a job folder here", page)
         self.assertIn("No job is loaded yet", page)
         self.assertIn('id="loadSample"', page)
         self.assertIn("Try the built-in sample", page)

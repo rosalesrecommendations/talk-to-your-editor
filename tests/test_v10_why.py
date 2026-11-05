@@ -401,7 +401,11 @@ class GoldLeaveWhyTests(WhyServerCase):
 
 
 class UndoWhyTests(WhyServerCase):
-    def test_undo_bringing_back_one_cut_offers_the_prompt(self):
+    def test_undo_records_the_grade_but_asks_nothing(self):
+        # Item 11 (2026-11-04): the editor never questions him
+        # after an Undo. The grade record still lands (the undo
+        # is a signal), but no prompt rides the response and no
+        # why question lands on the thread.
         status, cut = self.post_json(
             "/api/word-range",
             {"word_start": 3, "word_end": 6, "action": "cut"},
@@ -410,27 +414,16 @@ class UndoWhyTests(WhyServerCase):
         status, result = self.post_json("/api/history/undo", {})
         self.assertEqual(status, 200, result)
         self.assertTrue(result["ok"])
-        self.assertEqual(
-            result["why_prompt"], {"entry_id": "restore-grade-3-6"}
-        )
+        self.assertNotIn("why_prompt", result)
         entries = restore_entries(self.config)
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["word_start"], 3)
         self.assertEqual(entries[0]["word_end"], 6)
         self.assertEqual(entries[0]["source"], "history-undo")
-        # And the answer can land on the undo's record too.
-        status, _ = self.post_json(
-            "/api/why",
-            {
-                "entry_id": "restore-grade-3-6",
-                "choice": "say_it",
-                "note": "",
-            },
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(
-            restore_entries(self.config)[0]["why"],
-            {"choice": "say_it", "note": ""},
+        thread = webapp._load_thread(self.config)
+        self.assertFalse(
+            any(e.get("kind") == "why" for e in thread),
+            thread,
         )
 
     def test_undo_bringing_back_two_cuts_writes_none(self):
@@ -568,75 +561,104 @@ class WhyPageTests(unittest.TestCase):
         return html[begin:end]
 
     def test_the_card_is_near_the_transcript_status_and_hidden(self):
+        # v0.15 Batch E1: the prompt is an entry in the Editor
+        # thread now; there is no why card anywhere on the
+        # page, and the thread's why entry carries the same
+        # answers, Other, Skip, and the note row with its mic
+        # and Save.
         html = page_html()
-        status_at = html.index('id="transcriptStatus"')
-        card_at = html.index('id="whyCard"')
-        self.assertLess(status_at, card_at)
-        self.assertLess(card_at, html.index('id="fixWordsBtn"'))
-        card = html[card_at:html.index('id="fixWordsBtn"', card_at)]
-        self.assertIn("hidden", card)
+        self.assertNotIn('id="whyCard"', html)
+        entry = html[html.index("function threadWhyEl(entry)"):
+                     html.index("function threadEntryEl(entry)")]
         for label in (
             "It matters to the story",
             "It sounds better this way",
             "That is how I say it",
             "Other",
             "Skip",
-            "Dictate",
             "Save",
         ):
-            self.assertIn(label, card)
+            self.assertIn(label, entry)
+        self.assertIn('mic.id = "whyDictate";', entry)
+        self.assertIn('note.id = "whyNote";', entry)
 
     def test_the_two_questions_and_their_kinds(self):
         block = self.why_block()
-        self.assertIn("function showWhyPrompt(entryId, kind)", block)
-        self.assertIn('"Why did you put that back?"', block)
-        self.assertIn('"Why are you leaving that in?"', block)
-        self.assertIn('kind === "leave"', block)
+        # v0.14 Batch G (G6): showWhyPrompt gained a third
+        # parameter, the sequence stamp of the action that
+        # raised it; a stamp that no longer matches means the
+        # question was superseded and must not open.
+        self.assertIn("function showWhyPrompt(entryId, kind, seq)", block)
+        # v0.15 Batch E1: the question words themselves are
+        # carried by the thread entry the server writes; the
+        # restore question is the thread renderer's fallback,
+        # and both wordings live in the server's why hook.
+        html = page_html()
+        self.assertIn('"Why did you put that back?"', html)
+        server = (
+            ROOT / "src" / "talk_to_your_editor" / "webapp.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"Why did you put that back?"', server)
+        self.assertIn('"Why are you leaving that in?"', server)
 
     def test_choices_post_at_once_and_other_uses_the_note(self):
         block = self.why_block()
         self.assertIn('postJson("/api/why"', block)
-        self.assertIn('"story"', block)
-        self.assertIn('"sound"', block)
-        self.assertIn('"say_it"', block)
-        self.assertIn('saveWhyChoice("other")', block)
+        self.assertIn("saveWhyChoiceFor(gradeId, choice, note)", block)
+        html = page_html()
+        for choice in ('"story"', '"sound"', '"say_it"'):
+            self.assertIn(choice, html)
+        # Other saves from the thread entry's own note box.
+        self.assertIn(
+            'saveWhyChoiceFor(entry.grade_id, "other", note.value.trim())',
+            html,
+        )
         # The note box is dictated the same way as the others.
         self.assertIn(
             'wireDictation("whyDictate", "whyNote", "whyDictateStatus")',
-            block,
+            html,
         )
 
     def test_skip_hides_and_posts_nothing(self):
-        block = self.why_block()
-        start = block.index("whySkipBtn.addEventListener")
-        handler = block[start:block.index("});", start)]
+        # v0.15 Batch E1: Skip is a pill on the thread entry.
+        html = page_html()
+        start = html.index('skip.addEventListener("click"')
+        handler = html[start:html.index("});", start)]
         self.assertIn("hideWhyPrompt()", handler)
         self.assertNotIn("postJson", handler)
         self.assertNotIn("/api/why", handler)
 
     def test_the_success_handlers_show_the_prompt(self):
+        # v0.14 Batch G (G6): every show call now carries the
+        # sequence stamp its handler took at its start
+        # (beginWhyPrompt), so the four pins below name the
+        # three-argument calls.
         html = page_html()
         # Phrase restore (which also carries a single picked word).
         start = html.index("function runSelectionToggle")
-        body = html[start:html.index("// Backspace / Delete", start)]
+        # v0.15 Batch G: the block after runSelectionToggle is
+        # now the keyboard-editing block (the old "// Backspace
+        # / Delete" comment named the pre-G handler).
+        body = html[start:html.index(
+            "// Keyboard editing (v0.15 Batch G, item 23", start)]
         self.assertIn('action === "restore"', body)
         self.assertIn("data.why_prompt", body)
-        self.assertIn('showWhyPrompt(data.why_prompt.entry_id, "restore")', body)
+        self.assertIn('showWhyPrompt(data.why_prompt.entry_id, "restore", whySeq)', body)
         # The edit card's Bring back.
         start = html.index("function runEditAction")
         body = html[start:html.index("editBringBack.addEventListener", start)]
         self.assertIn('action === "restore"', body)
-        self.assertIn('showWhyPrompt(data.why_prompt.entry_id, "restore")', body)
+        self.assertIn('showWhyPrompt(data.why_prompt.entry_id, "restore", whySeq)', body)
         # A held spot left in.
         start = html.index("function runGoldVerdict")
         body = html[start:html.index("editGoldCut.addEventListener", start)]
         self.assertIn('decision === "leave"', body)
-        self.assertIn('showWhyPrompt(data.why_prompt.entry_id, "leave")', body)
+        self.assertIn('showWhyPrompt(data.why_prompt.entry_id, "leave", whySeq)', body)
         # An undo that brought words back.
         start = html.index("function moveHistory")
         body = html[start:html.index("undoBtn.addEventListener", start)]
         self.assertIn('which === "undo"', body)
-        self.assertIn('showWhyPrompt(data.why_prompt.entry_id, "restore")', body)
+        self.assertIn('showWhyPrompt(data.why_prompt.entry_id, "restore", whySeq)', body)
 
 
 if __name__ == "__main__":

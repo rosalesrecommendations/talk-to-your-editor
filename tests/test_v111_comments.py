@@ -14,11 +14,15 @@ The composer is now built that way:
 - Dictate (#draftDictate) is an icon button with a microphone
   drawn in inline SVG. Its plain name rides along as a title and
   an aria-label: "Dictate".
-- Save (#save) is a round icon button with an up arrow in inline
+- Save (#save) is an icon button with an up arrow in inline
   SVG, still blue, with title and aria-label "Save comment".
-- Comment at current time (#pin) is a small, quiet text button
-  at the header button size, with a small clock icon, no blue
-  fill. It is still one tap to pin at the playhead.
+  v0.14 Batch B: it takes the one icon-button shape, 38x38
+  with radius 10 (it was a 40px round button before).
+- Comment at current time (#pin) is a quiet text button with
+  a small clock icon, no blue fill. v0.14 Batch B: it takes
+  the rail's action tier, 48 tall with a 16px label (it was
+  40 tall at 14px, the old header button size, before). It
+  is still one tap to pin at the playhead.
 - The seconds entry, the format picker, and the keep playing
   switch are still in the card, and the dictation status line
   still sits under the composer row.
@@ -28,7 +32,9 @@ change inside the shared dictation code: the button's starting
 content is now kept as markup and restored as markup, so the
 microphone icon comes back after a recording. For the plain word
 Dictate buttons the markup is only their word, so their behavior
-is unchanged.
+is unchanged. (v0.15 Batch D, item 7: those plain word buttons
+are microphone icon buttons now too, so every dictation button
+restores an icon the same way.)
 
 These tests read the page template the same way the other layout
 tests do. Everything is offline.
@@ -57,11 +63,28 @@ STANDARD = {
     "font-size": "14px",
 }
 
-# The old, bigger page wide button size the three buttons used
-# before this fix.
+# The page wide button size plain buttons size from.
+# v0.14 Batch G (G8): the side padding moved 20px to 22px,
+# the nearest step on the spacing scale {4, 8, 12, 16, 22};
+# 20 sat off the scale on every plain pill button.
 PAGE_WIDE = {
     "min-height": "48px",
-    "padding": "12px 20px",
+    "padding": "12px 22px",
+    "font-size": "16px",
+}
+
+# v0.14 Batch B: the pin button's action tier in the rail —
+# 48 tall with a 16px label (padding unchanged from the old
+# header size it used to share with .topbar-btn).
+# v0.14 Batch G (G2): the side padding moved 14px to 12px,
+# the nearest step on the spacing scale that still leaves
+# the 16px label room on one line (16px leaves less, and
+# the label wrapped to two lines at 54 tall before); the
+# rule also carries white-space: nowrap now, which the
+# exact-48 measurement needs (checked in test_v14_batch_g).
+PIN_ACTION = {
+    "min-height": "48px",
+    "padding": "8px 12px",
     "font-size": "16px",
 }
 
@@ -101,15 +124,20 @@ def sizing(rule: dict) -> dict:
 
 
 def pin_card() -> str:
-    start = TEMPLATE.index('id="pinCard"')
-    end = TEMPLATE.index('id="overallCard"', start)
+    # v0.15 Batch E1: the pin card is gone; the composer is
+    # the Editor panel's input row. This slice is the panel.
+    start = TEMPLATE.index('id="editorPanel"')
+    end = TEMPLATE.index('id="moreCard"', start)
     return TEMPLATE[start:end]
 
 
 class NoBigPillsTests(unittest.TestCase):
     def test_pin_is_not_a_primary_pill(self):
-        tag = button_tag("pin")
+        # v0.15 Batch E1: the pin button is the + attach button
+        # on the input row now, and it is not primary either.
+        tag = button_tag("editorAttachBtn")
         self.assertNotIn("primary", tag)
+        self.assertNotIn('id="pin"', TEMPLATE)
 
     def test_no_button_shows_the_old_pill_words(self):
         # The blue pills carried their words as big button text.
@@ -120,39 +148,48 @@ class NoBigPillsTests(unittest.TestCase):
         self.assertEqual(visible_text(button_tag("draftDictate")), "")
 
     def test_page_wide_button_rule_is_untouched(self):
-        # No other button in the app changes size: the rule every
-        # other plain button sizes from keeps its old values.
+        # The composer fix does not resize other buttons: the
+        # rule every other plain button sizes from keeps the
+        # page-wide values (whose side padding Batch G later
+        # moved to the scale, 20px to 22px; see PAGE_WIDE).
         page_wide = rule_values(r"(?m)^  button")
         self.assertEqual(sizing(page_wide), PAGE_WIDE)
 
 
 class PinControlTests(unittest.TestCase):
-    def test_pin_is_a_compact_text_button_at_the_standard_size(self):
-        tag = button_tag("pin")
-        self.assertIn("comment-action", tag)
-        self.assertEqual(visible_text(tag), "Comment at current time")
-        comment_action = rule_values(r"\.comment-action")
-        self.assertEqual(sizing(comment_action), STANDARD)
-        topbar = rule_values(r"\.topbar-btn")
-        self.assertEqual(sizing(comment_action), sizing(topbar))
+    """The pin control is the + moment attachment now (E1)."""
+
+    def test_pin_is_a_text_button_at_the_action_tier(self):
+        # The attach button takes the input row's icon tier:
+        # the composer-btn shape, 38x38 radius 10.
+        tag = button_tag("editorAttachBtn")
+        self.assertIn("composer-btn", tag)
+        self.assertEqual(visible_text(tag), "")
+        icon_rule = rule_values(r"\.composer-btn")
+        self.assertEqual(icon_rule["width"], "38px")
+        self.assertEqual(icon_rule["height"], "38px")
+        self.assertEqual(icon_rule["border-radius"], "10px")
 
     def test_pin_carries_a_clock_icon_and_plain_words(self):
-        tag = button_tag("pin")
+        tag = button_tag("editorAttachBtn")
         self.assertIn("<svg", tag)
-        self.assertIn('<circle cx="12" cy="12" r="8.5">', tag)
-        self.assertIn('title="Comment at current time"', tag)
-        self.assertIn('aria-label="Comment at current time"', tag)
+        self.assertIn('d="M12 5v14"', tag)
+        self.assertIn('d="M5 12h14"', tag)
+        self.assertIn('title="Pin this moment"', tag)
+        self.assertIn('aria-label="Pin this moment"', tag)
 
 
 class ComposerRowTests(unittest.TestCase):
     def test_input_mic_and_send_share_one_row_in_that_order(self):
+        # v0.15 Batch E1: the row is + attach, box, mic, send.
         card = pin_card()
-        row_start = card.index('class="composer-row"')
+        row_start = card.index('id="editorInputRow"')
         row_end = card.index('id="draftDictateStatus"', row_start)
         row = card[row_start:row_end]
         positions = [
             row.index('id="%s"' % name)
-            for name in ("draft", "draftDictate", "save")
+            for name in ("editorAttachBtn", "draft",
+                         "draftDictate", "save")
         ]
         self.assertEqual(positions, sorted(positions))
 
@@ -164,13 +201,10 @@ class ComposerRowTests(unittest.TestCase):
         self.assertEqual(input_rule["min-width"], "0")
 
     def test_text_box_placeholder_names_the_microphone(self):
+        # v0.15 Batch E1: the box is the chat input; its
+        # placeholder is the Muse reference's one word.
         card = pin_card()
-        self.assertIn(
-            'placeholder="What did you notice here? Type it, or '
-            'tap the microphone to dictate it."',
-            card,
-        )
-        self.assertNotIn("button below", card)
+        self.assertIn('placeholder="Message"', card)
 
 
 class IconButtonTests(unittest.TestCase):
@@ -185,28 +219,31 @@ class IconButtonTests(unittest.TestCase):
                       tag)
         self.assertIn('d="M5.5 11.5a6.5 6.5 0 0 0 13 0"', tag)
 
-    def test_send_button_is_round_blue_with_an_up_arrow(self):
+    def test_send_button_is_square_blue_with_an_up_arrow(self):
         tag = button_tag("save")
         self.assertIn("composer-btn", tag)
         self.assertIn("primary", tag)
-        self.assertIn('title="Save comment"', tag)
-        self.assertIn('aria-label="Save comment"', tag)
+        # v0.15 Batch E1: the send button is named Send, and it
+        # is the one round exception: round, token blue, 38
+        # diameter, shown only when the box holds words.
+        self.assertIn('title="Send"', tag)
+        self.assertIn('aria-label="Send"', tag)
+        self.assertIn("hidden", tag)
         self.assertIn("<svg", tag)
         # An up arrow: the stem and the arrow head.
         self.assertIn('d="M12 19V5"', tag)
         self.assertIn('d="M5.5 11.5L12 5l6.5 6.5"', tag)
-        # Round: the shared icon button is as wide as it is tall,
-        # and the page wide button rule rounds it fully (999px).
         icon_rule = rule_values(r"\.composer-btn")
-        self.assertEqual(icon_rule["width"], "40px")
-        self.assertEqual(icon_rule["height"], "40px")
-        self.assertEqual(icon_rule["min-height"], "40px")
-        self.assertEqual(icon_rule["padding"], "0")
-        page_wide = rule_values(r"(?m)^  button")
-        self.assertEqual(page_wide["border-radius"], "999px")
+        self.assertEqual(icon_rule["width"], "38px")
+        self.assertEqual(icon_rule["height"], "38px")
+        send_rule = rule_values(r"#save\.editor-send")
+        self.assertEqual(send_rule["border-radius"], "999px")
+        self.assertEqual(send_rule["background"], "var(--blue)")
+        self.assertEqual(send_rule["width"], "38px")
+        self.assertEqual(send_rule["height"], "38px")
 
     def test_icons_are_inline_svg_with_no_emoji_or_external_assets(self):
-        for button_id in ("pin", "draftDictate", "save"):
+        for button_id in ("editorAttachBtn", "draftDictate", "save"):
             tag = button_tag(button_id)
             self.assertIn("<svg", tag)
             self.assertIn('aria-hidden="true"', tag)
@@ -214,36 +251,42 @@ class IconButtonTests(unittest.TestCase):
             self.assertNotIn("<img", tag)
 
     def test_recording_words_still_fit_the_mic_button(self):
-        # The dictation code puts words on the button while it
-        # records; the icon button grows into a pill for them.
-        grown = rule_values(r"\.composer-btn\.recording, "
-                            r"\.composer-btn\.processing")
-        self.assertEqual(grown["width"], "auto")
-        self.assertEqual(grown["padding"], "8px 14px")
+        # Through 0.16 the icon button grew into a pill to fit
+        # the recording words. v0.17 (feedback item 19): the
+        # button keeps its shape; the words ride the status
+        # line and a voice level meter sits beside the button.
+        self.assertNotIn(
+            ".composer-btn.recording, .composer-btn.processing",
+            TEMPLATE)
+        self.assertIn(".dictate-meter", TEMPLATE)
+        self.assertIn("Recording ", TEMPLATE)
 
     def test_only_the_composer_buttons_carry_the_icon_class(self):
+        # The input row's three controls carry the class in
+        # markup (attach, mic, send); the thread's why mic is
+        # built with it in code, as part of the same row family.
         carriers = re.findall(
             r'<button[^>]*class="[^"]*composer-btn[^"]*"', TEMPLATE
         )
-        self.assertEqual(len(carriers), 2)
-        for button_id in (
-            "intakeDictate", "fdDictate", "whyDictate",
-            "overallDictate", "saveOverall",
-        ):
+        self.assertEqual(len(carriers), 3)
+        for button_id in ("intakeDictate", "fdDictate"):
             self.assertNotIn("composer-btn", button_tag(button_id))
             self.assertNotIn("comment-action", button_tag(button_id))
 
 
 class StillWiredTests(unittest.TestCase):
     def test_handlers_are_untouched(self):
+        # v0.15 Batch E1: the attach button and the send button
+        # carry the handlers now; send runs the chat send.
         self.assertIn(
-            'document.getElementById("pin").addEventListener("click"',
+            'editorAttachBtn.addEventListener("click"',
             TEMPLATE,
         )
         self.assertIn(
             'document.getElementById("save").addEventListener("click"',
             TEMPLATE,
         )
+        self.assertIn("sendEditorMessage();", TEMPLATE)
         self.assertIn(
             'wireDictation("draftDictate", "draft", '
             '"draftDictateStatus")',
@@ -261,35 +304,46 @@ class StillWiredTests(unittest.TestCase):
         card = pin_card()
         self.assertIn('id="draftDictateStatus"', card)
         self.assertLess(
-            card.index('class="composer-row"'),
+            card.index('id="editorInputRow"'),
             card.index('id="draftDictateStatus"'),
         )
         self.assertLess(
             card.index('id="draftDictateStatus"'),
-            card.index('id="pinNote"'),
+            card.index('id="saveStatus"'),
         )
 
     def test_seconds_picker_and_keep_playing_stay_in_the_card(self):
+        # v0.15 Batch E1: the seconds picker, the scope picker,
+        # and the keep-playing switch left with the pin card;
+        # the attached moment shows as one line over the input
+        # with an x to take it off.
         card = pin_card()
-        self.assertIn('id="manualTs"', card)
-        self.assertIn("or at", card)
-        self.assertIn("seconds", card)
-        self.assertIn('id="scope"', card)
-        for value in ('value="both"', 'value="vertical"',
-                      'value="landscape"'):
-            self.assertIn(value, card)
-        self.assertIn('id="keepPlaying"', card)
-        self.assertIn("Keep playing while I type", card)
+        self.assertNotIn('id="manualTs"', TEMPLATE)
+        self.assertNotIn('id="scope"', TEMPLATE)
+        self.assertNotIn('id="keepPlaying"', TEMPLATE)
+        self.assertIn('id="editorMomentRow"', card)
+        self.assertIn('id="editorMomentText"', card)
+        self.assertIn('id="editorMomentClear"', card)
 
-    def test_other_dictate_buttons_keep_their_word_labels(self):
-        for button_id in ("intakeDictate", "fdDictate", "whyDictate",
-                          "overallDictate"):
-            self.assertEqual(
-                visible_text(button_tag(button_id)), "Dictate")
-        self.assertEqual(
-            visible_text(button_tag("saveOverall")),
-            "Save overall note",
-        )
+    def test_other_dictate_buttons_are_mic_icon_buttons_too(self):
+        # Superseded at v0.15 (Batch D, item 7): the word labels
+        # this test used to pin are exactly what the item
+        # removes. Every dictation button is now the microphone
+        # icon button, its name only in title and aria-label.
+        for button_id in ("intakeDictate", "fdDictate"):
+            tag = button_tag(button_id)
+            self.assertEqual(visible_text(tag), "")
+            self.assertIn("dictate-btn", tag)
+            self.assertIn('title="Dictate"', tag)
+            self.assertIn('aria-label="Dictate"', tag)
+            self.assertIn("<svg", tag)
+        # v0.15 Batch E1: the why mic is built inside the
+        # thread's why entry with the composer's icon class;
+        # the overall box and its buttons are gone entirely.
+        self.assertIn('mic.id = "whyDictate";', TEMPLATE)
+        self.assertIn('mic.className = "composer-btn";', TEMPLATE)
+        self.assertNotIn('id="overallDictate"', TEMPLATE)
+        self.assertNotIn('id="saveOverall"', TEMPLATE)
 
 
 if __name__ == "__main__":

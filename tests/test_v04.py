@@ -169,6 +169,9 @@ class V04Tests(unittest.TestCase):
                 # v0.10: the editing style rides along too;
                 # Justin's way is the default style.
                 "style": "justins-way",
+                # v0.15 Batch I: the crossfade choice rides
+                # along too; smoothing the joins is the default.
+                "crossfade": True,
             },
         )
         self.assertEqual(summary["saved_rules"], [])

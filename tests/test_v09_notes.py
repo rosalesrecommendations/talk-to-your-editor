@@ -235,8 +235,12 @@ class PopoverWiringTests(unittest.TestCase):
         self.assertRegex(
             html, r'<button id="editNoteSave"[^>]*>Save</button>'
         )
+        # v0.15 (Batch D, item 7): the note's dictation button
+        # is the microphone icon button; its name lives in its
+        # title and aria-label, not in a word label.
         self.assertIn(
-            '<button id="editNoteSpeak" type="button">Dictate the note</button>',
+            '<button id="editNoteSpeak" class="dictate-btn" '
+            'type="button" title="Dictate" aria-label="Dictate">',
             html,
         )
 
@@ -273,7 +277,8 @@ class PopoverWiringTests(unittest.TestCase):
             helper.index("anchor.focus();"),
         )
         wiring = segment(
-            html, "function wirePopupAnchor", "// The popover itself"
+            html, "function wirePopupAnchor",
+            "// The popover has no mouseleave close"
         )
         focus = segment(
             wiring, 'addEventListener("focus"', 'addEventListener("click"'
@@ -282,11 +287,18 @@ class PopoverWiringTests(unittest.TestCase):
         self.assertLess(
             focus.index("popupRefocusSuppress"), focus.index("openFn(anchor)")
         )
-        # Escape takes the same safe path.
-        self.assertIn(
-            "refocusAnchorWithoutReopening(anchor);",
-            segment(html, 'e.key === "Escape"', "window.addEventListener"),
+        # Escape takes the same safe path. Since v0.15 (item
+        # 19) the Escape handler lives in the ONE dismissal
+        # owner in the bar's wiring block, not beside the
+        # popover; the close-and-refocus-safely path is the
+        # same code it always ran.
+        owner = segment(
+            html, "// -- ONE dismissal owner",
+            "// The 0.12 one-tap restore",
         )
+        self.assertIn("refocusAnchorWithoutReopening(anchor);",
+                      owner)
+        self.assertIn("closeEditPopup();", owner)
 
 
 class BrowserVoiceTypingRemovedTests(unittest.TestCase):
@@ -296,8 +308,10 @@ class BrowserVoiceTypingRemovedTests(unittest.TestCase):
         self.assertNotIn("editNoteSpeakBrowser", html)
         self.assertNotIn("SpeechRecognition", html)
         self.assertNotIn("voice typing did not work", html)
-        # Dictate the note, the app's own path, is what remains.
-        self.assertIn("Dictate the note", html)
+        # The note pop-up's own dictation button, the app's own
+        # path, is what remains (v0.15, item 7: an icon button,
+        # named in its title and aria-label).
+        self.assertIn('id="editNoteSpeak" class="dictate-btn"', html)
         self.assertIn('wireDictation("editNoteSpeak"', html)
 
 
@@ -326,31 +340,48 @@ class TimelineAndSelectionCommentTests(unittest.TestCase):
         html = page_html()
         self.assertIn('id="tlCommentBtn"', html)
         self.assertIn("Leave a comment here", html)
-        self.assertIn("showTimelineCommentButton(vid.currentTime || 0)", html)
-        self.assertIn("pinDraft(tlCommentTs)", html)
+        # v0.13, item 3 supersedes the floating half of this
+        # test: the button no longer surfaces at the clicked
+        # spot; it is a fixed transport-row button, shown when
+        # a job is loaded, pinning at the playhead's time.
+        self.assertNotIn("showTimelineCommentButton", html)
+        self.assertNotIn("tlCommentTs", html)
+        self.assertIn("tlCommentBtn.hidden = !HAS_JOB;", html)
+        self.assertIn("pinDraft(vid.currentTime || 0);", html)
 
     def test_selection_surfaces_a_note_button_for_those_words(self):
         html = page_html()
-        self.assertIn('id="txCommentBtn"', html)
-        self.assertIn("Leave a note on these words", html)
+        self.assertIn('id="selCommentBtn"', html)
+        # v0.13, item 3 (Descript revision): the bar's Comment
+        # action is an icon button named by its title and
+        # aria-label, and it pins through the one pin path
+        # (pinCommentOnPick).
+        self.assertIn('aria-label="Comment"', html)
         self.assertIn("pinnedWordStart = selStart;", html)
         self.assertIn("pinnedWordEnd = selEnd;", html)
 
     def test_saved_comment_carries_its_word_target(self):
+        # v0.15 Batch E1: the pin is saved by the server from
+        # the moment the send carries; the page still sends
+        # the word target with the moment, and the thread's
+        # pin entry names the words under their moment line.
         html = page_html()
-        self.assertIn("comment.word_start = pinnedWordStart;", html)
-        self.assertIn("comment.word_end = pinnedWordEnd;", html)
-        self.assertIn("comment.word_text = spanTextFor(", html)
-        self.assertIn("On these words:", html)
+        self.assertIn(
+            "word_start: pinnedWordStart, word_end: pinnedWordEnd,",
+            html)
+        self.assertIn("spanTextFor(pinnedWordStart, pinnedWordEnd)", html)
         # ...and a time pin explicitly clears any earlier word pin.
         self.assertIn("pinnedWordStart = null;", html)
 
     def test_pin_a_comment_keeps_working(self):
+        # v0.15 Batch E1: pinning is the + moment attachment
+        # on the one Editor input, and sending saves the pin.
         html = page_html()
-        self.assertIn("<h2>Pin a comment</h2>", html)
-        self.assertIn('id="pin"', html)
-        self.assertIn("Comment at current time", html)
+        self.assertIn('id="editorAttachBtn"', html)
+        self.assertIn("Pin this moment", html)
+        self.assertIn('id="commentsHeadCount"', html)
         self.assertIn('id="save"', html)
+        self.assertIn('"/api/thread/message"', html)
 
 
 # ---------------------------------------------------------------------------

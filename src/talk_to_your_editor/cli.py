@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -41,9 +42,14 @@ def _load_optional(path: Optional[str]) -> Optional[dict]:
 
 def _write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
+    # Write to a sibling temp file and replace, so a reader on
+    # another thread never sees a half-written file (the web app
+    # serves requests on many threads over these same files).
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2)
         handle.write("\n")
+    os.replace(tmp, path)
 
 
 def _print(data) -> None:

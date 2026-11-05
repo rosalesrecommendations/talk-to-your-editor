@@ -666,10 +666,21 @@ class TemplateTests(unittest.TestCase):
             / "src" / "talk_to_your_editor" / "templates" / "test_app.html"
         ).read_text(encoding="utf-8")
         for text in (
-            "Teach the app",
-            "The fast way to teach the app how you edit. This is "
-            "optional. The app also learns over time from your "
-            "edits and your grades.",
+            # v0.17 (feedback items 10 and 12): renamed to Train
+            # the editor and streamlined to one clear path:
+            # whose editing, the finished edit (file or link),
+            # then Learn from this; the raw video and the
+            # screen recording are optional extras.
+            "Train the editor",
+            # v0.20, chunk D: teaching is core, not an
+            # optional extra, so the "This is optional"
+            # framing is gone; the card now says what
+            # teaching does with the learned rules.
+            "Show the editor one finished edit, and it learns "
+            "how you cut. It shows you the rules it learned "
+            "in plain words before anything is saved, and "
+            "its cuts start closer to yours. The editor also "
+            "learns over time from your edits and your grades.",
             "Is this your own editing, or a style you like from "
             "someone else?",
             "My editing",
@@ -680,7 +691,7 @@ class TemplateTests(unittest.TestCase):
             "Or paste a link to a finished video",
             "Listening costs about 4 cents for every 10 minutes "
             "of recording, plus about 5 cents for the read.",
-            "Teach from this",
+            "Learn from this",
             "Not tested yet",
         ):
             self.assertIn(text, page, text)

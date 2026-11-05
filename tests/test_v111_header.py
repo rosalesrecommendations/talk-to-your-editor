@@ -8,8 +8,8 @@ bar. Fixed looks like:
 
 - No bars between the header and the workspace. The workspace
   starts right under the header and gets the recovered height.
-- Bring in another job is a plus (+) button in the header row,
-  named in plain words ("Bring in another job" as its label and
+- Bring in another video is a plus (+) button in the header row,
+  named in plain words ("Bring in another video" as its label and
   its hover text). It opens the same bring-in card the old bar
   button opened; the card itself, with its own test-video
   switch, is unchanged.
@@ -125,7 +125,7 @@ class NoBarsTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Bring in another job: the plus button in the header row
+# Bring in another video: the plus button in the header row
 # ---------------------------------------------------------------------------
 
 
@@ -133,13 +133,16 @@ class BringInButtonTests(unittest.TestCase):
     def test_plus_button_sits_in_the_header_with_its_plain_name(self):
         head = header()
         self.assertIn('id="bringInBtn"', head)
-        self.assertIn('aria-label="Bring in another job"', head)
-        self.assertIn('title="Bring in another job"', head)
+        self.assertIn('aria-label="Bring in another video"', head)
+        self.assertIn('title="Bring in another video"', head)
         self.assertIn('aria-expanded="false"', head)
         self.assertIn('aria-controls="dropFull"', head)
-        # The visible face of the button is a plus sign.
+        # The visible face of the button is a plus sign: in
+        # v0.13 an SVG glyph on an icon button, not a text plus.
         btn = between('id="bringInBtn"', "</button>")
-        self.assertTrue(btn.rstrip().endswith(">+"))
+        self.assertIn("icon-btn", btn)
+        self.assertIn('<path d="M12 5v14"></path>', btn)
+        self.assertIn('<path d="M5 12h14"></path>', btn)
 
     def test_plus_button_is_a_review_only_control(self):
         btn = between('id="bringInBtn"', "</button>")
@@ -151,10 +154,15 @@ class BringInButtonTests(unittest.TestCase):
             TEMPLATE,
         )
         self.assertIn('bringInBtn.addEventListener("click"', TEMPLATE)
-        self.assertIn('dropCardEl.classList.toggle("expanded")', TEMPLATE)
+        # v0.15 Batch C, item 1: the plus button now opens the
+        # intake pop-up over the editor page instead of expanding
+        # the bring-in card in place (superseding check: Batch C
+        # tests in tests/test_v15_batch_c.py).
+        self.assertIn('openIntakePopup();', TEMPLATE)
+        self.assertIn('closeIntakePopup();', TEMPLATE)
         self.assertIn(
             'bringInBtn.setAttribute("aria-expanded"', TEMPLATE)
-        self.assertIn('"Bring in another job"', TEMPLATE)
+        self.assertIn('"Bring in another video"', TEMPLATE)
         self.assertIn('"Hide the bring-in card"', TEMPLATE)
 
     def test_bring_in_card_itself_is_unchanged(self):
@@ -221,7 +229,11 @@ class TeachHeaderButtonTests(unittest.TestCase):
     def test_teach_button_sits_in_the_header(self):
         head = header()
         self.assertIn('id="teachToggle"', head)
-        self.assertIn(">Teach the app<", head)
+        # v0.13: an icon button; the name rides the tooltip
+        # and aria-label. v0.17 (feedback item 10): the name
+        # is Train the editor now.
+        self.assertIn('title="Train the editor"', head)
+        self.assertIn('aria-label="Train the editor"', head)
         self.assertIn('aria-expanded="false"', head)
         self.assertIn('aria-controls="teachFull"', head)
         btn = between('id="teachToggle"', "</button>")
@@ -234,7 +246,11 @@ class TeachHeaderButtonTests(unittest.TestCase):
         )
         self.assertIn('teachCardEl.classList.toggle("expanded")', TEMPLATE)
         self.assertIn('teachToggle.setAttribute("aria-expanded"', TEMPLATE)
-        self.assertIn('"Hide teaching choices"', TEMPLATE)
+        # v0.15, item 29: the toggle no longer writes text into
+        # the icon button ("Teach the app" / "Hide teaching
+        # choices"); the icon and its tooltip carry the name.
+        self.assertNotIn("teachToggle.textContent", TEMPLATE)
+        self.assertNotIn('"Hide teaching choices"', TEMPLATE)
         full = between('id="teachFull"', 'id="novid"')
         for marker in (
             'id="teachRecording"', 'id="teachRaw"', 'id="teachFinished"',
@@ -243,10 +259,12 @@ class TeachHeaderButtonTests(unittest.TestCase):
             self.assertIn(marker, full)
 
     def test_front_door_cards_keep_their_full_shape(self):
-        # No rule hides the bring-in or teach card when no job is
-        # loaded; the front door is untouched.
+        # v0.15 Batch C, item 1: the first page keeps only the app
+        # name and the one bring-in job, so the teach card now
+        # waits behind its header door on the front door too; the
+        # bring-in card keeps its full front door shape.
         self.assertNotIn("body.no-job #dropCard", TEMPLATE)
-        self.assertNotIn("body.no-job #teachCard", TEMPLATE)
+        self.assertIn("body.no-job #teachCard { display: none; }", TEMPLATE)
 
 
 # ---------------------------------------------------------------------------
@@ -299,8 +317,8 @@ class ServedPageTests(unittest.TestCase):
         status, page = self.call("/")
         self.assertEqual(status, 200)
         for marker in (
-            'id="bringInBtn"', 'aria-label="Bring in another job"',
-            'id="teachToggle"', ">Teach the app<",
+            'id="bringInBtn"', 'aria-label="Bring in another video"',
+            'id="teachToggle"', ">Train the editor<",
             'id="jobTestVideo"', 'id="dropTestVideo"', SWITCH_TEXT,
             'id="teachFull"', 'id="dropFull"', 'id="topJobName"',
         ):

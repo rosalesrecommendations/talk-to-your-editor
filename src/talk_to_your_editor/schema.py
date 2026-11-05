@@ -54,7 +54,13 @@ COMMON_FIELDS = {
 }
 
 TYPE_FIELDS = {
-    "cut_words": {"word_start", "word_end"},
+    # A cut_words operation may also carry "decided" ("fragment" or
+    # "chain"), the local retake engine's own decision marker: the
+    # deterministic evidence in retakes.py is the review for that
+    # cut, so the verifier does not hold it for a second review or
+    # for the negation in a restarted line. Only the local engine
+    # sets it; a proposing model never does.
+    "cut_words": {"word_start", "word_end", "decided"},
     "restore_words": {"word_start", "word_end"},
     "replace_take": {
         "cut_word_start",
@@ -106,6 +112,7 @@ class Operation:
     restore_word_end: Optional[int] = None
     join_index: Optional[int] = None
     target_pause_s: Optional[float] = None
+    decided: Optional[str] = None
     extra: dict = field(default_factory=dict, compare=False)
 
     def word_spans(self) -> list[tuple[int, int, str]]:
@@ -141,6 +148,7 @@ class Operation:
             "restore_word_end",
             "join_index",
             "target_pause_s",
+            "decided",
         ):
             value = getattr(self, name)
             if value is not None:
@@ -211,6 +219,10 @@ def _validate_one(raw: Any, index: int) -> tuple[Optional[Operation], list[str]]
     wonder_reviewed = raw.get("wonder_reviewed", False)
     if not isinstance(wonder_reviewed, bool):
         reasons.append("invalid_type:wonder_reviewed")
+
+    if op_type == "cut_words" and "decided" in raw:
+        if raw["decided"] not in ("fragment", "chain"):
+            reasons.append("invalid_type:decided")
 
     if op_type in ("cut_words", "restore_words"):
         for key in ("word_start", "word_end"):

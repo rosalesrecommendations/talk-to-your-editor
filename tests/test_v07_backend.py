@@ -93,6 +93,7 @@ class UsualStoreTests(IsolatedHomeCase):
         # since v0.8.1 (the chosen Spark route rides along too).
         # v0.10: the editing style joined and the breaths choice
         # left in the same version, so the count stays eight.
+        # v0.15 Batch I: the crossfade choice joined; nine.
         settings = {
             "spark_route": "baseten",
             "remove_retakes": False,
@@ -102,6 +103,7 @@ class UsualStoreTests(IsolatedHomeCase):
             "remove_fillers": False,
             "mode": "tailor",
             "style": "keep-it-simple",
+            "crossfade": False,
             "something_else": "not stored",
         }
         usual.save_usual(settings)

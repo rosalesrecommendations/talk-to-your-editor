@@ -44,9 +44,11 @@ from talk_to_your_editor.webapp import WebAppConfig, create_server
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
+# v0.15 Batch C, item 10: the word "style" left the main
+# surfaces; the line now says the pick, not the style.
 STYLE_COPY = (
     "If you pick nothing, this edit uses Justin's way. "
-    "Your own saved rules win over the style when they disagree."
+    "Your own saved rules win over this pick when they disagree."
 )
 
 
@@ -595,7 +597,10 @@ class StyleServerTests(IsolatedHomeCase):
         status, body = self.request("/")
         self.assertEqual(status, 200)
         page = body.decode("utf-8")
-        self.assertIn("Editing style", page)
+        # v0.15 Batch C, item 10: "Editing style" is now the
+        # plain line "Your usual way" with a Change door.
+        self.assertNotIn("Editing style", page)
+        self.assertIn("Your usual way", page)
         self.assertIn("Justin's way", page)
         self.assertIn("Keep it simple", page)
         self.assertIn("Hands off", page)

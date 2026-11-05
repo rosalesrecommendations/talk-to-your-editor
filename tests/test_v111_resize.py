@@ -61,7 +61,7 @@ def between(start_marker: str, end_marker: str) -> str:
 
 def col_a_reserve() -> int:
     """The window reserve in the video column clamp: the
-    620 in calc(100vw - 620px)."""
+    616 in calc(100vw - 616px)."""
     line = re.search(r"--col-a: clamp\(([^;]*)\);", TEMPLATE)
     assert line is not None
     return int(re.search(r"calc\(100vw - (\d+)px\)", line.group(1)).group(1))
@@ -71,12 +71,12 @@ def clamp(value: int, low: int, high: int) -> int:
     return min(high, max(low, value))
 
 
-def column_widths(window: int, stored_a: int = 350, stored_c: int = 310):
+def column_widths(window: int, stored_a: int = 410, stored_c: int = 310):
     """The layout math, replayed from the clamps in the page:
     the effective (video, comments) column widths at one
     window width, for given stored widths."""
     video = clamp(stored_a, 280, window - col_a_reserve())
-    comments_cap = min(360, window - video - 360)
+    comments_cap = min(360, window - video - 356)
     comments = clamp(stored_c, 260, comments_cap)
     return video, comments
 
@@ -125,7 +125,7 @@ class RowDividerMarkupTests(unittest.TestCase):
 
     def test_panels_stay_in_the_first_row(self):
         self.assertIn(
-            "grid-template-rows: minmax(0, 1fr) 10px;", TEMPLATE)
+            "grid-template-rows: minmax(0, 1fr) 8px;", TEMPLATE)
         self.assertIn(".pane-divider { grid-row: 1; }", TEMPLATE)
 
 
@@ -263,7 +263,13 @@ class StoredHeightTests(unittest.TestCase):
         ):
             self.assertIn(marker, body)
         # The Settings line says so in plain words.
+        # v0.15 Batch C, item 11: the run-on sentence that used
+        # to sit beside the button is demoted to this short hint.
         self.assertIn(
+            "Panel sizes go back to how they started.",
+            TEMPLATE,
+        )
+        self.assertNotIn(
             "Put the panel widths, the workspace height, and "
             "the comments panel back the way they started.",
             TEMPLATE,
@@ -278,22 +284,23 @@ class StoredHeightTests(unittest.TestCase):
 class WindowDerivedVideoMaxTests(unittest.TestCase):
     def test_no_fixed_small_clamp_on_the_video_column(self):
         self.assertIn(
-            "--col-a: clamp(280px, var(--pane-a, 350px), "
-            "calc(100vw - 620px));",
+            "--col-a: clamp(260px, var(--pane-a, 410px), "
+            "calc(100vw - 616px));",
             TEMPLATE,
         )
-        self.assertNotIn("var(--pane-a, 350px), 420px)", TEMPLATE)
+        self.assertNotIn("var(--pane-a, 410px), 420px)", TEMPLATE)
         self.assertNotIn("Math.min(420, Math.max(280, px))", TEMPLATE)
 
     def test_reserve_is_the_other_panels_at_their_smallest(self):
-        # 620 = transcript 320 + comments 260 + dividers 20 +
-        # page padding 20.
-        self.assertEqual(col_a_reserve(), 320 + 260 + 20 + 20)
+        # 616 = transcript 320 + comments 260 + dividers 16
+        # (v0.14 Batch C: 8px divider columns) + page
+        # padding 20.
+        self.assertEqual(col_a_reserve(), 320 + 260 + 16 + 20)
 
     def test_comments_clamp_reads_the_video_column(self):
         self.assertIn(
             "--col-c: clamp(260px, var(--pane-c, 310px), "
-            "min(360px, calc(100vw - var(--col-a) - 360px)));",
+            "min(360px, calc(100vw - var(--col-a) - 356px)));",
             TEMPLATE,
         )
 
@@ -308,10 +315,10 @@ class WindowDerivedVideoMaxTests(unittest.TestCase):
 
     def test_video_can_get_big_on_a_full_screen(self):
         video, _comments = column_widths(1920, stored_a=5000)
-        self.assertEqual(video, 1920 - 620)
+        self.assertEqual(video, 1920 - 616)
         self.assertGreater(video, 1000)
         video_1440, _ = column_widths(1440, stored_a=5000)
-        self.assertEqual(video_1440, 820)
+        self.assertEqual(video_1440, 824)
         self.assertGreater(video_1440, 420)
 
     def test_widened_picture_is_capped_by_the_window_not_720(self):
@@ -335,11 +342,11 @@ class FitInvariantTests(unittest.TestCase):
         # comments + dividers + padding never passes the window.
         for window in (1100, 1280, 1440, 1920, 2560):
             for stored_a, stored_c in (
-                (350, 310), (5000, 360), (5000, 5000), (280, 260),
+                (410, 310), (5000, 360), (5000, 5000), (280, 260),
             ):
                 video, comments = column_widths(
                     window, stored_a=stored_a, stored_c=stored_c)
-                total = video + 320 + comments + 20 + 20
+                total = video + 320 + comments + 16 + 20
                 self.assertLessEqual(
                     total, window,
                     (window, stored_a, stored_c, video, comments),
@@ -350,8 +357,8 @@ class FitInvariantTests(unittest.TestCase):
 
     def test_columns_template_and_inside_scrolling_survive(self):
         self.assertIn(
-            "grid-template-columns: var(--col-a) 10px "
-            "minmax(320px, 1fr) 10px var(--col-c);",
+            "grid-template-columns: var(--col-a) 8px "
+            "minmax(340px, 1fr) 8px var(--col-c);",
             TEMPLATE,
         )
         for marker in (
@@ -393,10 +400,11 @@ class FitInvariantTests(unittest.TestCase):
 
     def test_old_buttons_and_sideways_drags_keep_working(self):
         for marker in (
-            'id="swapSidesBtn"', ">Swap sides<",
+            'id="swapSidesBtn"',
+            'title="Swap transcript and Editor sides"',
             'id="videoExpandBtn"', 'id="transcriptExpandBtn"',
-            'id="commentsExpandBtn"', ">Make wider<",
-            'id="videoHideBtn"', ">Hide video<",
+            'id="commentsExpandBtn"', 'title="Make wider"',
+            'id="videoHideBtn"', 'title="Hide video"',
             "function applyLayout()",
             "function toggleExpandedPanel(name)",
             'wirePaneDivider("paneDivider", "--pane-a", '
@@ -443,7 +451,7 @@ class ServedPageTests(unittest.TestCase):
             page = resp.read().decode("utf-8")
         for marker in (
             'id="rowDivider"',
-            "calc(100vw - 620px)",
+            "calc(100vw - 616px)",
             '"tye-pane-height"',
             "function wireRowDivider()",
             "maxVideoPx",

@@ -189,12 +189,34 @@ class DetectorTests(unittest.TestCase):
         self.assertEqual(pairs, [])
 
     def test_negation_pair_is_flag_only(self):
-        line = "I will not give up on this family."
-        tl = timeline_for([FILLER_A, line, line, FILLER_B])
+        # The copies differ by the "not": which one stays flips
+        # the meaning, so the pair is the creator's call.
+        tl = timeline_for(
+            [
+                FILLER_A,
+                "I will not give up on this family.",
+                "I will give up on this family.",
+                FILLER_B,
+            ]
+        )
         pairs = retakes.find_pairs(tl, None)
         self.assertEqual(len(pairs), 1)
         self.assertEqual(pairs[0]["band"], "flag")
         self.assertEqual(retakes.band_a_operations(tl, None, pairs=pairs), [])
+
+    def test_shared_negation_is_a_plain_retake(self):
+        # 0.27, fix 9: a "not" both copies carry (or neither
+        # does) is not a choice. The same negated line said
+        # twice is a plain duplicate retake and is cut.
+        line = "I will not give up on this family."
+        tl = timeline_for([FILLER_A, line, line, FILLER_B])
+        pairs = retakes.find_pairs(tl, None)
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0]["band"], "a")
+        self.assertFalse(pairs[0]["negation"])
+        self.assertEqual(
+            len(retakes.band_a_operations(tl, None, pairs=pairs)), 1
+        )
 
     def test_short_double_is_flag_only(self):
         tl = timeline_for([FILLER_A, "Thank you.", "Thank you.", FILLER_B])

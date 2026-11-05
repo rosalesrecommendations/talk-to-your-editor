@@ -60,6 +60,24 @@ class Timeline:
         self.cuts = cuts
         self.words: list[dict] = transcript.get("words", [])
         self.ranges: list[dict] = cuts.get("kept_ranges", [])
+        # Sound is the source of truth (0.26, fix 1): when the
+        # plan carries each word's measured sound bounds (written
+        # by the smooth pass from the recording itself), word
+        # membership is read from the middle of the word's sound,
+        # never its transcript stamp. Stamps drift 50 to 300 ms,
+        # and a word the stamps place outside a piece can be
+        # plainly audible inside it (and the reverse). Plans
+        # without bounds keep the stamp reading, as before.
+        self._sound_midpoints: Optional[list[float]] = None
+        raw_bounds = cuts.get("word_sound_bounds") or []
+        if len(raw_bounds) == len(self.words):
+            try:
+                self._sound_midpoints = [
+                    (float(pair[0]) + float(pair[1])) / 2.0
+                    for pair in raw_bounds
+                ]
+            except (TypeError, ValueError, IndexError):
+                self._sound_midpoints = None
         self.source_duration = float(
             cuts.get("source_duration_s") or transcript.get("duration") or 0.0
         )
@@ -90,6 +108,8 @@ class Timeline:
     # -- word status -----------------------------------------------------
 
     def _word_midpoint(self, index: int) -> float:
+        if self._sound_midpoints is not None:
+            return self._sound_midpoints[index]
         word = self.words[index]
         return (float(word["start"]) + float(word["end"])) / 2.0
 

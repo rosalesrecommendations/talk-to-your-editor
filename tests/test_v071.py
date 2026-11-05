@@ -135,7 +135,7 @@ class ModeTests(IsolatedHomeCase):
             config, dict(webapp.FRONT_DOOR_DEFAULTS)
         )
         self.assertEqual(
-            lines, ["Your way of working: Cleanest cut."]
+            lines, ["Your way of working: Proactive."]
         )
         settings = dict(webapp.FRONT_DOOR_DEFAULTS)
         settings["mode"] = "tailor"
@@ -143,8 +143,10 @@ class ModeTests(IsolatedHomeCase):
         self.assertEqual(
             lines,
             [
-                "Your way of working: Tailor it with me.",
-                "No spots are marked as recommended to remove.",
+                "Your way of working: Leave more in.",
+                # v0.17 (feedback item 8): no "recommended to
+                # remove" anywhere; the spots wait for his call.
+                "No spots are waiting for your call.",
             ],
         )
 
@@ -258,20 +260,26 @@ class NegationPolicyTests(IsolatedHomeCase):
         # Nothing waits in gold for a settled cut.
         self.assertEqual(webapp._open_gold_spans(self.config), [])
 
-    def test_repeat_goes_gold_in_tailor_mode(self):
+    def test_repeat_settles_as_a_cut_in_tailor_mode_too(self):
+        # Changed on purpose in v0.17 (feedback items 7 and 8):
+        # through 0.16 a detected repeat waited in gold in
+        # tailor mode. Now a repeat settles as a cut in every
+        # way of working, this reviewed direction candidate
+        # included.
         self.settings["mode"] = "tailor"
         summary = self.run_pass(
             REPEATED_LINE, negation_operation(40, 53)
         )
         self.assertEqual(summary["applied"], 0)
         self.assertEqual(summary["negation_applied"], 0)
-        self.assertEqual(self.word_status(40), "kept")
-        gold = webapp._open_gold_spans(self.config)
-        self.assertEqual(len(gold), 1)
-        self.assertEqual(gold[0]["kind"], "negation")
-        self.assertEqual(gold[0]["word_start"], 40)
-        self.assertEqual(gold[0]["word_end"], 53)
-        self.assertIn("negative statement", gold[0]["reason"])
+        self.assertEqual(summary["auto_struck_count"], 1)
+        self.assertEqual(self.word_status(40), "cut")
+        self.assertEqual(self.word_status(52), "cut")
+        self.assertEqual(self.word_status(10), "kept")
+        self.assertEqual(webapp._open_gold_spans(self.config), [])
+        stored = webapp._auto_struck_records(self.config)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["basis"], "duplicate")
 
     def test_unique_span_goes_gold_in_cleanest_mode(self):
         summary = self.run_pass(
@@ -302,15 +310,40 @@ class NegationPolicyTests(IsolatedHomeCase):
         )
         self.assertEqual(entry["negation_policy"], "named")
 
-    def test_unreviewed_negation_cut_goes_gold(self):
+    def test_unreviewed_repeat_cut_is_struck_in_cleanest_mode(self):
+        # Changed on purpose in v0.15 (Batch A, item 22): before,
+        # an unreviewed negation cut went gold even in cleanest
+        # mode, because the negation policy only flips reviewed
+        # cuts. Now a direction candidate whose span duplicates
+        # words that stay settles as an applied cut in cleanest
+        # mode, whatever its soft-hold reason. Since v0.17 the
+        # same candidate settles in tailor mode too (next test).
         summary = self.run_pass(
             REPEATED_LINE, negation_operation(40, 53, reviewed=False)
         )
         self.assertEqual(summary["applied"], 0)
         self.assertEqual(summary["negation_applied"], 0)
-        gold = webapp._open_gold_spans(self.config)
-        self.assertEqual(len(gold), 1)
-        self.assertEqual(gold[0]["kind"], "negation")
+        self.assertEqual(summary["auto_struck_count"], 1)
+        self.assertEqual(self.word_status(40), "cut")
+        self.assertEqual(self.word_status(52), "cut")
+        self.assertEqual(webapp._open_gold_spans(self.config), [])
+        stored = webapp._auto_struck_records(self.config)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["basis"], "duplicate")
+
+    def test_unreviewed_negation_cut_settles_in_tailor_mode_too(self):
+        # Changed on purpose in v0.17 (feedback items 7 and 8),
+        # the tailor twin of the cleanest test above: the same
+        # candidate settles as a cut in tailor mode as well.
+        self.settings["mode"] = "tailor"
+        summary = self.run_pass(
+            REPEATED_LINE, negation_operation(40, 53, reviewed=False)
+        )
+        self.assertEqual(summary["applied"], 0)
+        self.assertEqual(summary["negation_applied"], 0)
+        self.assertEqual(summary["auto_struck_count"], 1)
+        self.assertEqual(self.word_status(40), "cut")
+        self.assertEqual(webapp._open_gold_spans(self.config), [])
 
     def test_duplicate_detection_is_exact(self):
         write_job(self.job, policy_words(REPEATED_LINE))
@@ -340,6 +373,11 @@ class NegationPolicyTests(IsolatedHomeCase):
 FILLER_A = "We are talking about the morning routine again."
 FILLER_B = "It shapes the whole day more than people think."
 NEGATION_LINE = "I will not give up on this family."
+# v0.17 (feedback item 8): the pair that still waits for a
+# call is one whose copies genuinely differ. Identical
+# copies settle as a cut in every mode now, so the waiting
+# fixture pairs the line with its no-"not" twin.
+PLAIN_LINE = "I will give up on this family."
 
 
 def sentence_words(sentences):
@@ -361,22 +399,30 @@ class RetakeGoldTests(IsolatedHomeCase):
         write_job(
             self.job,
             sentence_words(
-                [FILLER_A, NEGATION_LINE, NEGATION_LINE, FILLER_B]
+                [FILLER_A, NEGATION_LINE, PLAIN_LINE, FILLER_B]
             ),
         )
         self.config = WebAppConfig(self.job)
 
     def test_flagged_pair_waits_in_gold(self):
-        webapp._run_retake_pass(self.config, "mock")
+        # The copies differ (one includes a "not"), so the
+        # pair waits in every mode, with the default stated
+        # (v0.17, feedback item 8). Identical copies settle
+        # as a cut instead; covered by
+        # tests/test_v17_retakes.py.
+        webapp._run_retake_pass(self.config, "mock", mode="tailor")
         gold = webapp._open_gold_spans(self.config)
         self.assertEqual(len(gold), 1)
         self.assertEqual(gold[0]["kind"], "retake")
         self.assertEqual(gold[0]["text"], NEGATION_LINE)
-        self.assertEqual(gold[0]["keep_text"], NEGATION_LINE)
-        self.assertIn("not", gold[0]["reason"])
+        self.assertEqual(gold[0]["keep_text"], PLAIN_LINE)
+        self.assertIn("copies say different things",
+                      gold[0]["reason"])
+        self.assertIn("The default is", gold[0]["reason"])
 
     def test_leave_verdict_settles_the_pair(self):
-        webapp._run_retake_pass(self.config, "mock")
+        # The differing pair waits in gold for a verdict.
+        webapp._run_retake_pass(self.config, "mock", mode="tailor")
         gold = webapp._open_gold_spans(self.config)
         result = webapp._gold_verdict(
             self.config, gold[0]["gold_id"], "leave", ""
@@ -391,7 +437,7 @@ class RetakeGoldTests(IsolatedHomeCase):
             next(iter(decisions.values()))["keep_both"]
         )
         # The pair is never proposed again in this job.
-        webapp._run_retake_pass(self.config, "mock")
+        webapp._run_retake_pass(self.config, "mock", mode="tailor")
         self.assertEqual(webapp._open_gold_spans(self.config), [])
 
 
