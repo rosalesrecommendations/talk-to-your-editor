@@ -32,9 +32,10 @@ USUAL_KEYS = (
     "mode",
     "spark_route",
     "style",
+    "crossfade",
 )
 
-_BOOL_KEYS = ("remove_retakes", "cut_silence", "remove_fillers")
+_BOOL_KEYS = ("remove_retakes", "cut_silence", "remove_fillers", "crossfade")
 _KEEP_MODES = ("last", "first", "best")
 _INVOLVEMENT_MODES = ("cleanest", "tailor")
 # Which route Spark-tier model work rides (v0.8.1): the Meta
@@ -59,6 +60,7 @@ _FALLBACKS = {
     "mode": "cleanest",
     "spark_route": "meta",
     "style": "justins-way",
+    "crossfade": True,
 }
 
 USUAL_DIR_NAME = ".talk-to-your-editor"
@@ -129,6 +131,64 @@ def load_usual(defaults: dict) -> dict:
     return result
 
 
+DEFAULT_EDITOR_NAME = "Editor"
+
+
+def load_editor_name() -> str:
+    """The editor's name, as this creator set it (v0.15, Batch E1).
+
+    The name is creator-level, like the usual choices themselves:
+    it lives in the same file, survives across jobs, and defaults
+    to "Editor" when it was never set or does not hold up.
+    """
+    try:
+        payload = json.loads(_usual_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return DEFAULT_EDITOR_NAME
+    if isinstance(payload, dict):
+        name = payload.get("editor_name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()[:60]
+    return DEFAULT_EDITOR_NAME
+
+
+def save_editor_name(name: str) -> str:
+    """Save the editor's name in the usual's file, keeping the rest.
+
+    The usual's own keys are preserved exactly as they stand; only
+    the name changes. Returns the cleaned name that was saved.
+    Never raises on a filesystem problem, like save_usual.
+    """
+    cleaned = str(name or "").strip()[:60] or DEFAULT_EDITOR_NAME
+    path = _usual_path()
+    try:
+        payload: dict = {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                payload = raw
+        except (OSError, ValueError):
+            payload = {}
+        payload["editor_name"] = cleaned
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+        tmp = path.parent / (path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+    return cleaned
+
+
 def save_usual(settings: dict) -> None:
     """Save the usual keys from ``settings``, cleaned.
 
@@ -145,6 +205,16 @@ def save_usual(settings: dict) -> None:
         )
         for key in USUAL_KEYS
     }
+    # The editor's name (v0.15, Batch E1) shares this file; a usual
+    # save must never wipe a name the creator set.
+    try:
+        existing = json.loads(_usual_path().read_text(encoding="utf-8"))
+        if isinstance(existing, dict) and isinstance(
+            existing.get("editor_name"), str
+        ) and existing["editor_name"].strip():
+            cleaned["editor_name"] = existing["editor_name"].strip()[:60]
+    except (OSError, ValueError):
+        pass
     path = _usual_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

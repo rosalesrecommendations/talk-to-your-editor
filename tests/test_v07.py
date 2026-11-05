@@ -157,12 +157,18 @@ class DirectionPassProviderTests(unittest.TestCase):
 
 class TemplateContractTests(unittest.TestCase):
     def test_remove_moment_and_panel_exist(self):
+        # v0.13 item 3: 'id="txActionStrip"' left this list on
+        # purpose. The picked-words strip is deleted outright in
+        # 0.13 (PLAN item 3, criterion S1); its absence is pinned
+        # by the superseding checks in test_v12_bubble.py
+        # (test_the_strip_is_gone_entirely) and
+        # test_v09_transcript.py, not by an existence needle here.
         for needle in ('id="inRetakes"', 'id="inSilence"',
                        'id="inFillers"', 'id="inKeepPills"',
                        'id="fdFillers"',
                        'id="transcriptPanel"', 'id="txFollow"',
-                       'id="txActionStrip"', 'id="txCutBtn"',
-                       'id="txRestoreBtn"', 'role="dialog"',
+                       'id="selBubble"', 'id="selCutBtn"',
+                       'id="selContextBtn"', 'role="dialog"',
                        "Take out the ums and uhs",
                        "Follow the video"):
             self.assertIn(needle, TEMPLATE)
@@ -223,7 +229,9 @@ class NoJobSummaryTests(unittest.TestCase):
              # v0.8.1: the chosen Spark route rides the front door.
              "spark_route",
              # v0.10: the editing style rides the front door too.
-             "style"})
+             "style",
+             # v0.15 Batch I: the crossfade choice rides it too.
+             "crossfade"})
         self.assertEqual(summary["flags"], [])
         self.assertEqual(summary["gold"], [])
 

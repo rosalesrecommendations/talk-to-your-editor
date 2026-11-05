@@ -32,6 +32,7 @@ EDIT_NOTES_FILENAME = "edit_notes.json"
 GRADES_FILENAME = "grades.json"
 CREATOR_RULES_FILENAME = "creator_rules.json"
 RETAKE_PASS_FILENAME = "retake_pass.json"
+FINAL_SWEEP_FILENAME = "final_sweep.json"
 GOLD_FILENAME = "gold.json"
 
 # The session files that together are the state of an edit in
@@ -48,6 +49,7 @@ STATE_FILES = (
     GRADES_FILENAME,
     CREATOR_RULES_FILENAME,
     RETAKE_PASS_FILENAME,
+    FINAL_SWEEP_FILENAME,
     GOLD_FILENAME,
 )
 HISTORY_DIR_NAME = "history"

@@ -159,6 +159,27 @@ _BUFFER_PATTERNS = [
 ]
 
 
+# The words a style ask is made of. A direction remainder built
+# only from these says "edit it the way you edit" and nothing
+# more: the words name the ask itself (edit this, in my style,
+# same as always), never a choice inside the edit. Any word
+# outside this set is content the model should read ("keep the
+# beat after the temperature" keeps "beat" and "temperature").
+_STYLE_ASK_WORDS = {
+    "edit", "cut", "make", "do", "this", "it", "the", "video",
+    "in", "with", "like", "my", "your", "style", "same", "as",
+    "always", "usual", "usually", "way", "please", "for", "me",
+    "a", "an", "of", "to", "just",
+}
+
+
+def _remainder_has_content(remainder: str) -> bool:
+    """True when a direction remainder says anything beyond the
+    style ask itself."""
+    tokens = re.sub(r"[^A-Za-z0-9' ]", " ", remainder.lower()).split()
+    return any(token not in _STYLE_ASK_WORDS for token in tokens)
+
+
 def parse_direction(text: str) -> dict:
     """Map plain direction onto first-edit settings.
 
@@ -213,6 +234,15 @@ def parse_direction(text: str) -> dict:
         flags=re.I,
     ).strip()
     if len(remainder.split()) < 3:
+        remainder = ""
+    elif not _remainder_has_content(remainder):
+        # A remainder that only restates the style ask ("edit
+        # this in my style", "same as always") carries no
+        # direction for the model to read: the style is already
+        # the run's setting, chosen on the card. Reading it back
+        # as direction cost a full direction pass on his Mac run
+        # (0.27.1, P1 item 7), so the pass is skipped entirely
+        # when nothing beyond the style ask was said.
         remainder = ""
     return {
         "overrides": overrides,

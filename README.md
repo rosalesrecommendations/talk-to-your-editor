@@ -1,34 +1,21 @@
 # Talk to Your Editor
 
-A conversational AI editing director for talking-head creators: describe a video fix in plain words, and the program applies the edit and re-renders it for review.
+An editor that learns how you cut, from your own before and after.
 
-You watch the finished edit, pin comments to the moments you want changed ("remove this repeated line", "make the pause here longer", "bring back the first take of that sentence"), and export them as one structured feedback file. Talk to Your Editor reads that file, works out exactly which words each comment points at, asks Muse Spark (and, for risky calls, Muse Wonder) what should change, checks every proposal against a deterministic safety verifier, applies the approved changes to the edit plan, and renders a revised edit. A second review page then shows you, comment by comment, what was done, and your verdict on each change becomes a graded learning record.
+You talk to it like texting a person. It cuts your next video your way, and every finished video teaches it more of your judgment, so the longer you use it, the less you have to fix. Nothing is final until you say so.
 
-## Why
+## The loop
 
-Creators do not think in timelines and cut points. They think in sentences: "that part repeats", "that pause feels long", "use the other take". The gap between that language and a finished edit is where editing time goes. This project closes the gap with a strict contract: the model may only speak a small language of typed edit operations, and deterministic code, not the model, decides what is safe to apply.
+1. **Teach it.** Give it a before and an after, your raw video and your finished edit, by file or by link. A finished video can teach it too.
+2. **It tells you what it noticed.** In plain words: you cut the retakes, you kept the last take, you trim long pauses. Not a list of every cut. It asks before it saves anything.
+3. **It edits your next video your way.** Retakes out, long gaps trimmed, joins placed on the room sound, never mid-word. Likely retakes are cut and shown as spots you can bring back with one tap; genuine judgment calls wait as spots for your review.
+4. **Finish where you want.** Finish inside the app, or export the edit as a timeline file to the program you already use.
 
-## How it works
+## Muse proposes, code decides
 
-1. **Feedback in.** The editing runner's review page exports a feedback JSON file: each comment carries its timestamp on the finished edit, the format it belongs to, and its text.
-2. **Timeline mapping.** Finished-edit timestamps are not source timestamps. The direction layer walks the edit plan's kept ranges in output order and maps each comment back to the source time and the exact transcript word it points at, including comments that land after material was cut.
-3. **Direction.** Muse Spark proposes operations for ordinary comments. Muse Wonder independently reviews anything risky: restores, take swaps, long cuts, opening or closing passages, and low-confidence proposals. Wonder receives the primary evidence plus the Spark proposal as the claim under review.
-4. **Verification.** Deterministic checks run before any change: schema, word boundaries, protected spans, negation guard, frame-grid alignment, overlap and conflict detection, and a cap on how much of the edit one batch may remove. Anything that fails is flagged for the creator with the named reason, never silently applied.
-5. **Application.** Approved operations rewrite the edit plan. The original plan is never modified. Tiny word-free slivers left by a cut are absorbed into the cut and recorded in the audit, the same rule the underlying planner uses.
-6. **After-review.** A fresh page lists every comment exactly once, what was done about it, and a verdict control (worked, partly, did not work) with notes. The exported grades are the learning record.
-7. **Learning.** Repeated graded patterns become candidate rules in a draft creator template. Candidates are always marked unapproved; a person promotes them. This is inference over records, not model training, and the draft says so.
+Muse Spark proposes the changes. Muse Wonder reviews the risky calls: restores, take swaps, long cuts, anything near the opening or closing. Deterministic checks decide what is safe to apply. Anything that fails is flagged for you with the reason, never applied quietly.
 
-## The test app in 0.4: the simple front door
-
-The local test app now opens on the whole workflow in two choices: **Remove retakes** and **Cut silence**, both on by default, with one silence buffer (0.1 seconds to start) and one button. Everything else, format scope and a spoken-direction box, sits behind a single More choices fold. Comment times are treated as estimates and resolved to the nearest words within a few seconds. The transcript itself explains every removal: a dot on each removed span opens the plain reason, and a note left there is stored against that edit and carried into the next run labeled with what was removed. When graded changes repeat a pattern, the app offers it once as a rule in a Your style card; a saved rule rides into every later run as standing direction, and nothing is adopted without the creator's tap.
-
-## The first edit, from a dropped video (0.6.0)
-
-The app can also start from nothing but a raw video. Drop one video file and the card offers **Make the first edit**, with a box for direction up front ("remove retakes, last take is the best take" sets that run's switches, and the recap names what the words set). The app transcribes the video with word timings, measures speech and silence from the waveform itself, builds a first plan with every word kept, and runs the same deterministic front door a runner job gets. The review video is a fresh, simple splice of the kept ranges, rendered by the app. Transcription route, picked on measured evidence: ElevenLabs Scribe when a key is set (verbatim fillers and restarts, word timings, about a cent per 3-minute video), otherwise a local open-source Whisper model at no cost. Meta's Muse Voice Transcribe returns no word timings, so it serves the Dictate buttons instead: speak a note in any feedback box and the text lands in the box to read and fix before it counts. Intake jobs also get clean captions: a WebVTT file built from the kept words with filler words left out of the caption text only.
-
-## The operation language
-
-Version one allows exactly five operation types:
+The model may only speak five operations:
 
 | Operation | Meaning |
 | --- | --- |
@@ -38,89 +25,53 @@ Version one allows exactly five operation types:
 | `replace_take` | Atomically swap one take for another: restore one span, cut another, both or neither. |
 | `flag_for_review` | Make no change; a person decides. |
 
-Risk tiers: short exact cuts and bounded pause changes apply after deterministic checks (tier 1). Restores, take swaps, long cuts, opening or closing changes, and low-confidence proposals require a Muse Wonder review (tier 2). Anything touching protected material, a special insert (for example a signature breath), a negation-bearing span, an unclear target, or more than 25 percent of the finished edit is flagged only (tier 3).
-
-## Quickstart
-
-Requirements: Python 3.11 or newer. The core package is standard library only. One optional extra, `.[speech]`, adds faster-whisper so a dropped video can be transcribed on the machine itself; without it, intake transcription uses an ElevenLabs key when one is set, and the rest of the app is unchanged.
+## Run it
 
 ```bash
-git clone https://github.com/rosalesrecommendations/talk-to-your-editor.git
-cd talk-to-your-editor
 python3 -m pip install -e .
-```
-
-Offline demo with the deterministic mock provider, using the synthetic job in `tests/fixtures/`:
-
-```bash
-tye direct \
-  --feedback tests/fixtures/sample_feedback.json \
-  --transcript tests/fixtures/sample_transcript.json \
-  --cuts tests/fixtures/sample_cuts.json \
-  --profile tests/fixtures/sample_profile.json \
-  --out-dir out \
-  --provider mock
-
-tye after-review \
-  --feedback tests/fixtures/sample_feedback.json \
-  --operations out/operations_audit.json \
-  --out out/after-review.html
-
-tye learn \
-  --graded examples/graded-corrections.sample.json \
-  --out out/template-draft.json \
-  --active-template examples/creator-template.sample.json
-```
-
-Live direction with the Meta Model API: set your key from [dev.meta.ai](https://dev.meta.ai) and switch the provider:
-
-```bash
-export MODEL_API_KEY=<your key>
-tye direct \
-  --feedback feedback.json \
-  --transcript transcript.json \
-  --cuts cuts.json \
-  --out-dir out \
-  --provider meta
-```
-
-Other commands: `tye inspect` summarizes a job, `tye map-time` maps one finished-edit timestamp to its source word, `tye validate-operations` checks an operations file against the schema (and, with a job, against the verifier), and `tye apply` applies a saved operations file. Run the tests with:
-
-```bash
-python3 -m unittest discover -s tests
-```
-
-## Inputs
-
-- `transcript.json`: word-level transcript of the raw recording (word, start, end), as produced by the editing runner.
-- `cuts.json`: the runner's edit plan; the kept ranges, in output order, are the contract the direction layer maps through and rewrites.
-- `feedback.json`: the review page export (`video`, `feedback_done`, and `comments` with `id`, `ts`, `fmt`, `text`).
-- A creator profile JSON (optional): protected word spans and preferences the verifier must honor.
-
-Rendering the revised plan is done by the editing runner's own render stage, which consumes `revised_cuts.json` directly; stream sync is verified to within 50 ms by that stage, as with any plan it renders.
-
-## Personal testing: v0.2, the test app
-
-Version 0.2 adds a local web test app so a creator can run the whole loop in a browser, no terminal after launch:
-
-```bash
 tye serve
 ```
 
-The app opens with no job loaded: the home page is the front door (drop zone, a one-click built-in sample, and the Meta sign-in check), and a job folder dropped on the page becomes the current job on the spot. `tye serve --job-dir /path/to/runner-job` still starts on a job directly.
+Open http://127.0.0.1:8765; Studio opens on the conversation. Set MODEL_API_KEY for live Muse direction; without a key, the app runs offline with a deterministic mock and the same checks. The optional `.[speech]` extra adds local transcription (Whisper, running on your computer).
 
-The job folder is a runner export (transcript.json and cuts.json, plus the finished video when there is one). The server prints a localhost address for the computer and a LAN address for a phone on the same Wi-Fi. A job folder can also be dropped straight onto the page: the app stages a copy under the session's intake folder and switches to it on the spot, no path typing, and a lone dropped video stages and plays with a plain note about what a full edit still needs. In the page you watch the finished edit, pin comments at the current time, run direction (offline mock, or live Muse Spark and Wonder when MODEL_API_KEY is set in the server environment), read the applied and flagged results with before and after counts, download the revised plan and audit, and open the after-review page to grade the changes. Session files land in a `tye-session/` folder inside the job folder; the original transcript and plan are never modified. An optional render step (`--render-py`, `--source`, `--cleaned-wav`) renders the revised review through the runner's own render stage; when a piece is missing, the app says which piece, in plain words.
+## The proof it learns
 
-The `mac-test-kit/` folder carries a double-click launcher for macOS and a step-by-step personal testing script (Mac first, then phone).
+The demo is one real video: a 10-minute raw talking-head recording, and the creator's own finished edit of it at 165.4 seconds.
 
-## Rehearsal results (October 26, 2026)
+- The app's edit runs 175.6 seconds before review.
+- Transcribe both edits and diff them: 667 of his 692 words match his finished edit, 96.4 percent.
+- Said plainly: the style pack's calibration examples all come from this same video, so that score is measured on the video the app learned from. It is not a general accuracy number. On a new video there is no score; it is tested by watching the edit.
+- The held-out test is a second video, Day 48, which the app never learned from: on a video it never learned from, it kept about 90% of my words, with no dead air, in about 3:15 against my 2:42.
+- Six short spoken lines an earlier build dropped are back in. The stopped, abandoned takes are out.
+- Two spots are left for his review, both passages that make the same point twice. Approving them lands the length on his edit.
 
-The full loop was rehearsed end to end before this README was finalized:
+That gap, and the spots, are the point: the app gets most of the way there and asks about the rest.
 
-- **Live model gate.** A live Muse Spark call turned a "remove this repeated line" comment into the exact `cut_words` operation for the repeated span. A forced take-swap comment escalated to Muse Wonder, which returned a reviewed `replace_take`. The same two operations submitted as one batch were refused as overlapping, which is the conflict guard working: two comments fighting over one span are held for the creator, not merged silently.
-- **Real-job rehearsal.** On a real runner export (191.4665 seconds, 810 kept words; direction run with the deterministic mock provider, no footage leaves this repository), a sentence cut and a pause change applied and a comment pinned to the signature breath insert was flagged, not applied. The revised plan holds 797 kept words and renders at 187.8998 seconds. The original plan file was byte-unchanged after the run.
-- **Render gate.** The revised plan rendered a review video with audio and video streams both at 187.900 seconds, a sync difference of 0 ms against the 50 ms limit.
-- **Tests.** 44 tests pass, including from a copy of the tree in a path containing spaces.
+## Why creators cancel editing tools
+
+Review mining of the tools creators leave (Descript, Gling, Recut, TimeBolt) keeps surfacing the same complaints. Each has an answer here:
+
+- **Cuts that delete real words.** A deterministic verifier, a negation guard, and protected words stand between any proposal and your edit.
+- **Hard, choppy cuts.** Cuts sit on measured room sound, breaths stay whole or go whole, and a join check flags any join that fails a real measurement.
+- **A transcript you cannot trust.** Word timings are re-measured from the audio itself, so the word list follows the sound before anything downstream reads it.
+- **Lost work.** Every change is a saved step, with its own undo and redo. The Done bubble carries Undo for the whole edit, and Export saves a reopenable project file.
+- **Exports that fail or need another editor.** Timeline files for Premiere Pro, Final Cut Pro, and DaVinci Resolve, read back and counted against the plan.
+- **Being charged for the AI's mistakes.** Every run shows its real cost before you tap. The direction we are building toward: never charge for the editor's own mistakes.
+
+## Honest limits
+
+- **CapCut.** CapCut has no timeline format to hand over. The app says so plainly: download the finished video and bring it into CapCut.
+- **What is learned.** Rules drawn from your own graded work, shown to you first and saved only when you say yes. The hosted Muse models are not trained or fine-tuned by this project.
+- **What leaves the computer.** Rendering and media stay on your machine. With a Meta key, direction sends your message text plus a small window of transcript words, not the video. Transcription runs on your machine with the speech extra, or through ElevenLabs if you set that key. With no keys, the app runs fully offline.
+- **Not in this build yet.** Music beds and burned-in captions. The exported file does carry a subtitle track.
+
+## Next
+
+- **Style match score.** A number that shows how well the editor matches your taste, and grows as it learns: onboarding answers (what you make, your niche, your account type), each teach pair, each saved rule, and each review tap raise it. The Done bubble shows it as "matched your style 89%, up from 82%", computed from real agreement wherever a finished edit exists to measure against. Later: a share card carrying the score and an invite link, and a waitlist with handles and rank for the launch page.
+
+## License
+
+Copyright 2026 Practice Your Passion LLC. All rights reserved. This repository is public so the hackathon judges can read and run the code; no open-source license is granted.
 
 ## Foundation disclosure
 
@@ -137,10 +88,3 @@ One more disclosure, just as plainly: the creator also maintains a separate, pre
 - With the Meta provider, the material sent to the API is the comment text plus a small window of transcript words around it, not the video. Rendering and media handling stay local.
 - The verifier's protected-span and negation guards exist because an edit that changes what a sentence says is worse than no edit. When in doubt, the system flags and the creator decides.
 
-## Learning, honestly scoped
-
-The hosted Muse Spark and Muse Wonder models are not fine-tuned by this project, and nothing here trains a model. What the system learns from is the graded correction record: feedback, the operation it produced, the audit trail, and the creator's verdict. Pattern extraction over those records drafts the creator template. Fine-tuning an open-weight model (Muse Spark Open) on accumulated graded corrections is a later phase, gated on data volume and scored against held-out examples before it would ever touch a real edit.
-
-## License
-
-Copyright 2026 Practice Your Passion LLC. All rights reserved. This repository is public so the hackathon judges can read and run the code; no open-source license is granted.

@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PORT="8765"
-LAUNCH_HOME="$REPO_ROOT/.launch-home"
+LAUNCH_HOME="$HOME/.talk-to-your-editor/launch-home"
 
 fail() {
   printf '\nTalk to Your Editor could not start.\n%s\n' "$1"
